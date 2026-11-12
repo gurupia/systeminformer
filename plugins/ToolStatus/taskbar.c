@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -243,6 +243,7 @@ HICON PhGetBlackIcon(
     {
         ULONG width;
         ULONG height;
+        SIZE_T bitsSize;
         PVOID bits;
         HDC hdc;
         HBITMAP mask;
@@ -250,10 +251,21 @@ HICON PhGetBlackIcon(
         ICONINFO iconInfo;
 
         PhBeginBitmap2(&PhBlackBitmapContext, &width, &height, &PhBlackBitmap, &bits, &hdc, &oldBitmap);
-        memset(bits, TaskbarTransparencyEnabled ? 1 : 0, width * height * sizeof(RGBQUAD));
+
+        if (!NT_SUCCESS(RtlSizeTMult(width, height, &bitsSize)) ||
+            !NT_SUCCESS(RtlSizeTMult(bitsSize, sizeof(RGBQUAD), &bitsSize)))
+        {
+            SelectBitmap(hdc, oldBitmap);
+            return NULL;
+        }
+
+        memset(bits, TaskbarTransparencyEnabled ? 1 : 0, bitsSize);
 
         if (!(mask = CreateBitmap(width, height, 1, 1, NULL)))
+        {
+            SelectBitmap(hdc, oldBitmap);
             return NULL;
+        }
 
         iconInfo.fIcon = TRUE;
         iconInfo.xHotspot = 0;
@@ -273,17 +285,30 @@ HICON PhBitmapToIcon(
     _In_ HBITMAP Bitmap
     )
 {
+    HICON iconHandle;
+    HBITMAP mask;
     ICONINFO iconInfo;
+    BITMAP bitmapInfo;
 
-    PhGetBlackIcon();
+    memset(&bitmapInfo, 0, sizeof(BITMAP));
 
+    if (GetObject(Bitmap, sizeof(BITMAP), &bitmapInfo) == 0)
+        return NULL;
+
+    if (!(mask = CreateBitmap(bitmapInfo.bmWidth, bitmapInfo.bmHeight, 1, 1, NULL)))
+        return NULL;
+
+    memset(&iconInfo, 0, sizeof(ICONINFO));
     iconInfo.fIcon = TRUE;
     iconInfo.xHotspot = 0;
     iconInfo.yHotspot = 0;
-    iconInfo.hbmMask = PhBlackBitmap;
+    iconInfo.hbmMask = mask;
     iconInfo.hbmColor = Bitmap;
 
-    return CreateIconIndirect(&iconInfo);
+    iconHandle = CreateIconIndirect(&iconInfo);
+    DeleteBitmap(mask);
+
+    return iconHandle;
 }
 
 HICON PhUpdateIconCpuHistory(
@@ -320,9 +345,16 @@ HICON PhUpdateIconCpuHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
     if (!(lineData2 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        _freea(lineData1);
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CpuKernelHistory->Count);
     PhCopyCircularBuffer_FLOAT(Statistics->CpuKernelHistory, lineData1, lineDataCount);
@@ -382,21 +414,47 @@ HICON PhUpdateIconIoHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
     if (!(lineData2 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        _freea(lineData1);
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->IoReadHistory->Count);
     max = 1024 * 1024; // minimum scaling of 1 MB.
 
-    for (i = 0; i < lineDataCount; i++)
-    {
-        lineData1[i] = (FLOAT)PhGetItemCircularBuffer_ULONG64(Statistics->IoReadHistory, i)
-                     + (FLOAT)PhGetItemCircularBuffer_ULONG64(Statistics->IoOtherHistory, i);
-        lineData2[i] = (FLOAT)PhGetItemCircularBuffer_ULONG64(Statistics->IoWriteHistory, i);
+    // Data1 = read + other (stacked), Data2 = write.
+    PhCopyConvertCircularBufferULONG64(Statistics->IoReadHistory, lineData1, lineDataCount);
+    PhCopyConvertCircularBufferULONG64(Statistics->IoWriteHistory, lineData2, lineDataCount);
 
-        if (max < lineData1[i] + lineData2[i])
-            max = lineData1[i] + lineData2[i];
+    {
+        PFLOAT scratch = PhAllocateStack(lineDataCount * sizeof(FLOAT));
+
+        if (scratch)
+        {
+            PhCopyConvertCircularBufferULONG64(Statistics->IoOtherHistory, scratch, lineDataCount);
+            PhAddMemorySingles(lineData1, scratch, lineDataCount);
+            PhFreeStack(scratch);
+        }
+        else
+        {
+            for (i = 0; i < lineDataCount; i++)
+            {
+                lineData1[i] += (FLOAT)PhGetItemCircularBuffer_ULONG64(Statistics->IoOtherHistory, i);
+            }
+        }
+    }
+
+    {
+        FLOAT dataMax = PhAddPlusMaxMemorySingles(lineData1, lineData2, lineDataCount);
+
+        if (max < dataMax)
+            max = dataMax;
     }
 
     PhDivideSinglesBySingle(lineData1, max, lineDataCount);
@@ -447,7 +505,6 @@ HICON PhUpdateIconCommitHistory(
     ULONG maxDataCount;
     ULONG lineDataCount;
     PFLOAT lineData1;
-    ULONG i;
     HBITMAP bitmap;
     PVOID bits;
     HDC hdc;
@@ -459,12 +516,14 @@ HICON PhUpdateIconCommitHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CommitHistory->Count);
 
-    for (i = 0; i < lineDataCount; i++)
-        lineData1[i] = (FLOAT)PhGetItemCircularBuffer_ULONG(Statistics->CommitHistory, i);
+    PhCopyConvertCircularBufferULONG(Statistics->CommitHistory, lineData1, lineDataCount);
 
     PhDivideSinglesBySingle(lineData1, (FLOAT)Statistics->Performance->CommitLimit, lineDataCount);
 
@@ -509,7 +568,6 @@ HICON PhUpdateIconPhysicalHistory(
     ULONG maxDataCount;
     ULONG lineDataCount;
     PFLOAT lineData1;
-    ULONG i;
     HBITMAP bitmap;
     PVOID bits;
     HDC hdc;
@@ -521,12 +579,14 @@ HICON PhUpdateIconPhysicalHistory(
     maxDataCount = drawInfo.Width / 2 + 1;
 
     if (!(lineData1 = _malloca(maxDataCount * sizeof(FLOAT))))
+    {
+        SelectBitmap(hdc, oldBitmap);
         return NULL;
+    }
 
     lineDataCount = min(maxDataCount, Statistics->CommitHistory->Count);
 
-    for (i = 0; i < lineDataCount; i++)
-        lineData1[i] = (FLOAT)PhGetItemCircularBuffer_ULONG(Statistics->PhysicalHistory, i);
+    PhCopyConvertCircularBufferULONG(Statistics->PhysicalHistory, lineData1, lineDataCount);
 
     PhDivideSinglesBySingle(lineData1, (FLOAT)PhSystemBasicInformation.NumberOfPhysicalPages, lineDataCount);
 
@@ -542,7 +602,6 @@ HICON PhUpdateIconPhysicalHistory(
     _freea(lineData1);
 
     return icon;
-    return 0;
 }
 
 HICON PhUpdateIconCpuUsage(

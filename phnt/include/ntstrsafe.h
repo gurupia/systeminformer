@@ -61,7 +61,7 @@ typedef _W64 unsigned int   size_t;
 typedef _Return_type_success_(return >= 0) long NTSTATUS;
 #endif
 
-typedef unsigned long DWORD;
+typedef unsigned long ULONG;
 
 
 #ifndef SORTPP_PASS
@@ -161,8 +161,8 @@ C_ASSERT(NTSTRSAFE_UNICODE_STRING_MAX_CCH > 1);
 #define STRSAFE_UNICODE_STRING_VALID_FLAGS      (0x000000FF | STRSAFE_IGNORE_NULLS | STRSAFE_FILL_BEHIND | STRSAFE_FILL_ON_FAILURE | STRSAFE_ZERO_LENGTH_ON_FAILURE | STRSAFE_NO_TRUNCATION)
 
 // helper macro to set the fill character and specify buffer filling
-#define STRSAFE_FILL_BYTE(x)                    ((DWORD)((x & 0x000000FF) | STRSAFE_FILL_BEHIND_NULL))
-#define STRSAFE_FAILURE_BYTE(x)                 ((DWORD)((x & 0x000000FF) | STRSAFE_FILL_ON_FAILURE))
+#define STRSAFE_FILL_BYTE(x)                    ((ULONG)((x & 0x000000FF) | STRSAFE_FILL_BEHIND_NULL))
+#define STRSAFE_FAILURE_BYTE(x)                 ((ULONG)((x & 0x000000FF) | STRSAFE_FILL_ON_FAILURE))
 
 #define STRSAFE_GET_FILL_PATTERN(dwFlags)       ((int)(dwFlags & 0x000000FF))
 
@@ -217,7 +217,7 @@ RtlStringExValidateSrcA(
         _Deref_out_range_(<, cchMax)
         _Deref_out_range_(<=, _Old_(*pcchToRead)) size_t* pcchToRead,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 
 
@@ -230,7 +230,7 @@ RtlStringExValidateSrcW(
         _Deref_out_range_(<, cchMax)
         _Deref_out_range_(<=, _Old_(*pcchToRead)) size_t* pcchToRead,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 
 
@@ -273,7 +273,7 @@ RtlStringExValidateDestA(
     _In_reads_opt_(cchDest) STRSAFE_PCNZCH pszDest,
     _In_ size_t cchDest,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 NTSTRSAFEWORKERDDI
 RtlStringExValidateDestAndLengthA(
@@ -281,7 +281,7 @@ RtlStringExValidateDestAndLengthA(
     _In_ size_t cchDest,
     _Out_ _Deref_out_range_(0, (cchDest>0?cchDest-1:0)) size_t* pcchDestLength,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 
 
@@ -290,7 +290,7 @@ RtlStringExValidateDestW(
     _In_reads_opt_(cchDest) STRSAFE_PCNZWCH pszDest,
     _In_ size_t cchDest,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 NTSTRSAFEWORKERDDI
 RtlStringExValidateDestAndLengthW(
@@ -298,7 +298,7 @@ RtlStringExValidateDestAndLengthW(
     _In_ size_t cchDest,
     _Out_ _Deref_out_range_(0, (cchDest>0?cchDest-1:0)) size_t* pcchDestLength,
     _In_ const size_t cchMax,
-    _In_ DWORD dwFlags);
+    _In_ ULONG dwFlags);
 
 
 
@@ -348,7 +348,7 @@ NTSTRSAFEWORKERDDI
 RtlStringExHandleFillBehindNullA(
         _Inout_updates_bytes_(cbRemaining) NTSTRSAFE_PSTR pszDestEnd,
         _In_ size_t cbRemaining,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 
 
@@ -356,7 +356,7 @@ NTSTRSAFEWORKERDDI
 RtlStringExHandleFillBehindNullW(
         _Inout_updates_bytes_(cbRemaining) NTSTRSAFE_PWSTR pszDestEnd,
         _In_ size_t cbRemaining,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 
 
@@ -368,7 +368,7 @@ _Success_(1)  // always succeeds, no exit tests needed
             _In_ _In_range_(0, cbDest>sizeof(char)?(cbDest / sizeof(char)) - 1:0) size_t cchOriginalDestLength,
             _Outptr_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_ _Deref_out_range_(0, cbDest / sizeof(char)) size_t* pcchRemaining,
-            _In_ DWORD dwFlags);
+            _In_ ULONG dwFlags);
 
 
 
@@ -380,7 +380,7 @@ _Success_(1)  // always succeeds, no exit tests needed
             _In_ _In_range_(0, cbDest>sizeof(wchar_t)?(cbDest / sizeof(wchar_t)) - 1:0) size_t cchOriginalDestLength,
             _Outptr_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_ _Deref_out_range_(0, cbDest / sizeof(wchar_t)) size_t* pcchRemaining,
-            _In_ DWORD dwFlags);
+            _In_ ULONG dwFlags);
 
 
 
@@ -395,13 +395,13 @@ RtlUnicodeStringInitWorker(
         _Out_ PUNICODE_STRING DestinationString,
         _In_opt_ NTSTRSAFE_PCWSTR pszSrc,
         _In_ const size_t cchMax,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 NTSTRSAFEWORKERDDI
 RtlUnicodeStringValidateWorker(
         _In_opt_ PCUNICODE_STRING SourceString,
         _In_ const size_t cchMax,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 _Post_satisfies_(*pcchSrcLength*sizeof(wchar_t) == SourceString->MaximumLength)
     NTSTRSAFEWORKERDDI
@@ -410,7 +410,7 @@ _Post_satisfies_(*pcchSrcLength*sizeof(wchar_t) == SourceString->MaximumLength)
             _Outptr_result_buffer_(*pcchSrcLength) wchar_t** ppszSrc,
             _Out_ size_t* pcchSrcLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags);
+            _In_ ULONG dwFlags);
 
 _Post_satisfies_(*pcchDest*sizeof(wchar_t) == DestinationString->MaximumLength)
     NTSTRSAFEWORKERDDI
@@ -420,7 +420,7 @@ _Post_satisfies_(*pcchDest*sizeof(wchar_t) == DestinationString->MaximumLength)
             _Out_ size_t* pcchDest,
             _Out_opt_ size_t* pcchDestLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags);
+            _In_ ULONG dwFlags);
 
 NTSTRSAFEWORKERDDI
 RtlStringCopyWideCharArrayWorker(
@@ -458,7 +458,7 @@ NTSTRSAFEWORKERDDI
 RtlUnicodeStringExHandleFill(
         _Out_writes_(cchRemaining) wchar_t* pszDestEnd,
         _In_ size_t cchRemaining,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 NTSTRSAFEWORKERDDI
 RtlUnicodeStringExHandleOtherFlags(
@@ -468,7 +468,7 @@ RtlUnicodeStringExHandleOtherFlags(
         _Out_ size_t* pcchNewDestLength,
         _Outptr_result_buffer_(*pcchRemaining) wchar_t** ppszDestEnd,
         _Out_ size_t* pcchRemaining,
-        _In_ DWORD dwFlags);
+        _In_ ULONG dwFlags);
 
 #endif  // !NTSTRSAFE_NO_UNICODE_STRING_FUNCTIONS
 
@@ -480,7 +480,9 @@ RtlUnicodeStringExHandleOtherFlags(
 #define __WARNING_RETURN_UNINIT_VAR 6101
 #define __WARNING_DEREF_NULL_PTR 6011
 #define __WARNING_MISSING_ZERO_TERMINATION2 6054
+#define __WARNING_WRITE_OVERRUN 6386
 #define __WARNING_INVALID_PARAM_VALUE_1 6387
+#define __WARNING_UNSAFE_STRING_FUNCTION 25025
 #define __WARNING_INCORRECT_ANNOTATION 26007
 #define __WARNING_POTENTIAL_BUFFER_OVERFLOW_HIGH_PRIORITY 26015
 #define __WARNING_PRECONDITION_NULLTERMINATION_VIOLATION 26035
@@ -777,7 +779,7 @@ NTSTRSAFEDDI
   _In_  LPCTSTR pszSrc          OPTIONAL,
   _Outptr_opt_result_buffer_(*pcchRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcchRemaining   OPTIONAL,
-  _In_  DWORD   dwFlags
+  _In_  ULONG   dwFlags
   );
 
   Routine Description:
@@ -869,7 +871,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCSTR pszSrc,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -991,7 +993,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCWSTR pszSrc,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -1118,7 +1120,7 @@ NTSTRSAFEDDI
   _In_  LPCTSTR pszSrc          OPTIONAL,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcbRemaining    OPTIONAL,
-  _In_  DWORD   dwFlags
+  _In_  ULONG   dwFlags
   );
 
   Routine Description:
@@ -1210,7 +1212,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCSTR pszSrc,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(char);
@@ -1337,7 +1339,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCWSTR pszSrc,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(wchar_t);
@@ -1768,7 +1770,7 @@ NTSTRSAFEDDI
   _In_  size_t  cchToCopy,
   _Outptr_opt_result_buffer_(*pcchRemaining) LPTSTR* ppszDestEnd OPTIONAL,
   _Out_opt_ size_t* pcchRemaining OPTIONAL,
-  _In_  DWORD   dwFlags
+  _In_  ULONG   dwFlags
   );
 
   Routine Description:
@@ -1869,7 +1871,7 @@ NTSTRSAFEDDI
             _In_ size_t cchToCopy,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -1992,7 +1994,7 @@ NTSTRSAFEDDI
             _In_ size_t cchToCopy,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -2120,7 +2122,7 @@ NTSTRSAFEDDI
   _In_  size_t  cbToCopy,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcbRemaining    OPTIONAL,
-  _In_  DWORD   dwFlags
+  _In_  ULONG   dwFlags
   );
 
   Routine Description:
@@ -2219,7 +2221,7 @@ NTSTRSAFEDDI
             _In_ size_t cbToCopy,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(char);
@@ -2344,7 +2346,7 @@ NTSTRSAFEDDI
             _In_ size_t cbToCopy,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(wchar_t);
@@ -2712,7 +2714,7 @@ NTSTRSAFEDDI
   _In_     LPCTSTR pszSrc          OPTIONAL,
   _Outptr_opt_result_buffer_(*pcchRemaining)    LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_    size_t* pcchRemaining   OPTIONAL,
-  _In_     DWORD   dwFlags
+  _In_     ULONG   dwFlags
   );
 
   Routine Description:
@@ -2807,7 +2809,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCSTR pszSrc,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDestLength;
@@ -2918,7 +2920,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCWSTR pszSrc,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDestLength;
@@ -3034,7 +3036,7 @@ NTSTRSAFEDDI
   _In_     LPCTSTR pszSrc          OPTIONAL,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining)    LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_    size_t* pcbRemaining    OPTIONAL,
-  _In_     DWORD   dwFlags
+  _In_     ULONG   dwFlags
   );
 
   Routine Description:
@@ -3129,7 +3131,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCSTR pszSrc,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(char);
@@ -3237,7 +3239,7 @@ NTSTRSAFEDDI
             _In_ NTSTRSAFE_PCWSTR pszSrc,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(wchar_t);
@@ -3639,7 +3641,7 @@ NTSTRSAFEDDI
   _In_     size_t  cchToAppend,
   _Outptr_opt_result_buffer_(*pcchRemaining)    LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_    size_t* pcchRemaining   OPTIONAL,
-  _In_     DWORD   dwFlags
+  _In_     ULONG   dwFlags
   );
 
   Routine Description:
@@ -3737,7 +3739,7 @@ NTSTRSAFEDDI
             _In_ size_t cchToAppend,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDestLength;
@@ -3849,7 +3851,7 @@ NTSTRSAFEDDI
             _In_ size_t cchToAppend,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDestLength;
@@ -3966,7 +3968,7 @@ NTSTRSAFEDDI
   _In_     size_t  cbToAppend,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining)    LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_    size_t* pcchRemaining   OPTIONAL,
-  _In_     DWORD   dwFlags
+  _In_     ULONG   dwFlags
   );
 
   Routine Description:
@@ -4064,7 +4066,7 @@ NTSTRSAFEDDI
             _In_ size_t cbToAppend,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(char);
@@ -4177,7 +4179,7 @@ NTSTRSAFEDDI
             _In_ size_t cbToAppend,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(wchar_t);
@@ -4846,7 +4848,7 @@ NTSTRSAFEDDI
   _In_  size_t  cchDest,
   _Outptr_opt_result_buffer_(*pcchRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcchRemaining   OPTIONAL,
-  _In_ DWORD   dwFlags,
+  _In_ ULONG   dwFlags,
   _In_ _Printf_format_string_ LPCTSTR pszFormat       OPTIONAL,
   ...
   );
@@ -4945,7 +4947,7 @@ NTSTRSAFEDDI
             _In_ size_t cchDest,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCSTR pszFormat,
             ...)
 {
@@ -5078,7 +5080,7 @@ NTSTRSAFEDDI
             _In_ size_t cchDest,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
             ...)
 {
@@ -5213,7 +5215,7 @@ NTSTRSAFEDDI
   _In_ size_t  cbDest,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcbRemaining    OPTIONAL,
-  _In_ DWORD   dwFlags,
+  _In_ ULONG   dwFlags,
   _In_ _Printf_format_string_ LPCTSTR pszFormat       OPTIONAL,
   ...
   );
@@ -5312,7 +5314,7 @@ NTSTRSAFEDDI
             _In_ size_t cbDest,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCSTR pszFormat,
             ...)
 {
@@ -5448,7 +5450,7 @@ NTSTRSAFEDDI
             _In_ size_t cbDest,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
             ...)
 {
@@ -5585,7 +5587,7 @@ NTSTRSAFEDDI
   _In_ size_t  cchDest,
   _Outptr_opt_result_buffer_(*pcchRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcchRemaining   OPTIONAL,
-  _In_ DWORD   dwFlags,
+  _In_ ULONG   dwFlags,
   _In_ _Printf_format_string_ LPCTSTR pszFormat       OPTIONAL,
   _In_ va_list argList
   );
@@ -5686,7 +5688,7 @@ NTSTRSAFEDDI
             _In_ size_t cchDest,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCSTR pszFormat,
             _In_ va_list argList)
 {
@@ -5815,7 +5817,7 @@ NTSTRSAFEDDI
             _In_ size_t cchDest,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
             _In_ va_list argList)
 {
@@ -5945,7 +5947,7 @@ NTSTRSAFEDDI
   _In_ size_t  cbDest,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining) LPTSTR* ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t* pcbRemaining    OPTIONAL,
-  _In_ DWORD   dwFlags,
+  _In_ ULONG   dwFlags,
   _In_ _Printf_format_string_ LPCTSTR pszFormat       OPTIONAL,
   _In_ va_list argList
   );
@@ -6044,7 +6046,7 @@ NTSTRSAFEDDI
             _In_ size_t cbDest,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCSTR pszFormat,
             _In_ va_list argList)
 {
@@ -6170,7 +6172,7 @@ NTSTRSAFEDDI
             _In_ size_t cbDest,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags,
+            _In_ ULONG dwFlags,
             _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
             _In_ va_list argList)
 {
@@ -6780,7 +6782,7 @@ RtlUnicodeStringInit(
   RtlUnicodeStringInitEx(
   _Out_ PUNICODE_STRING DestinationString,
   _In_opt_  NTSTRSAFE_PCWSTR pszSrc              OPTIONAL,
-  _In_ DWORD           dwFlags
+  _In_ ULONG           dwFlags
   );
 
   Routine Description:
@@ -6824,7 +6826,7 @@ NTSTRSAFEDDI
 RtlUnicodeStringInitEx(
         _Out_ PUNICODE_STRING DestinationString,
         _In_opt_ NTSTRSAFE_PCWSTR pszSrc,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -6902,7 +6904,7 @@ RtlUnicodeStringValidate(
   NTSTATUS
   RtlUnicodeStringValidateEx(
   _In_ PCUNICODE_STRING    SourceString     OPTIONAL,
-  _In_ DWORD               dwFlags
+  _In_ ULONG               dwFlags
   );
 
   Routine Description:
@@ -6940,7 +6942,7 @@ return value of this function.
 NTSTRSAFEDDI
 RtlUnicodeStringValidateEx(
         _In_ PCUNICODE_STRING SourceString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -7167,7 +7169,7 @@ NTSTRSAFEDDI
   _In_ PCUNICODE_STRING    SourceString    OPTIONAL,
   _Outptr_opt_result_buffer_(*pcchRemaining) PWSTR*              ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t*             pcchRemaining   OPTIONAL,
-  _In_ DWORD               dwFlags
+  _In_ ULONG               dwFlags
   );
 
   Routine Description:
@@ -7257,7 +7259,7 @@ NTSTRSAFEDDI
             _In_ PCUNICODE_STRING SourceString,
             _Outptr_opt_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -7385,7 +7387,7 @@ NTSTRSAFEDDI
   _In_ PCUNICODE_STRING    SourceString    OPTIONAL,
   _Outptr_opt_result_bytebuffer_(*pcbRemaining) PWSTR*              ppszDestEnd     OPTIONAL,
   _Out_opt_ size_t*             pcbRemaining    OPTIONAL,
-  _In_ DWORD               dwFlags
+  _In_ ULONG               dwFlags
   );
 
   Routine Description:
@@ -7475,7 +7477,7 @@ NTSTRSAFEDDI
             _In_ PCUNICODE_STRING SourceString,
             _Outptr_opt_result_bytebuffer_(*pcbRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_opt_ size_t* pcbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     size_t cchDest = cbDest / sizeof(wchar_t);
@@ -7775,7 +7777,7 @@ RtlUnicodeStringCopy(
   _Inout_ PUNICODE_STRING DestinationString   OPTIONAL,
   _In_ LPCTSTR         pszSrc              OPTIONAL,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_ DWORD           dwFlags
+  _In_ ULONG           dwFlags
   );
 
   Routine Description:
@@ -7853,7 +7855,7 @@ RtlUnicodeStringCopyStringEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -7960,7 +7962,7 @@ RtlUnicodeStringCopyStringEx(
   _Inout_ PUNICODE_STRING     DestinationString   OPTIONAL,
   _In_  PCUNICODE_STRING    SourceString        OPTIONAL,
   _Out_opt_ PUNICODE_STRING     RemainingString     OPTIONAL,
-  _In_  DWORD               dwFlags
+  _In_  ULONG               dwFlags
   );
 
   Routine Description:
@@ -8038,7 +8040,7 @@ RtlUnicodeStringCopyEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _In_ PCUNICODE_STRING SourceString,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -8581,7 +8583,7 @@ RtlUnicodeStringCbCopyN(
   _In_ LPCTSTR         pszSrc              OPTIONAL,
   _In_ size_t          cchToCopy,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_ DWORD           dwFlags
+  _In_ ULONG           dwFlags
   );
 
   Routine Description:
@@ -8661,7 +8663,7 @@ RtlUnicodeStringCchCopyStringNEx(
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _In_ size_t cchToCopy,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -8770,7 +8772,7 @@ RtlUnicodeStringCchCopyStringNEx(
   _In_ LPCTSTR         pszSrc              OPTIONAL,
   _In_ size_t          cbToCopy,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_ DWORD           dwFlags
+  _In_ ULONG           dwFlags
   );
 
   Routine Description:
@@ -8851,7 +8853,7 @@ RtlUnicodeStringCbCopyStringNEx(
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _In_ size_t cbToCopy,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -8961,7 +8963,7 @@ RtlUnicodeStringCbCopyStringNEx(
   _In_  PCUNICODE_STRING    SourceString        OPTIONAL,
   _In_  size_t              cchToCopy,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_  DWORD               dwFlags
+  _In_  ULONG               dwFlags
   );
 
   Routine Description:
@@ -9040,7 +9042,7 @@ RtlUnicodeStringCchCopyNEx(
         _In_ PCUNICODE_STRING SourceString,
         _In_ size_t cchToCopy,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -9167,7 +9169,7 @@ RtlUnicodeStringCchCopyNEx(
   _In_  PCUNICODE_STRING    SourceString        OPTIONAL,
   _In_  size_t              cbToCopy,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_  DWORD               dwFlags
+  _In_  ULONG               dwFlags
   );
 
   Routine Description:
@@ -9247,7 +9249,7 @@ RtlUnicodeStringCbCopyNEx(
         _In_ PCUNICODE_STRING SourceString,
         _In_ size_t cbToCopy,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -9556,7 +9558,7 @@ RtlUnicodeStringCat(
   _Inout_ PUNICODE_STRING DestinationString   OPTTONAL,
   _In_      LPCTSTR         pszSrc              OPTIONAL,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_      DWORD           dwFlags
+  _In_      ULONG           dwFlags
   );
 
   Routine Description:
@@ -9637,7 +9639,7 @@ RtlUnicodeStringCatStringEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -9748,7 +9750,7 @@ RtlUnicodeStringCatStringEx(
   _Inout_   PUNICODE_STRING     DestinationString   OPTIONAL,
   _In_      PCUNICODE_STRING    SourceString        OPTIONAL,
   _Out_opt_ PUNICODE_STRING     RemainingString     OPTIONAL,
-  _In_      DWORD               dwFlags
+  _In_      ULONG               dwFlags
   );
 
   Routine Description:
@@ -9829,7 +9831,7 @@ RtlUnicodeStringCatEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _In_ PCUNICODE_STRING SourceString,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -10387,7 +10389,7 @@ RtlUnicodeStringCbCatN(
   _In_    LPCTSTR         pszSrc              OPTIONAL,
   _In_    size_t          cchToAppend,
   _Out_opt_ PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_    DWORD           dwFlags
+  _In_    ULONG           dwFlags
   );
 
   Routine Description:
@@ -10471,7 +10473,7 @@ RtlUnicodeStringCchCatStringNEx(
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _In_ size_t cchToAppend,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -10585,7 +10587,7 @@ RtlUnicodeStringCchCatStringNEx(
   _In_   LPCTSTR         pszSrc              OPTIONAL,
   _In_                   size_t          cbToAppend,
   _Out_opt_              PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_                   DWORD           dwFlags
+  _In_                   ULONG           dwFlags
   );
 
   Routine Description:
@@ -10669,7 +10671,7 @@ RtlUnicodeStringCbCatStringNEx(
         _In_ NTSTRSAFE_PCWSTR pszSrc,
         _In_ size_t cbToAppend,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -10784,7 +10786,7 @@ RtlUnicodeStringCbCatStringNEx(
   _In_      PCUNICODE_STRING    SourceString        OPTIONAL,
   _In_      size_t              cchToAppend,
   _Out_opt_ PUNICODE_STRING     RemainingString     OPTIONAL,
-  _In_      DWORD               dwFlags
+  _In_      ULONG               dwFlags
   );
 
   Routine Description:
@@ -10872,7 +10874,7 @@ RtlUnicodeStringCchCatNEx(
         _In_      PCUNICODE_STRING SourceString,
         _In_      size_t           cchToAppend,
         _Out_opt_ PUNICODE_STRING  RemainingString,
-        _In_      DWORD            dwFlags)
+        _In_      ULONG            dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -11007,7 +11009,7 @@ RtlUnicodeStringCchCatNEx(
   _In_      PCUNICODE_STRING    SourceString        OPTIONAL,
   _In_      size_t              cbToAppend,
   _Out_opt_ PUNICODE_STRING     RemainingString     OPTIONAL,
-  _In_      DWORD               dwFlags
+  _In_      ULONG               dwFlags
   );
 
   Routine Description:
@@ -11091,7 +11093,7 @@ RtlUnicodeStringCbCatNEx(
         _In_ PCUNICODE_STRING SourceString,
         _In_ size_t cbToAppend,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status;
     wchar_t* pszDest;
@@ -11313,7 +11315,7 @@ RtlUnicodeStringVPrintf(
   RtlUnicodeStringVPrintfEx(
   _Inout_              PUNICODE_STRING DestinationString   OPTIONAL,
   _Out_opt_            PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_                 DWORD   dwFlags,
+  _In_                 ULONG   dwFlags,
   _In_ _Printf_format_string_ PCWSTR  pszFormat                   OPTIONAL,
   _In_                 va_list argList
   );
@@ -11395,7 +11397,7 @@ NTSTRSAFEDDI
 RtlUnicodeStringVPrintfEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags,
+        _In_ ULONG dwFlags,
         _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
         _In_ va_list argList)
 {
@@ -11600,7 +11602,7 @@ RtlUnicodeStringPrintf(
   RtlUnicodeStringPrintfEx(
   _Inout_              PUNICODE_STRING DestinationString   OPTIONAL,
   _Out_opt_            PUNICODE_STRING RemainingString     OPTIONAL,
-  _In_                 DWORD           dwFlags,
+  _In_                 ULONG           dwFlags,
   _In_ _Printf_format_string_ PCWSTR          pszFormat           OPTIONAL,
   ...
   );
@@ -11683,7 +11685,7 @@ NTSTRSAFEDDI
 RtlUnicodeStringPrintfEx(
         _Inout_ PUNICODE_STRING DestinationString,
         _Out_opt_ PUNICODE_STRING RemainingString,
-        _In_ DWORD dwFlags,
+        _In_ ULONG dwFlags,
         _In_ _Printf_format_string_ NTSTRSAFE_PCWSTR pszFormat,
         ...)
 {
@@ -11814,6 +11816,8 @@ NTSTRSAFEWORKERDDI
             _Out_opt_ _Deref_out_range_(<, cchMax) _Deref_out_range_(<=, _String_length_(psz)) size_t* pcchLength)
 {
     NTSTATUS status = STATUS_SUCCESS;
+
+#if (defined(_M_IX86) && !defined(_M_HYBRID_X86_ARM64)) || (defined(_M_X64) && !defined(_M_ARM64EC))
     size_t cchOriginalMax = cchMax;
 
     while (cchMax && (*psz != '\0'))
@@ -11839,6 +11843,27 @@ NTSTRSAFEWORKERDDI
             *pcchLength = 0;
         }
     }
+#else
+    size_t cchLength = strnlen(psz, cchMax);
+
+    if (cchMax == cchLength)
+    {
+        // the string is longer than cchMax
+        status = STATUS_INVALID_PARAMETER;
+    }
+
+    if (pcchLength)
+    {
+        if (NT_SUCCESS(status))
+        {
+            *pcchLength = cchLength;
+        }
+        else
+        {
+            *pcchLength = 0;
+        }
+    }
+#endif
 
     return status;
 }
@@ -11852,6 +11877,8 @@ NTSTRSAFEWORKERDDI
             _Out_opt_ _Deref_out_range_(<, cchMax) _Deref_out_range_(<=, _String_length_(psz)) size_t* pcchLength)
 {
     NTSTATUS status = STATUS_SUCCESS;
+
+#if (defined(_M_IX86) && !defined(_M_HYBRID_X86_ARM64)) || (defined(_M_X64) && !defined(_M_ARM64EC))
     size_t cchOriginalMax = cchMax;
 
     while (cchMax && (*psz != L'\0'))
@@ -11877,6 +11904,27 @@ NTSTRSAFEWORKERDDI
             *pcchLength = 0;
         }
     }
+#else
+    size_t cchLength = wcsnlen(psz, cchMax);
+
+    if (cchMax == cchLength)
+    {
+        // the string is longer than cchMax
+        status = STATUS_INVALID_PARAMETER;
+    }
+
+    if (pcchLength)
+    {
+        if (NT_SUCCESS(status))
+        {
+            *pcchLength = cchLength;
+        }
+        else
+        {
+            *pcchLength = 0;
+        }
+    }
+#endif
 
     return status;
 }
@@ -11940,7 +11988,7 @@ _When_(_Old_(*ppszSrc) == NULL, _At_(*ppszSrc, _Post_z_))
             _Deref_out_range_(<, cchMax)
             _Deref_out_range_(<=, _Old_(*pcchToRead)) size_t* pcchToRead,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -11972,7 +12020,7 @@ _When_(_Old_(*ppszSrc) == NULL, _At_(*ppszSrc, _Post_z_))
             _Deref_out_range_(<, cchMax)
             _Deref_out_range_(<=, _Old_(*pcchToRead)) size_t* pcchToRead,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -12110,7 +12158,7 @@ NTSTRSAFEWORKERDDI
             _In_reads_opt_(cchDest) STRSAFE_PCNZCH pszDest,
             _In_ size_t cchDest,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -12140,7 +12188,7 @@ NTSTRSAFEWORKERDDI
             _In_ size_t cchDest,
             _Out_ _Deref_out_range_(0, (cchDest>0?cchDest-1:0)) size_t* pcchDestLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -12177,7 +12225,7 @@ NTSTRSAFEWORKERDDI
             _In_reads_opt_(cchDest) STRSAFE_PCNZWCH pszDest,
             _In_ size_t cchDest,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -12207,7 +12255,7 @@ NTSTRSAFEWORKERDDI
             _In_ size_t cchDest,
             _Out_ _Deref_out_range_(0, (cchDest>0?cchDest-1:0)) size_t* pcchDestLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -12251,9 +12299,10 @@ NTSTRSAFEWORKERDDI
             _In_ _In_range_(<, NTSTRSAFE_MAX_CCH) size_t cchToCopy)
 {
     NTSTATUS status = STATUS_SUCCESS;
-    size_t cchNewDestLength = 0;
-
     // ASSERT(cchDest != 0);
+
+#if (defined(_M_IX86) && !defined(_M_HYBRID_X86_ARM64)) || (defined(_M_X64) && !defined(_M_ARM64EC))
+    size_t cchNewDestLength = 0;
 
     while (cchDest && cchToCopy && (*pszSrc != '\0'))
     {
@@ -12274,6 +12323,27 @@ NTSTRSAFEWORKERDDI
     }
 
     *pszDest = '\0';
+#else
+    size_t cchNewDestLength = strnlen(pszSrc, cchDest < cchToCopy ? cchDest : cchToCopy);
+
+    if (cchDest == cchNewDestLength)
+    {
+        // we are going to truncate pszDest
+        if (cchNewDestLength > 0)
+        {
+            cchNewDestLength--;
+        }
+
+        status = STATUS_BUFFER_OVERFLOW;
+    }
+
+    memcpy(pszDest, pszSrc, cchNewDestLength * sizeof(*pszSrc));
+#pragma warning(push)
+#pragma warning(disable:__WARNING_WRITE_OVERRUN)
+    // ASSERT(cchNewDestLength < cchDest);
+    pszDest[cchNewDestLength] = '\0';
+#pragma warning(pop)
+#endif
 
     if (pcchNewDestLength)
     {
@@ -12294,9 +12364,10 @@ NTSTRSAFEWORKERDDI
             _In_ _In_range_(<, NTSTRSAFE_MAX_CCH) size_t cchToCopy)
 {
     NTSTATUS status = STATUS_SUCCESS;
-    size_t cchNewDestLength = 0;
-
     // ASSERT(cchDest != 0);
+
+#if (defined(_M_IX86) && !defined(_M_HYBRID_X86_ARM64)) || (defined(_M_X64) && !defined(_M_ARM64EC))
+    size_t cchNewDestLength = 0;
 
     while (cchDest && cchToCopy && (*pszSrc != L'\0'))
     {
@@ -12317,6 +12388,27 @@ NTSTRSAFEWORKERDDI
     }
 
     *pszDest = L'\0';
+#else
+    size_t cchNewDestLength = wcsnlen(pszSrc, cchDest < cchToCopy ? cchDest : cchToCopy);
+
+    if (cchDest == cchNewDestLength)
+    {
+        // we are going to truncate pszDest
+        if (cchNewDestLength > 0)
+        {
+            cchNewDestLength--;
+        }
+
+        status = STATUS_BUFFER_OVERFLOW;
+    }
+
+    memcpy(pszDest, pszSrc, cchNewDestLength * sizeof(*pszSrc));
+#pragma warning(push)
+#pragma warning(disable:__WARNING_WRITE_OVERRUN)
+    // ASSERT(cchNewDestLength < cchDest);
+    pszDest[cchNewDestLength] = L'\0';
+#pragma warning(pop)
+#endif
 
     if (pcchNewDestLength)
     {
@@ -12351,6 +12443,7 @@ NTSTRSAFEWORKERDDI
 #else
 #pragma warning(push)
 #pragma warning(disable: __WARNING_BANNED_API_USAGE)// "STRSAFE not included"
+#pragma warning(disable: __WARNING_UNSAFE_STRING_FUNCTION) // call to dangerous string function '_vsnprintf'.
     iRet = _vsnprintf(pszDest, cchMax, pszFormat, argList);
 #pragma warning(pop)
 #endif
@@ -12456,7 +12549,7 @@ NTSTRSAFEWORKERDDI
     RtlStringExHandleFillBehindNullA(
             _Inout_updates_bytes_(cbRemaining) NTSTRSAFE_PSTR pszDestEnd,
             _In_ size_t cbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     if (cbRemaining > sizeof(char))
     {
@@ -12472,7 +12565,7 @@ NTSTRSAFEWORKERDDI
     RtlStringExHandleFillBehindNullW(
             _Inout_updates_bytes_(cbRemaining) NTSTRSAFE_PWSTR pszDestEnd,
             _In_ size_t cbRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     if (cbRemaining > sizeof(wchar_t))
     {
@@ -12500,7 +12593,7 @@ _Success_(1)  // always succeeds, no exit tests needed
             _In_ _In_range_(0, cbDest>sizeof(char)?(cbDest / sizeof(char)) - 1:0) size_t cchOriginalDestLength,
             _Outptr_result_buffer_(*pcchRemaining) NTSTRSAFE_PSTR* ppszDestEnd,
             _Out_ _Deref_out_range_(0, cbDest / sizeof(char)) size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     size_t cchDest = cbDest / sizeof(char);
 
@@ -12565,7 +12658,7 @@ _Success_(1)  // always succeeds, no exit tests needed
             _In_ _In_range_(0, cbDest>sizeof(wchar_t)?(cbDest / sizeof(wchar_t)) - 1:0) size_t cchOriginalDestLength,
             _Outptr_result_buffer_(*pcchRemaining) NTSTRSAFE_PWSTR* ppszDestEnd,
             _Out_ _Deref_out_range_(0, cbDest / sizeof(wchar_t)) size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     size_t cchDest = cbDest / sizeof(wchar_t);
 
@@ -12636,7 +12729,7 @@ RtlUnicodeStringInitWorker(
         PUNICODE_STRING DestinationString,
         NTSTRSAFE_PCWSTR pszSrc,
         const size_t cchMax,
-        DWORD dwFlags)
+        ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -12685,7 +12778,7 @@ NTSTRSAFEWORKERDDI
 RtlUnicodeStringValidateWorker(
         _In_opt_ PCUNICODE_STRING SourceString,
         _In_ const size_t cchMax,
-        _In_ DWORD dwFlags)
+        _In_ ULONG dwFlags)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -12718,7 +12811,7 @@ _Post_satisfies_(*pcchSrcLength*sizeof(wchar_t) == SourceString->MaximumLength)
             _Outptr_result_buffer_(*pcchSrcLength) wchar_t** ppszSrc,
             _Out_ size_t* pcchSrcLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -12759,7 +12852,7 @@ _Post_satisfies_(*pcchDest*sizeof(wchar_t) == DestinationString->MaximumLength)
             _Out_ size_t* pcchDest,
             _Out_opt_ size_t* pcchDestLength,
             _In_ const size_t cchMax,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     NTSTATUS status;
 
@@ -12928,7 +13021,7 @@ NTSTRSAFEWORKERDDI
     RtlUnicodeStringExHandleFill(
             _Out_writes_(cchRemaining) wchar_t* pszDestEnd,
             _In_ size_t cchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     size_t cbRemaining;
 
@@ -12953,7 +13046,7 @@ NTSTRSAFEWORKERDDI
             _Out_ size_t* pcchNewDestLength,
             _Outptr_result_buffer_(*pcchRemaining) wchar_t** ppszDestEnd,
             _Out_ size_t* pcchRemaining,
-            _In_ DWORD dwFlags)
+            _In_ ULONG dwFlags)
 {
     if (dwFlags & STRSAFE_NO_TRUNCATION)
     {

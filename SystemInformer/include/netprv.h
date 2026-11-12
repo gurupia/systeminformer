@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -23,6 +23,32 @@ typedef enum _PH_NETWORK_PROVIDER_FLAG
 } PH_NETWORK_PROVIDER_FLAG;
 
 extern ULONG PhNetworkProviderFlagsMask;
+
+NTSTATUS PhNsiAllocateAndGetTable(
+    _In_ NSI_STORE Store,
+    _In_ PNPI_MODULEID ModuleId,
+    _In_ NSI_OBJECT_ID ObjectId,
+    _Outptr_opt_result_bytebuffer_maybenull_(*Count * KeyEntrySize) PVOID* KeyTable,
+    _In_ ULONG KeyEntrySize,
+    _Outptr_opt_result_bytebuffer_maybenull_(*Count * ReadWriteEntrySize) PVOID* ReadWriteTable,
+    _In_ ULONG ReadWriteEntrySize,
+    _Outptr_opt_result_bytebuffer_maybenull_(*Count * DynamicEntrySize) PVOID* DynamicTable,
+    _In_ ULONG DynamicEntrySize,
+    _Outptr_opt_result_bytebuffer_maybenull_(*Count * StaticEntrySize) PVOID* StaticTable,
+    _In_ ULONG StaticEntrySize,
+    _Out_ PULONG Count,
+    _In_ ULONG Unused
+    );
+
+VOID PhNsiFreeTable(
+    _Frees_ptr_opt_ PVOID KeyTable,
+    _Frees_ptr_opt_ PVOID ReadWriteTable,
+    _Frees_ptr_opt_ PVOID DynamicTable,
+    _Frees_ptr_opt_ PVOID StaticTable
+    );
+
+// Defined in mainwnd.c; netprv.c reads the elapsed time actually spanned by the last provider run. (dmex)
+extern PH_PROVIDER_REGISTRATION PhMwpNetworkProviderRegistration;
 
 // begin_phapppub
 #define PH_NETWORK_OWNER_INFO_SIZE 16
@@ -69,7 +95,21 @@ typedef struct _PH_NETWORK_ITEM
     };
 
     PPH_PROCESS_ITEM ProcessItem;
+    PH_HASH_ENTRY HashEntry;
 } PH_NETWORK_ITEM, *PPH_NETWORK_ITEM;
+
+typedef struct _PH_NETWORK_CONNECTION
+{
+    ULONG ProtocolType;
+    PH_IP_ENDPOINT LocalEndpoint;
+    PH_IP_ENDPOINT RemoteEndpoint;
+    MIB_TCP_STATE State;
+    HANDLE ProcessId;
+    LARGE_INTEGER CreateTime;
+    ULONGLONG OwnerInfo[PH_NETWORK_OWNER_INFO_SIZE];
+    ULONG LocalScopeId; // Ipv6
+    ULONG RemoteScopeId; // Ipv6
+} PH_NETWORK_CONNECTION, *PPH_NETWORK_CONNECTION;
 // end_phapppub
 
 BOOLEAN PhNetworkProviderInitialization(
@@ -107,6 +147,15 @@ PhEnumNetworkItemsByProcessId(
     _Out_opt_ PPH_NETWORK_ITEM** NetworkItems,
     _Out_ PULONG NumberOfNetworkItems
     );
+
+_Success_(return)
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhGetNetworkConnections(
+    _Out_ PPH_NETWORK_CONNECTION *Connections,
+    _Out_ PULONG NumberOfConnections
+    );
 // end_phapppub
 
 VOID PhFlushNetworkItemResolveCache(
@@ -136,7 +185,68 @@ NTAPI
 PhGetTcpStateName(
     _In_ ULONG State
     );
+
+PHAPPAPI
+NTSTATUS
+PhGetPerTcpConnectionEStats(
+    _In_ PMIB_TCPROW Row,
+    _In_ TCP_ESTATS_TYPE EstatsType,
+    _Out_writes_bytes_opt_(RwSize) PVOID Rw,
+    _In_ ULONG RwVersion,
+    _In_ ULONG RwSize,
+    _Out_writes_bytes_opt_(RosSize) PVOID Ros,
+    _In_ ULONG RosVersion,
+    _In_ ULONG RosSize,
+    _Out_writes_bytes_opt_(RodSize) PVOID Rod,
+    _In_ ULONG RodVersion,
+    _In_ ULONG RodSize
+    );
+
+PHAPPAPI
+NTSTATUS
+PhGetPerTcp6ConnectionEStats(
+    _In_ PMIB_TCP6ROW Row,
+    _In_ TCP_ESTATS_TYPE EstatsType,
+    _Out_writes_bytes_opt_(RwSize) PVOID Rw,
+    _In_ ULONG RwVersion,
+    _In_ ULONG RwSize,
+    _Out_writes_bytes_opt_(RosSize) PVOID Ros,
+    _In_ ULONG RosVersion,
+    _In_ ULONG RosSize,
+    _Out_writes_bytes_opt_(RodSize) PVOID Rod,
+    _In_ ULONG RodVersion,
+    _In_ ULONG RodSize
+    );
+
+PHAPPAPI
+NTSTATUS
+PhSetPerTcpConnectionEStats(
+    _In_ PMIB_TCPROW Row,
+    _In_ TCP_ESTATS_TYPE EstatsType,
+    _In_reads_bytes_opt_(RwSize) PUCHAR Rw,
+    _In_ ULONG RwVersion,
+    _In_ ULONG RwSize,
+    _In_ ULONG Offset
+    );
+
+PHAPPAPI
+NTSTATUS
+PhSetPerTcp6ConnectionEStats(
+    _In_ PMIB_TCP6ROW Row,
+    _In_ TCP_ESTATS_TYPE EstatsType,
+    _In_reads_bytes_opt_(RwSize) PUCHAR Rw,
+    _In_ ULONG RwVersion,
+    _In_ ULONG RwSize,
+    _In_ ULONG Offset
+    );
 // end_phapppub
+
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhIsUdpExemptPort(
+    _In_ ULONG Port
+    );
 
 // iphlpapi imports
 
@@ -193,10 +303,174 @@ typedef ULONG (WINAPI *_InternalGetBoundTcp6EndpointTable)(
 
 // netsup
 
+// begin_phapppub
+PHAPPAPI
 NTSTATUS
 NTAPI
 PhSetTcpEntry(
     _In_ PPH_NETWORK_ITEM NetworkItem
     );
+// end_phapppub
+
+NTSTATUS
+PhGetExtendedTcpTable(
+    _Out_writes_bytes_opt_(*SizePointer) PVOID TcpTable,
+    _Inout_ PULONG SizePointer,
+    _In_ BOOL Order,
+    _In_ ULONG Family,
+    _In_ TCP_TABLE_CLASS TableClass,
+    _In_ ULONG Reserved
+    );
+
+NTSTATUS
+PhGetExtendedUdpTable(
+    _Out_writes_bytes_opt_(*SizePointer) PVOID UdpTable,
+    _Inout_ PULONG SizePointer,
+    _In_ BOOL Order,
+    _In_ ULONG Family,
+    _In_ UDP_TABLE_CLASS TableClass,
+    _In_ ULONG Reserved
+    );
+
+NTSTATUS
+NTAPI
+PhGetAdaptersAddresses(
+    _In_ ULONG Family,
+    _In_ ULONG Flags,
+    _Reserved_ PVOID Reserved,
+    _Out_writes_bytes_opt_(*SizePointer) PIP_ADAPTER_ADDRESSES AdapterAddresses,
+    _Inout_ PULONG SizePointer
+    );
+
+NTSTATUS
+NTAPI
+PhGetNetworkParams(
+    _Out_writes_bytes_opt_(*SizePointer) PFIXED_INFO FixedInfo,
+    _Inout_ PULONG SizePointer
+    );
+
+NTSTATUS
+NTAPI
+PhCancelMibChangeNotify2(
+    _In_ HANDLE NotificationHandle
+    );
+
+NTSTATUS
+WINAPI
+PhInternalGetBoundTcpEndpointTable(
+    _Outptr_ PMIB_TCPTABLE2* BoundTcpTable
+    );
+
+NTSTATUS
+WINAPI
+PhInternalGetBoundTcp6EndpointTable(
+    _Outptr_ PMIB_TCP6TABLE2* BoundTcpTable
+    );
+
+NTSTATUS
+NTAPI
+PhNotifyIpInterfaceChange(
+    _In_ ADDRESS_FAMILY Family,
+    _In_ PIPINTERFACE_CHANGE_CALLBACK Callback,
+    _In_opt_ PVOID CallerContext,
+    _In_ BOOLEAN InitialNotification,
+    _Inout_ PHANDLE NotificationHandle
+    );
+
+NTSTATUS
+NTAPI
+PhParseNetworkString(
+    _In_ PCWSTR NetworkString,
+    _In_ ULONG Types,
+    _Out_opt_ PNET_ADDRESS_INFO AddressInfo,
+    _Out_opt_ PUSHORT PortNumber,
+    _Out_opt_ PUCHAR PrefixLength
+    );
+
+NTSTATUS
+NTAPI
+PhNhGetInterfaceNameFromDeviceGuid(
+    _In_ PGUID DeviceGuid,
+    _Out_writes_(InterfaceDescriptionLength) PWCHAR InterfaceDescription,
+    _Inout_ PULONG InterfaceDescriptionLength,
+    _In_ BOOLEAN Cache,
+    _In_ BOOLEAN Refresh
+    );
+
+NTSTATUS
+NTAPI
+PhGetIpStatistics(
+    _Out_ PMIB_IPSTATS Statistics
+    );
+
+NTSTATUS
+NTAPI
+PhGetIpAddrTable(
+    _Out_writes_bytes_opt_(*SizePointer) PMIB_IPADDRTABLE IpAddrTable,
+    _Inout_ PULONG SizePointer,
+    _In_ BOOLEAN Order
+    );
+
+NTSTATUS
+NTAPI
+PhRegisterInterfaceTimestampConfigChange(
+    _In_ PINTERFACE_TIMESTAMP_CONFIG_CHANGE_CALLBACK Callback,
+    _In_opt_ PVOID CallerContext,
+    _Out_ HIFTIMESTAMPCHANGE *NotificationHandle
+    );
+
+VOID
+NTAPI
+PhUnregisterInterfaceTimestampConfigChange(
+    _In_ HIFTIMESTAMPCHANGE NotificationHandle
+    );
+
+NTSTATUS
+NTAPI
+PhGetInterfaceHandle(
+    _In_ const NET_LUID *InterfaceLuid,
+    _Out_ PHANDLE InterfaceHandle
+    );
+
+NTSTATUS
+NTAPI
+PhConvertNdisStatusToError(
+    _In_ NTSTATUS Status
+    );
+
+BOOLEAN
+NTAPI
+PhCancelIPChangeNotify(
+    _In_ LPOVERLAPPED Overlapped
+    );
+
+NTSTATUS
+NTAPI
+PhAllocateAndGetInterfaceInfoFromStack(
+    _Outptr_ PIP_INTERFACE_NAME_INFO *InterfaceInfo,
+    _Out_ PULONG SizePointer,
+    _In_ BOOLEAN Order
+    );
+
+NTSTATUS
+NTAPI
+PhAllocateAndGetIpAddrTableFromStack(
+    _Outptr_ PMIB_IPADDRTABLE *IpAddrTable,
+    _Out_ PULONG SizePointer,
+    _In_ BOOLEAN Order
+    );
+
+NTSTATUS
+NTAPI
+PhCloseCompartment(
+    _In_ HANDLE CompartmentHandle
+    );
+
+NTSTATUS
+NTAPI
+PhCloseGetIPPhysicalInterfaceForDestination(
+    _Inout_ PHANDLE Handle
+    );
 
 #endif
+

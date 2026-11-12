@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -90,6 +90,12 @@ HWND PhCreateServiceListControl(
     return windowHandle;
 }
 
+/**
+ * Callback function for service list modification events.
+ *
+ * \param Parameter The callback parameter.
+ * \param Context The callback context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI PhServiceListModifiedHandler(
     _In_ PVOID Parameter,
@@ -102,9 +108,16 @@ VOID NTAPI PhServiceListModifiedHandler(
 
     copy = PhAllocateCopy(serviceModifiedData, sizeof(PH_SERVICE_MODIFIED_DATA));
 
-    PostMessage(servicesContext->WindowHandle, WM_PH_SERVICE_PAGE_MODIFIED, 0, (LPARAM)copy);
+    if (!PostMessage(servicesContext->WindowHandle, WM_PH_SERVICE_PAGE_MODIFIED, 0, (LPARAM)copy))
+        PhFree(copy);
 }
 
+/**
+ * Updates the state of the service controls.
+ *
+ * \param hWnd The handle to the dialog.
+ * \param ServiceItem The service item.
+ */
 VOID PhpFixProcessServicesControls(
     _In_ HWND hWnd,
     _In_opt_ PPH_SERVICE_ITEM ServiceItem
@@ -183,6 +196,116 @@ VOID PhpFixProcessServicesControls(
     }
 }
 
+VOID PhpStartSelectedServices(
+    _In_ HWND hWnd,
+    _In_ HWND ListViewHandle
+    )
+{
+    PPH_SERVICE_ITEM *serviceItems;
+    PPH_SERVICE_ITEM *startServices;
+    PPH_SERVICE_ITEM *stopServices;
+    ULONG numberOfItems;
+    ULONG startCount = 0;
+    ULONG stopCount = 0;
+
+    if (!PhGetSelectedListViewItemParams(ListViewHandle, &serviceItems, &numberOfItems))
+        return;
+
+    startServices = PhAllocate(sizeof(PPH_SERVICE_ITEM) * numberOfItems);
+    stopServices = PhAllocate(sizeof(PPH_SERVICE_ITEM) * numberOfItems);
+
+    for (ULONG i = 0; i < numberOfItems; i++)
+    {
+        switch (((PPH_SERVICE_ITEM)serviceItems[i])->State)
+        {
+        case SERVICE_STOPPED:
+            startServices[startCount++] = serviceItems[i];
+            break;
+        case SERVICE_RUNNING:
+        case SERVICE_PAUSED:
+            stopServices[stopCount++] = serviceItems[i];
+            break;
+        }
+    }
+
+    if (stopCount != 0)
+    {
+        PhReferenceObjects(stopServices, stopCount);
+        PhUiStopServices(hWnd, stopServices, stopCount);
+        PhDereferenceObjects(stopServices, stopCount);
+    }
+
+    if (startCount != 0)
+    {
+        PhReferenceObjects(startServices, startCount);
+        PhUiStartServices(hWnd, startServices, startCount);
+        PhDereferenceObjects(startServices, startCount);
+    }
+
+    PhFree(startServices);
+    PhFree(stopServices);
+    PhFree(serviceItems);
+}
+
+VOID PhpPauseSelectedServices(
+    _In_ HWND hWnd,
+    _In_ HWND ListViewHandle
+    )
+{
+    PPH_SERVICE_ITEM *serviceItems;
+    PPH_SERVICE_ITEM *pauseServices;
+    PPH_SERVICE_ITEM *continueServices;
+    ULONG numberOfItems;
+    ULONG pauseCount = 0;
+    ULONG continueCount = 0;
+
+    if (!PhGetSelectedListViewItemParams(ListViewHandle, &serviceItems, &numberOfItems))
+        return;
+
+    pauseServices = PhAllocate(sizeof(PPH_SERVICE_ITEM) * numberOfItems);
+    continueServices = PhAllocate(sizeof(PPH_SERVICE_ITEM) * numberOfItems);
+
+    for (ULONG i = 0; i < numberOfItems; i++)
+    {
+        switch (((PPH_SERVICE_ITEM)serviceItems[i])->State)
+        {
+        case SERVICE_RUNNING:
+            pauseServices[pauseCount++] = serviceItems[i];
+            break;
+        case SERVICE_PAUSED:
+            continueServices[continueCount++] = serviceItems[i];
+            break;
+        }
+    }
+
+    if (pauseCount != 0)
+    {
+        PhReferenceObjects(pauseServices, pauseCount);
+        PhUiPauseServices(hWnd, pauseServices, pauseCount);
+        PhDereferenceObjects(pauseServices, pauseCount);
+    }
+
+    if (continueCount != 0)
+    {
+        PhReferenceObjects(continueServices, continueCount);
+        PhUiContinueServices(hWnd, continueServices, continueCount);
+        PhDereferenceObjects(continueServices, continueCount);
+    }
+
+    PhFree(pauseServices);
+    PhFree(continueServices);
+    PhFree(serviceItems);
+}
+
+/**
+ * Dialog procedure for the services page.
+ *
+ * \param hwndDlg The handle to the dialog.
+ * \param uMsg The message being processed.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return TRUE if the message was handled, otherwise FALSE.
+ */
 INT_PTR CALLBACK PhpServicesPageProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -212,18 +335,18 @@ INT_PTR CALLBACK PhpServicesPageProc(
             context->WindowHandle = hwndDlg;
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
 
-            if (PhTreeWindowFont)
-            {
-                context->TreeNewFont = PhDuplicateFont(PhTreeWindowFont);
-                SetWindowFont(context->ListViewHandle, context->TreeNewFont, FALSE);
-            }
-
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 120, L"Name");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 220, L"Display name");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 220, L"File name");
             PhSetExtendedListView(context->ListViewHandle);
+
+            if (PhTreeWindowFont)
+            {
+                context->TreeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+                SetWindowFont(context->ListViewHandle, context->TreeNewFont, FALSE);
+            }
 
             for (ULONG i = 0; i < context->NumberOfServices; i++)
             {
@@ -253,7 +376,7 @@ INT_PTR CALLBACK PhpServicesPageProc(
 
             if (context->NumberOfServices > 0)
             {
-                SetFocus(context->ListViewHandle);
+                PhSetDialogFocus(hwndDlg, context->ListViewHandle);
                 ListView_SetItemState(context->ListViewHandle, 0, LVNI_SELECTED, LVNI_SELECTED);
                 ListView_EnsureVisible(context->ListViewHandle, 0, FALSE);
                 PhpFixProcessServicesControls(hwndDlg, context->Services[0]);
@@ -310,41 +433,45 @@ INT_PTR CALLBACK PhpServicesPageProc(
             {
             case IDC_START:
                 {
-                    PPH_SERVICE_ITEM serviceItem = PhGetSelectedListViewItemParam(context->ListViewHandle);
+                    // PPH_SERVICE_ITEM serviceItem = PhGetSelectedListViewItemParam(context->ListViewHandle);
+                    //
+                    // if (serviceItem)
+                    // {
+                    //     switch (serviceItem->State)
+                    //     {
+                    //     case SERVICE_RUNNING:
+                    //         PhUiStopService(hwndDlg, serviceItem);
+                    //         break;
+                    //     case SERVICE_PAUSED:
+                    //         PhUiStopService(hwndDlg, serviceItem);
+                    //         break;
+                    //     case SERVICE_STOPPED:
+                    //         PhUiStartService(hwndDlg, serviceItem);
+                    //         break;
+                    //     }
+                    // }
 
-                    if (serviceItem)
-                    {
-                        switch (serviceItem->State)
-                        {
-                        case SERVICE_RUNNING:
-                            PhUiStopService(hwndDlg, serviceItem);
-                            break;
-                        case SERVICE_PAUSED:
-                            PhUiStopService(hwndDlg, serviceItem);
-                            break;
-                        case SERVICE_STOPPED:
-                            PhUiStartService(hwndDlg, serviceItem);
-                            break;
-                        }
-                    }
+                    PhpStartSelectedServices(hwndDlg, context->ListViewHandle);
                 }
                 break;
             case IDC_PAUSE:
                 {
-                    PPH_SERVICE_ITEM serviceItem = PhGetSelectedListViewItemParam(context->ListViewHandle);
+                    // PPH_SERVICE_ITEM serviceItem = PhGetSelectedListViewItemParam(context->ListViewHandle);
+                    //
+                    // if (serviceItem)
+                    // {
+                    //     switch (serviceItem->State)
+                    //     {
+                    //     case SERVICE_RUNNING:
+                    //         PhUiPauseService(hwndDlg, serviceItem);
+                    //         break;
+                    //     case SERVICE_PAUSED:
+                    //         PhUiContinueService(hwndDlg, serviceItem);
+                    //         break;
+                    //     }
+                    // }
 
-                    if (serviceItem)
-                    {
-                        switch (serviceItem->State)
-                        {
-                        case SERVICE_RUNNING:
-                            PhUiPauseService(hwndDlg, serviceItem);
-                            break;
-                        case SERVICE_PAUSED:
-                            PhUiContinueService(hwndDlg, serviceItem);
-                            break;
-                        }
-                    }
+                    PhpPauseSelectedServices(hwndDlg, context->ListViewHandle);
                 }
                 break;
             }
@@ -388,8 +515,16 @@ INT_PTR CALLBACK PhpServicesPageProc(
             }
         }
         break;
-    case WM_DPICHANGED:
+    case WM_DPICHANGED_AFTERPARENT:
         {
+            if (PhTreeWindowFont)
+            {
+                HFONT treeNewFont;
+
+                if (treeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg)))
+                    PhSwapReferenceFont(&context->TreeNewFont, context->ListViewHandle, treeNewFont, TRUE);
+            }
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
@@ -439,9 +574,7 @@ INT_PTR CALLBACK PhpServicesPageProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Go to service", NULL, NULL), ULONG_MAX);
@@ -675,9 +808,8 @@ INT_PTR CALLBACK PhpServicesPageProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     }

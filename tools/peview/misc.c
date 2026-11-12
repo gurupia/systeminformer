@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011
- *     dmex    2019-2022
+ *     dmex    2019-2026
  *
  */
 
@@ -14,6 +14,7 @@
 #include <emenu.h>
 #include <cpysave.h>
 
+#include <shellapi.h>
 #include <shobjidl.h>
 
 DEFINE_GUID(CLSID_ShellLink, 0x00021401, 0x0000, 0x0000, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46);
@@ -31,7 +32,7 @@ PPH_STRING PvResolveShortcutTarget(
 
     targetFileName = NULL;
 
-    if (SUCCEEDED(CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, &shellLink)))
+    if (SUCCEEDED(PhGetClassObject(L"shell32.dll", &CLSID_ShellLink, &IID_IShellLinkW, (PVOID*)&shellLink)))
     {
         if (SUCCEEDED(IShellLinkW_QueryInterface(shellLink, &IID_IPersistFile, &persistFile)))
         {
@@ -354,12 +355,9 @@ VOID PvHandleListViewCommandCopy(
         if (point.x == -1 && point.y == -1)
             PvGetListViewContextMenuPoint(ListViewHandle, &point);
 
-        PhGetSelectedListViewItemParams(ListViewHandle, &listviewItems, &numberOfItems);
-
-        if (numberOfItems != 0)
+        if (PhGetSelectedListViewItemParams(ListViewHandle, &listviewItems, &numberOfItems))
         {
             menu = PhCreateEMenu();
-
             PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"&Copy", NULL, NULL), ULONG_MAX);
             PvInsertCopyListViewEMenuItem(menu, USHRT_MAX, ListViewHandle);
 
@@ -416,8 +414,16 @@ VOID PvConfigTreeBorders(
     {
         PhSetWindowStyle(WindowHandle, WS_BORDER, 0);
         PhSetWindowExStyle(WindowHandle, WS_EX_CLIENTEDGE, 0);
-        SetWindowPos(WindowHandle, NULL, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        PhSetWindowFrameChanged(WindowHandle);
     }
+}
+
+VOID PvConfigListViewFont(
+    _In_ HWND WindowHandle,
+    _In_ HWND ListViewHandle
+    )
+{
+    SetWindowFont(ListViewHandle, GetWindowFont(WindowHandle), TRUE);
 }
 
 #pragma region copied from appsup.c
@@ -883,14 +889,14 @@ VOID PvSetListViewImageList(
         PhImageListSetIconSize(
             listViewImageList,
             2,
-            PhGetDpi(20, dpiValue)
+            PhScaleToDisplay(PV_LISTVIEW_ROW_HEIGHT, dpiValue)
             );
     }
     else
     {
         if (listViewImageList = PhImageListCreate(
             2,
-            PhGetDpi(20, dpiValue),
+            PhScaleToDisplay(PV_LISTVIEW_ROW_HEIGHT, dpiValue),
             ILC_MASK | ILC_COLOR32,
             1,
             1
@@ -908,15 +914,29 @@ VOID PvSetTreeViewImageList(
 {
     HIMAGELIST treeViewImageList;
     LONG dpiValue = PhGetWindowDpi(WindowHandle);
+    // SM_CXSMICON gives 16px, which reads small against the sidebar row height. (dmex)
+    LONG width = PhScaleToDisplay(PV_SIDEBAR_ICON_SIZE, dpiValue);
+    LONG height = PhScaleToDisplay(PV_SIDEBAR_ICON_SIZE, dpiValue);
+    PV_SECTION_ICON_INDEX i;
 
     if (treeViewImageList = PhImageListCreate(
-        2,
-        PhGetDpi(24, dpiValue),
-        ILC_MASK | ILC_COLORDDB,
-        1,
-        1
+        width,
+        height,
+        ILC_MASK | ILC_COLOR32,
+        PV_SECTION_ICON_MAX,
+        4
         ))
     {
+        for (i = PV_SECTION_ICON_GENERAL; i < PV_SECTION_ICON_MAX; i++)
+        {
+            HICON icon = PvGetSectionIcon(i, width, height, dpiValue);
+            if (icon)
+            {
+                PhImageListAddIcon(treeViewImageList, icon);
+                DestroyIcon(icon);
+            }
+        }
+
         // Update the imagelist and return the previous handle.
         if (treeViewImageList = TreeView_SetImageList(
             TreeViewHandle,
@@ -959,4 +979,23 @@ PPH_STRING PvHashBuffer(
     }
 
     return value;
+}
+
+NTSTATUS PvDisableFileTimestampUpdates(
+    _In_ HANDLE FileHandle
+    )
+{
+    NTSTATUS status;
+    FILE_BASIC_INFORMATION basicInfo = { 0 };
+
+    status = PhGetFileBasicInformation(FileHandle, &basicInfo);
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    basicInfo.LastAccessTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+    basicInfo.LastWriteTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+    basicInfo.ChangeTime.QuadPart = FILE_TIMESTAMP_UPDATE_DISABLE;
+
+    return PhSetFileBasicInformation(FileHandle, &basicInfo);
 }

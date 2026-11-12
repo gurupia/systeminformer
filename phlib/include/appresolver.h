@@ -5,12 +5,74 @@
  *
  * Authors:
  *
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef _PH_APPRESOLVER_H
 #define _PH_APPRESOLVER_H
+
+#ifndef __IInitializeWithWindow_FWD_DEFINED__
+#define __IInitializeWithWindow_FWD_DEFINED__
+typedef interface IInitializeWithWindow IInitializeWithWindow;
+#endif
+
+#ifndef __IInitializeWithWindow_INTERFACE_DEFINED__
+#define __IInitializeWithWindow_INTERFACE_DEFINED__
+
+#if defined(__cplusplus) && !defined(CINTERFACE)
+MIDL_INTERFACE("3E68D4BD-7135-4D10-8018-9FB6D9F33FA1")
+IInitializeWithWindow : public IUnknown
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE Initialize(
+        _In_ HWND WindowHandle
+        ) = 0;
+};
+#else
+typedef struct IInitializeWithWindowVtbl
+{
+    BEGIN_INTERFACE
+
+    DECLSPEC_XFGVIRT(IUnknown, QueryInterface)
+    HRESULT (STDMETHODCALLTYPE* QueryInterface)(
+        __RPC__in IInitializeWithWindow* This,
+        __RPC__in REFIID riid,
+        _COM_Outptr_ void** ppvObject);
+
+    DECLSPEC_XFGVIRT(IUnknown, AddRef)
+    ULONG (STDMETHODCALLTYPE* AddRef)(
+        __RPC__in IInitializeWithWindow* This);
+
+    DECLSPEC_XFGVIRT(IUnknown, Release)
+    ULONG (STDMETHODCALLTYPE* Release)(
+        __RPC__in IInitializeWithWindow* This);
+
+    DECLSPEC_XFGVIRT(IInitializeWithWindow, Initialize)
+    HRESULT (STDMETHODCALLTYPE* Initialize)(
+        __RPC__in IInitializeWithWindow* This,
+        _In_ HWND WindowHandle);
+
+    END_INTERFACE
+} IInitializeWithWindowVtbl;
+
+interface IInitializeWithWindow
+{
+    CONST_VTBL struct IInitializeWithWindowVtbl* lpVtbl;
+};
+
+#ifdef COBJMACROS
+#define IInitializeWithWindow_QueryInterface(This,riid,ppvObject) \
+    ((This)->lpVtbl->QueryInterface(This,riid,ppvObject))
+#define IInitializeWithWindow_AddRef(This) \
+    ((This)->lpVtbl->AddRef(This))
+#define IInitializeWithWindow_Release(This) \
+    ((This)->lpVtbl->Release(This))
+#define IInitializeWithWindow_Initialize(This,WindowHandle) \
+    ((This)->lpVtbl->Initialize(This,WindowHandle))
+#endif
+#endif
+#endif
 
 EXTERN_C_START
 
@@ -212,6 +274,56 @@ PhCreateStringFromWindowsRuntimeString(
     _In_ HSTRING String
     );
 
+typedef _Function_class_(PH_ASYNC_OPERATION_CALLBACK)
+VOID NTAPI PH_ASYNC_OPERATION_CALLBACK(
+    _In_ PVOID Operation,
+    _In_ HRESULT Result,
+    _In_opt_ PVOID Context
+    );
+typedef PH_ASYNC_OPERATION_CALLBACK* PPH_ASYNC_OPERATION_CALLBACK;
+
+PHLIBAPI
+HRESULT
+NTAPI
+PhQueueAsyncOperation(
+    _In_ PVOID Operation,
+    _In_ REFIID HandlerId,
+    _In_ PPH_ASYNC_OPERATION_CALLBACK Callback,
+    _In_opt_ PVOID Context,
+    _In_opt_ PLARGE_INTEGER Timeout
+    );
+
+PHLIBAPI
+HRESULT
+NTAPI
+PhWaitForAsyncOperation(
+    _In_ PVOID Operation,
+    _In_ REFIID HandlerId,
+    _In_opt_ PLARGE_INTEGER Timeout,
+    _In_opt_ HANDLE CancelEvent,
+    _Out_ PVOID Result
+    );
+
+PHLIBAPI
+HRESULT
+NTAPI
+PhWaitForAsyncOperationWithProgress(
+    _In_ PVOID Operation,
+    _In_ REFIID HandlerId,
+    _In_opt_ PVOID ProgressHandler,
+    _In_opt_ PLARGE_INTEGER Timeout,
+    _In_opt_ HANDLE CancelEvent,
+    _Out_ PVOID Result
+    );
+
+PHLIBAPI
+HRESULT
+NTAPI
+PhShowWindowsRuntimeOpenFileDialog(
+    _In_ HWND WindowHandle,
+    _Out_ PPH_STRING* FileName
+    );
+
 PHLIBAPI
 HRESULT
 NTAPI
@@ -331,32 +443,32 @@ typedef struct IInspectableVtbl
     BEGIN_INTERFACE
 
     DECLSPEC_XFGVIRT(IUnknown, QueryInterface)
-    HRESULT(STDMETHODCALLTYPE* QueryInterface)(
+    HRESULT (STDMETHODCALLTYPE* QueryInterface)(
         __RPC__in IInspectable* This,
         __RPC__in REFIID riid,
         _COM_Outptr_ void** ppvObject);
 
     DECLSPEC_XFGVIRT(IUnknown, AddRef)
-    ULONG(STDMETHODCALLTYPE* AddRef)(
+    ULONG (STDMETHODCALLTYPE* AddRef)(
         __RPC__in IInspectable* This);
 
     DECLSPEC_XFGVIRT(IUnknown, Release)
-    ULONG(STDMETHODCALLTYPE* Release)(
+    ULONG (STDMETHODCALLTYPE* Release)(
         __RPC__in IInspectable* This);
 
     DECLSPEC_XFGVIRT(IInspectable, GetIids)
-    HRESULT(STDMETHODCALLTYPE* GetIids)(
+    HRESULT (STDMETHODCALLTYPE* GetIids)(
         __RPC__in IInspectable* This,
         __RPC__out ULONG* iidCount,
         __RPC__deref_out_ecount_full_opt(*iidCount) IID** iids);
 
     DECLSPEC_XFGVIRT(IInspectable, GetRuntimeClassName)
-    HRESULT(STDMETHODCALLTYPE* GetRuntimeClassName)(
+    HRESULT (STDMETHODCALLTYPE* GetRuntimeClassName)(
         __RPC__in IInspectable* This,
         __RPC__deref_out_opt HSTRING* className);
 
     DECLSPEC_XFGVIRT(IInspectable, GetTrustLevel)
-    HRESULT(STDMETHODCALLTYPE* GetTrustLevel)(
+    HRESULT (STDMETHODCALLTYPE* GetTrustLevel)(
         __RPC__in IInspectable* This,
         __RPC__out ULONG* trustLevel); // TrustLevel
 

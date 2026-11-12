@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2011-2023
+ *     dmex    2011-2026
  *
  */
 
@@ -13,11 +13,55 @@
 #include <trace.h>
 
 PPH_PLUGIN PluginInstance;
+PH_CALLBACK_REGISTRATION PluginLoadCallbackRegistration;
+PH_CALLBACK_REGISTRATION PluginUnloadCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginMenuItemCallbackRegistration;
 PH_CALLBACK_REGISTRATION MainMenuInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION MainWindowShowingCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
 
+/**
+ * Callback function called when the plugin is loaded.
+ *
+ * \param Parameter Startup parameters.
+ * \param Context Unused.
+ */
+_Function_class_(PH_CALLBACK_FUNCTION)
+VOID NTAPI LoadCallback(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    NOTHING;
+}
+
+/**
+ * Callback function called when the plugin is unloading.
+ *
+ * \param Parameter Unload parameters.
+ * \param Context Unused.
+ */
+_Function_class_(PH_CALLBACK_FUNCTION)
+VOID NTAPI UnloadCallback(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    BOOLEAN SessionEnding = (BOOLEAN)PtrToUlong(Parameter);
+
+    if (SessionEnding)
+        return;
+
+    if (PhGetIntegerSetting(SETTING_NAME_TOAST_NOTIFICATIONS))
+        UpdaterHideActiveToasts();
+}
+
+/**
+ * Callback function called when the main window is showing.
+ *
+ * \param Parameter Unused.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI MainWindowShowingCallback(
     _In_opt_ PVOID Parameter,
@@ -50,6 +94,12 @@ VOID NTAPI MainWindowShowingCallback(
     }
 }
 
+/**
+ * Callback function called when the main menu is initializing.
+ *
+ * \param Parameter A pointer to a PH_PLUGIN_MENU_INFORMATION structure.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI MainMenuInitializingCallback(
     _In_ PVOID Parameter,
@@ -57,43 +107,19 @@ VOID NTAPI MainMenuInitializingCallback(
     )
 {
     PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
-    //PPH_EMENU_ITEM channelMenuItem;
-    //PPH_EMENU_ITEM releaseMenuItem;
-    //PPH_EMENU_ITEM previewMenuItem;
-    //PPH_EMENU_ITEM canaryMenuItem;
-    //PPH_EMENU_ITEM developerMenuItem;
 
-    // Check this menu is the Help menu
-    if (menuInfo->u.MainMenu.SubMenuIndex != PH_MENU_ITEM_LOCATION_HELP)
-        return;
-
-    //channelMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_MENUITEM_SWITCH, L"Switch update &channel", NULL);
-    //PhInsertEMenuItem(channelMenuItem, releaseMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_SWITCH_RELEASE, L"Release", NULL), ULONG_MAX);
-    ////PhInsertEMenuItem(channelMenuItem, previewMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_SWITCH_PREVIEW, L"Preview", NULL), ULONG_MAX);
-    //PhInsertEMenuItem(channelMenuItem, canaryMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_SWITCH_CANARY, L"Canary", NULL), ULONG_MAX);
-    ////PhInsertEMenuItem(channelMenuItem, developerMenuItem = PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_SWITCH_DEVELOPER, L"Developer", NULL), ULONG_MAX);
-    //PhInsertEMenuItem(menuInfo->Menu, channelMenuItem, 0);
-    PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_MENUITEM_UPDATE, L"Check for &updates", NULL), 0);
-
-    //switch (PhGetPhReleaseChannel())
-    //{
-    //case PhReleaseChannel:
-    //    releaseMenuItem->Flags |= (PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK);
-    //    break;
-    ////case PhPreviewChannel:
-    ////    previewMenuItem->Flags |= (PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK);
-    ////    break;
-    //case PhCanaryChannel:
-    //    canaryMenuItem->Flags |= (PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK);
-    //    break;
-    ////case PhDeveloperChannel:
-    ////    developerMenuItem->Flags |= (PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK);
-    ////    break;
-    //default:
-    //    break;
-    //}
+    if (menuInfo->u.MainMenu.SubMenuIndex == PH_MENU_ITEM_LOCATION_HELP)
+    {
+        PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_MENUITEM_UPDATE, L"Check for &updates", NULL), 0);
+    }
 }
 
+/**
+ * Callback function called when a plugin menu item is selected.
+ *
+ * \param Parameter A pointer to a PH_PLUGIN_MENU_ITEM structure.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI MenuItemCallback(
     _In_ PVOID Parameter,
@@ -125,7 +151,7 @@ VOID NTAPI MenuItemCallback(
         return;
     }
 
-    if (PhGetPhReleaseChannel() != channel)
+    if (PhGetBuildReleaseChannel() != channel)
     {
         context = CreateUpdateContext(FALSE);
         context->Channel = channel;
@@ -134,6 +160,12 @@ VOID NTAPI MenuItemCallback(
     }
 }
 
+/**
+ * Callback function called when the options window is initializing.
+ *
+ * \param Parameter A pointer to a PH_PLUGIN_OPTIONS_POINTERS structure.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI ShowOptionsCallback(
     _In_ PVOID Parameter,
@@ -151,6 +183,14 @@ VOID NTAPI ShowOptionsCallback(
         );
 }
 
+/**
+ * The entry point for the plugin DLL.
+ *
+ * \param Instance The instance handle of the DLL.
+ * \param Reason The reason for calling the function.
+ * \param Reserved Unused.
+ * \return LOGICAL TRUE if the initialization was successful, FALSE otherwise.
+ */
 LOGICAL DllMain(
     _In_ HINSTANCE Instance,
     _In_ ULONG Reason,
@@ -166,6 +206,7 @@ LOGICAL DllMain(
             {
                 { IntegerSettingType, SETTING_NAME_AUTO_CHECK, L"1" },
                 { IntegerSettingType, SETTING_NAME_LAST_CHECK, L"0" },
+                { IntegerSettingType, SETTING_NAME_UPDATE_INTERVAL, L"1" },
                 { IntegerPairSettingType, SETTING_NAME_CHANGELOG_WINDOW_POSITION, L"0,0" },
                 { ScalableIntegerPairSettingType, SETTING_NAME_CHANGELOG_WINDOW_SIZE, L"@96|420,250" },
                 { StringSettingType, SETTING_NAME_CHANGELOG_COLUMNS, L"" },
@@ -174,7 +215,9 @@ LOGICAL DllMain(
                 { IntegerSettingType, SETTING_NAME_UPDATE_AVAILABLE, L"0" },
                 { StringSettingType, SETTING_NAME_UPDATE_DATA, L"" },
                 { IntegerSettingType, SETTING_NAME_AUTO_CHECK_PAGE, L"0" },
-                { IntegerSettingType, SETTING_NAME_SHOW_NOTIFICATION, L"0" }
+                { IntegerSettingType, SETTING_NAME_SHOW_NOTIFICATION, L"0" },
+                { IntegerSettingType, SETTING_NAME_TOAST_NOTIFICATIONS, L"0" },
+                { IntegerSettingType, SETTING_NAME_DOWNLOAD_METHOD, L"1" }
             };
 
             WPP_INIT_TRACING(PLUGIN_NAME);
@@ -187,6 +230,18 @@ LOGICAL DllMain(
             info->DisplayName = L"Update Checker";
             info->Description = L"Plugin for checking new System Informer releases via the Help menu.";
 
+            PhRegisterCallback(
+                PhGetPluginCallback(PluginInstance, PluginCallbackLoad),
+                LoadCallback,
+                NULL,
+                &PluginLoadCallbackRegistration
+                );
+            PhRegisterCallback(
+                PhGetPluginCallback(PluginInstance, PluginCallbackUnload),
+                UnloadCallback,
+                NULL,
+                &PluginUnloadCallbackRegistration
+                );
             PhRegisterCallback(
                 PhGetGeneralCallback(GeneralCallbackMainWindowShowing),
                 MainWindowShowingCallback,

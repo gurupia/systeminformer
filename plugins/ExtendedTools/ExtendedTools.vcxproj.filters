@@ -27,6 +27,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="cacheprp.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -150,7 +153,13 @@
     <ClCompile Include="pooltree.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="pwrgrid.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="tpm.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="wbcl.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="npudetails.c">
@@ -172,6 +181,9 @@
       <Filter>Source Files\Neural</Filter>
     </ClCompile>
     <ClCompile Include="tpm_editor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="acpitable.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="smbios.c">
@@ -235,9 +247,6 @@
     </ClInclude>
     <ClInclude Include="PresentMon\TraceConsumer.hpp">
       <Filter>Header Files\PresentMon</Filter>
-    </ClInclude>
-    <ClInclude Include="extension\plugin.h">
-      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="efi_guid_list.h">
       <Filter>Header Files</Filter>

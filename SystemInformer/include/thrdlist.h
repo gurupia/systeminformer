@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -75,6 +75,11 @@ typedef enum _PH_THREAD_TREELIST_MENUITEM
     PH_THREAD_TREELIST_MENUITEM_HIDE_GUITHREADS,
     PH_THREAD_TREELIST_MENUITEM_HIDE_UNKNOWNSTARTADDRESS,
     PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_SUSPENDED,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_DELAYEXECUTION,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_USERREQUEST,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_ALERTBYTHREADID,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_QUEUE,
+    PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_EXECUTIVE,
     PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_GUITHREADS,
     PH_THREAD_TREELIST_MENUITEM_SAVE, // Always last (dmex)
     PH_THREAD_TREELIST_MENUITEM_MAXIMUM
@@ -87,6 +92,8 @@ typedef enum _PH_THREAD_TOKEN_STATE
     PH_THREAD_TOKEN_STATE_ANONYMOUS,
     PH_THREAD_TOKEN_STATE_PRESENT
 } PH_THREAD_TOKEN_STATE;
+
+#define PHTHN_NAME 0x1
 
 // begin_phapppub
 typedef struct _PH_THREAD_NODE
@@ -196,9 +203,14 @@ typedef struct _PH_THREAD_LIST_CONTEXT
             ULONG HideSuspended : 1;
             ULONG HideGuiThreads : 1;
             ULONG HighlightSuspended : 1;
+            ULONG HighlightDelayExecution : 1;
+            ULONG HighlightUserRequest : 1;
+            ULONG HighlightAlertByThreadId : 1;
+            ULONG HighlightQueue : 1;
+            ULONG HighlightExecutive : 1;
             ULONG HighlightGuiThreads : 1;
 
-            ULONG Spare : 25;
+            ULONG Spare : 20;
         };
     };
 } PH_THREAD_LIST_CONTEXT, *PPH_THREAD_LIST_CONTEXT;

@@ -6,12 +6,40 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef _PH_TREENEWP_H
 #define _PH_TREENEWP_H
+
+// Optimize invalidation of selected rows by invalidating only contiguous ranges of
+// selected rows instead of the entire span from first to last selected row. This
+// significantly reduces unnecessary redraws when selections are sparse (e.g., rows
+// 10, 50, 100, 500, 1000 selected would invalidate only 5 rows instead of 990 rows).
+#define PH_TREENEW_OPTIMIZE_SPARSE_SELECTION
+
+// Width (in 96 DPI units) of the accent bar drawn along the left edge of selected rows.
+#define PH_TREENEW_SELECTION_BAR_WIDTH 5
+
+// Alpha (0-255) used to blend a node's custom background color over the themed window background.
+#define TNP_THEME_ROW_BLEND_ALPHA 96
+
+// Build the tree list scrollbars from the native Windows scrollbar class instead of the
+// custom-drawn PhScrollNew class. PhScrollNew is a documented drop-in replacement for
+// WC_SCROLLBAR: both answer the same SBM_* messages (which is all the control uses, via
+// Get/SetScrollInfo with SB_CTL), both notify the parent through WM_VSCROLL/WM_HSCROLL with the
+// control handle in lParam, both are sized from SM_CXVSCROLL/SM_CYHSCROLL, and phlib's theme
+// support already handles either class. So only the registered class name differs.
+//
+// Comment this out to go back to the custom scrollbars.
+//#define PH_TREENEW_NATIVE_SCROLLBARS
+
+#if defined(PH_TREENEW_NATIVE_SCROLLBARS)
+#define PH_TREENEW_SCROLLBAR_CLASSNAME WC_SCROLLBAR
+#else
+#define PH_TREENEW_SCROLLBAR_CLASSNAME PH_SCROLLNEW_CLASSNAME
+#endif
 
 // Important notes about pointers:
 //
@@ -63,6 +91,7 @@ typedef struct _PH_TREENEW_CONTEXT
             ULONG SearchSingleCharMode : 1; // LV style single-character search
             ULONG TooltipUnfolding : 1; // whether the current tooltip is unfolding
             ULONG DoubleBuffered : 1;
+            ULONG BufferedPaintInitialized : 1; // owns a UxTheme buffered paint reference on this thread
             ULONG SuspendUpdateStructure : 1;
             ULONG SuspendUpdateLayout : 1;
             ULONG SuspendUpdateMoveMouse : 1;
@@ -93,6 +122,23 @@ typedef struct _PH_TREENEW_CONTEXT
     LONG FixedWidth; // width of the fixed part of the tree list
     LONG FixedWidthMinimum;
     LONG NormalLeft; // FixedWidth + 1 if there is a fixed column, otherwise 0
+
+    // Layout cache: last geometry written to child windows / tooltips so
+    // redundant MoveWindow / SetWindowPos / TTM_NEWTOOLRECT calls from
+    // PhTnpLayout / PhTnpLayoutHeader can be skipped. Header_Layout itself
+    // is always invoked (cheap HDM_LAYOUT query); its output is what we
+    // compare against the cache before issuing SetWindowPos.
+    RECT VScrollLastRect;
+    RECT HScrollLastRect;
+    RECT FillerBoxLastRect;
+    RECT FixedHeaderLastOutRect;
+    RECT NormalHeaderLastOutRect;
+    RECT TooltipFixedHeaderLastRect;
+    RECT TooltipNormalHeaderLastRect;
+    ULONG VScrollLastVisible : 1;
+    ULONG HScrollLastVisible : 1;
+    ULONG FillerBoxLastVisible : 1;
+    ULONG LayoutCacheUnused : 29;
 
     LONG WheelScrollLines;
     LONG TextMarginPadding;
@@ -146,6 +192,13 @@ typedef struct _PH_TREENEW_CONTEXT
     ULONG SearchStringCount;
     ULONG AllocatedSearchString;
 
+    ULONG VScrollAnchorFlags;
+    PPH_TREENEW_NODE VScrollAnchorNode;
+    ULONG FlatListStructureChanged;
+    ULONG FlatListPreCount;   // flat list count captured before PhTnpRestructureNodes clears the list
+    ULONG FlatListAnchorEnd;  // TRUE when the END scroll anchor was active for the current structural change
+    ULONG VScrollThumbTracking; // TRUE while the user is dragging the vertical scrollbar thumb; suppresses anchoring
+
     ULONG TooltipIndex;
     ULONG TooltipId;
     PPH_STRING TooltipText;
@@ -184,6 +237,17 @@ typedef struct _PH_TREENEW_CONTEXT
 
     LONG EnableRedraw;
     HRGN SuspendUpdateRegion;
+    BOOLEAN PendingFullInvalidate;
+    ULONG DeferredDamageCount;
+    HRGN UpdateScratchRegion; // scratch region reused while redraw is suspended (dmex)
+    HRGN ClipScratchRegion;   // scratch region reused by the row drawing loop (dmex)
+    HRGN PaintScratchRegion;  // scratch region holding the update region of the current paint (dmex)
+
+    // Last values pushed to the scroll bars; used to skip redundant updates. (dmex)
+    LONG VScrollLastMax;
+    LONG HScrollLastMax;
+    ULONG VScrollLastPage;
+    ULONG HScrollLastPage;
 
     PH_STRINGREF EmptyText;
 
@@ -199,7 +263,8 @@ typedef struct _PH_TREENEW_CONTEXT
             ULONG HeaderCustomDraw : 1;
             ULONG HeaderMouseActive : 1;
             ULONG HeaderDragging : 1;
-            ULONG HeaderUnused : 12;
+            ULONG HeaderInvalidatePending : 1;
+            ULONG HeaderUnused : 11;
 
             ULONG FillerBoxVisible : 1;
             ULONG ReorderDragActive : 1;
@@ -228,6 +293,9 @@ typedef struct _PH_TREENEW_CONTEXT
     HANDLE UniqueThread;
 
     ULONG64 ScrollTickCount;
+
+    HDC SelectionScratchDc;
+    HBITMAP SelectionScratchBitmap;
 
     // Drag-reorder support
     ULONG   ReorderSourceIndex;   // source row index in FlatList
@@ -261,6 +329,10 @@ VOID PhTnpDestroyTreeNewContext(
     _In_ PPH_TREENEW_CONTEXT Context
     );
 
+VOID PhTnpInvalidateLayoutCache(
+    _In_ PPH_TREENEW_CONTEXT Context
+    );
+
 // Event handlers
 
 BOOLEAN PhTnpOnCreate(
@@ -271,7 +343,8 @@ BOOLEAN PhTnpOnCreate(
 
 VOID PhTnpOnSize(
     _In_ HWND WindowHandle,
-    _In_ PPH_TREENEW_CONTEXT Context
+    _In_ PPH_TREENEW_CONTEXT Context,
+    _In_ ULONG Request
     );
 
 VOID PhTnpOnSetFont(
@@ -494,7 +567,62 @@ VOID PhTnpSendMouseEvent(
     _In_ ULONG VirtualKeys
     );
 
+//
+// Scroll Anchoring
+//
+
+// Scroll anchoring is when a scrolling control automatically changes the position
+// of its viewport to prevent the content from visibly jumping.
+//
+// The jump is caused by a change in the content's layout. The scroll anchor provider
+// applies a shift after observing a change in the position of an anchor element within the content.
+//
+// The treenew control now snapshots the current viewport anchor before structural updates,
+// restores it after the flat list is rebuilt, and special-cases the start/end edges
+// so bottom-pinned views track appended content.
+//
+// Caveat: middle-of-list anchoring is pointer-identity based.
+//
+// It works when callers keep node objects stable across refreshes,
+// but if a view destroys and recreates all nodes on each rebuild, only the start / end
+// edge anchors will function correctly. Node-based anchoring requires that the same
+// PPH_TREENEW_NODE pointer remains valid and present in the new flat list.
+//
+// Source for expected behavior :
+// https://learn.microsoft.com/en-us/uwp/api/windows.ui.xaml.controls.iscrollanchorprovider
+
+#define TREENEW_VSCROLL_ANCHOR 1
+#define PH_TREENEW_VSCROLL_ANCHOR_PENDING 0x1
+#define PH_TREENEW_VSCROLL_ANCHOR_START 0x2
+#define PH_TREENEW_VSCROLL_ANCHOR_END 0x4
+#define PH_TREENEW_VSCROLL_ANCHOR_NODE 0x8
+
+LONG PhTnpGetMaxVScrollPosition(
+    _In_ ULONG Count,
+    _In_ LONG RowsPerPage
+    );
+
+_Success_(return)
+BOOLEAN PhTnpFindFlatListNode(
+    _In_ PPH_TREENEW_CONTEXT Context,
+    _In_ PPH_TREENEW_NODE Node,
+    _Out_ PULONG Index
+    );
+
+VOID PhTnpPrepareVScrollAnchor(
+    _In_ PPH_TREENEW_CONTEXT Context
+    );
+
+_Success_(return)
+BOOLEAN PhTnpGetAnchoredVScrollPosition(
+    _In_ PPH_TREENEW_CONTEXT Context,
+    _In_ LONG RowsPerPage,
+    _Out_ PLONG Position
+    );
+
+//
 // Columns
+//
 
 PPH_TREENEW_COLUMN PhTnpLookupColumnById(
     _In_ PPH_TREENEW_CONTEXT Context,
@@ -553,6 +681,12 @@ VOID PhTnpDeleteColumnHeader(
 
 VOID PhTnpUpdateColumnHeaders(
     _In_ PPH_TREENEW_CONTEXT Context
+    );
+
+VOID PhTnpUpdateColumnWidth(
+    _In_ PPH_TREENEW_CONTEXT Context,
+    _In_ PPH_TREENEW_COLUMN Column,
+    _In_ LONG Width
     );
 
 VOID PhTnpUpdateColumnHeadersDpiChanged(
@@ -727,6 +861,11 @@ VOID PhTnpScroll(
     _In_ LONG DeltaX
     );
 
+LONG PhTnpApplyHScrollPosition(
+    _In_ PPH_TREENEW_CONTEXT Context,
+    _In_ LONG Position
+    );
+
 VOID PhTnpProcessScroll(
     _In_ PPH_TREENEW_CONTEXT Context,
     _In_ LONG DeltaRows,
@@ -770,6 +909,7 @@ VOID PhTnpDrawDivider(
     );
 
 VOID PhTnpDrawPlusMinusGlyph(
+    _In_ PPH_TREENEW_CONTEXT Context,
     _In_ HDC hdc,
     _In_ PRECT Rect,
     _In_ BOOLEAN Plus
@@ -786,7 +926,19 @@ VOID PhTnpDrawThemedBorder(
     _In_ HDC hdc
     );
 
+BOOLEAN PhTnpSelectionCreateBufferedContext(
+    _In_ PPH_TREENEW_CONTEXT Context
+    );
+
+VOID PhTnpSelectionDestroyBufferedContext(
+    _In_ PPH_TREENEW_CONTEXT Context
+    );
+
 // Tooltips
+
+VOID PhTnpInitializeHeaders(
+    _In_ PPH_TREENEW_CONTEXT Context
+    );
 
 VOID PhTnpInitializeTooltips(
     _In_ PPH_TREENEW_CONTEXT Context
@@ -903,12 +1055,6 @@ VOID PhTnpDestroyBufferedContext(
     );
 
 // Support functions
-
-_Success_(return)
-BOOLEAN PhTnpGetMessagePos(
-    _In_ HWND WindowHandle,
-    _Out_ PPOINT ClientPoint
-    );
 
 _Success_(return)
 BOOLEAN PhTnpGetColumnHeaderText(

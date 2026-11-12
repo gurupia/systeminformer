@@ -5,138 +5,372 @@
  *
  * Authors:
  *
- *     dmex
+ *     dmex    2017-2026
  *
  */
 
 #include "setup.h"
-#include "..\thirdparty\miniz\miniz.h"
 
-NTSTATUS SetupUseExistingKsi(
-    _In_ PPH_STRING FileName,
-    _In_ PVOID Buffer,
-    _In_ ULONG BufferLength
+VOID SetupSetProgressMarquee(
+    _In_ PPH_SETUP_CONTEXT Context,
+    _In_ BOOLEAN Enable
     )
 {
-    NTSTATUS status;
-    PPH_STRING oldFile;
-    PH_HASH_CONTEXT hashContext;
-    BYTE inputHash[256 / 8];
-    BYTE oldHash[256/ 8];
+    HWND progressHandle;
 
-    oldFile = PhConcatStringRefZ(&FileName->sr, L"-old");
+    if (!Context->DialogHandle)
+        return;
 
-    if (!PhDoesFileExistWin32(PhGetString(oldFile)))
+    if (progressHandle = GetDlgItem(Context->DialogHandle, IDC_PROGRESS))
     {
-        status = STATUS_OBJECT_NAME_NOT_FOUND;
-        goto CleanupExit;
+        SendMessage(progressHandle, PBM_SETMARQUEE, Enable, 0);
     }
-
-    if (!NT_SUCCESS(status = PhInitializeHash(&hashContext, Sha256HashAlgorithm)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = PhUpdateHash(&hashContext, Buffer, BufferLength)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = PhFinalHash(&hashContext, inputHash, ARRAYSIZE(inputHash), NULL)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = SetupHashFile(oldFile, oldHash)))
-        goto CleanupExit;
-
-    if (!RtlEqualMemory(inputHash, oldHash, ARRAYSIZE(inputHash)))
+    else
     {
-        status = STATUS_FAIL_CHECK;
-        goto CleanupExit;
+        SendMessage(Context->DialogHandle, TDM_SET_MARQUEE_PROGRESS_BAR, Enable, 0);
+
+        if (Enable)
+            SendMessage(Context->DialogHandle, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 1);
     }
-
-    if (!NT_SUCCESS(status = PhMoveFileWin32(PhGetString(oldFile), PhGetString(FileName), TRUE)))
-        goto CleanupExit;
-
-CleanupExit:
-
-    PhClearReference(&oldFile);
-
-    return status;
 }
 
-NTSTATUS SetupUpdateKsi(
-    _Inout_ PPH_SETUP_CONTEXT Context,
-    _In_ PPH_STRING FileName,
-    _In_ PVOID Buffer,
-    _In_ ULONG BufferLength
+VOID SetupSetProgressText(
+    _In_ PPH_SETUP_CONTEXT Context,
+    _In_opt_ PCWSTR MainInstruction,
+    _In_opt_ PCWSTR Content
     )
 {
-    NTSTATUS status;
-    PH_HASH_CONTEXT hashContext;
-    BYTE inputHash[256 / 8];
-    BYTE existingHash[256/ 8];
-    PPH_STRING oldFile = NULL;
+    HWND statusHandle;
 
-    if (!NT_SUCCESS(status = PhInitializeHash(&hashContext, Sha256HashAlgorithm)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = PhUpdateHash(&hashContext, Buffer, BufferLength)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = PhFinalHash(&hashContext, inputHash, ARRAYSIZE(inputHash), NULL)))
-        goto CleanupExit;
-    if (!NT_SUCCESS(status = SetupHashFile(FileName, existingHash)))
-        goto CleanupExit;
+    if (!Context->DialogHandle)
+        return;
 
-    if (RtlEqualMemory(inputHash, existingHash, ARRAYSIZE(inputHash)))
+    if (statusHandle = GetDlgItem(Context->DialogHandle, IDC_STATUS))
     {
-        status = STATUS_SUCCESS;
-        goto CleanupExit;
+        if (MainInstruction)
+            SetWindowText(statusHandle, MainInstruction);
     }
-
-    Context->NeedsReboot = TRUE;
-
-    oldFile = PhConcatStringRefZ(&FileName->sr, L"-old");
-    PhDeleteFileWin32(PhGetString(oldFile));
-
-    if (!NT_SUCCESS(status = PhMoveFileWin32(PhGetString(FileName), PhGetString(oldFile), TRUE)))
-        goto CleanupExit;
-
-    MoveFileEx(PhGetString(oldFile), NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-
-    if (!NT_SUCCESS(status = SetupOverwriteFile(FileName, Buffer, BufferLength)))
-        goto CleanupExit;
-
-CleanupExit:
-
-    PhClearReference(&oldFile);
-
-    return status;
+    else
+    {
+        if (MainInstruction)
+            SendMessage(Context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_MAIN_INSTRUCTION, (LPARAM)MainInstruction);
+        if (Content)
+            SendMessage(Context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)Content);
+    }
 }
 
-USHORT SetupGetCurrentArchitecture(
-    VOID
+VOID SetupSetProgressValue(
+    _In_ PPH_SETUP_CONTEXT Context,
+    _In_ ULONG Value
     )
 {
-    static __typeof__(&IsWow64Process2) IsWow64Process_I = NULL;
-    USHORT processMachine;
-    USHORT nativeMachine;
-    SYSTEM_INFO info;
+    HWND progressHandle;
 
-    if (!IsWow64Process_I)
+    if (!Context->DialogHandle)
+        return;
+
+    if (progressHandle = GetDlgItem(Context->DialogHandle, IDC_PROGRESS))
     {
-        IsWow64Process_I = PhGetModuleProcAddress(L"kernel32.dll", "IsWow64Process2");
+        SendMessage(progressHandle, PBM_SETMARQUEE, FALSE, 0);
+        SendMessage(progressHandle, PBM_SETPOS, Value, 0);
     }
-
-    if (IsWow64Process_I && IsWow64Process_I(NtCurrentProcess(), &processMachine, &nativeMachine))
+    else
     {
-        switch (nativeMachine)
+        SendMessage(Context->DialogHandle, TDM_SET_MARQUEE_PROGRESS_BAR, FALSE, 0);
+        SendMessage(Context->DialogHandle, TDM_SET_PROGRESS_BAR_POS, (WPARAM)Value, 0);
+    }
+}
+
+/**
+ * Checks if the installed file is identical to the staged file by comparing their SHA-256 hashes.
+ *
+ * \param InstalledFileName The installed file name.
+ * \param StagedFileName The staged file name.
+ * \return TRUE if the files are identical, otherwise FALSE.
+ */
+BOOLEAN SetupIsFileUnchanged(
+    _In_ PPH_STRING InstalledFileName,
+    _In_ PPH_STRING StagedFileName
+    )
+{
+    BYTE installedHash[256 / 8];
+    BYTE stagedHash[256 / 8];
+
+    if (!PhDoesFileExistWin32(PhGetString(InstalledFileName)))
+        return FALSE;
+
+    return
+        NT_SUCCESS(SetupHashFile(InstalledFileName, installedHash)) &&
+        NT_SUCCESS(SetupHashFile(StagedFileName, stagedHash)) &&
+        RtlEqualMemory(installedHash, stagedHash, sizeof(installedHash));
+}
+
+typedef struct _SETUP_STAGE_CONTEXT
+{
+    PPH_SETUP_CONTEXT Setup;
+    PPH_STRING StagingRoot; // with a trailing separator
+    PPH_STRING InstallRoot; // with a trailing separator
+    PPH_STRING RelativePath; // empty, or a directory path with a trailing separator
+    PPH_LIST StagedFiles;
+    NTSTATUS Status;
+} SETUP_STAGE_CONTEXT, *PSETUP_STAGE_CONTEXT;
+
+/**
+ * Callback for moving the extracted files to their .new names next to the installed files.
+ *
+ * \param RootDirectory Handle to the parent directory.
+ * \param Information Pointer to a FILE_DIRECTORY_INFORMATION structure for the current entry.
+ * \param Context The stage context.
+ * \return TRUE to continue enumeration, FALSE to stop.
+ */
+_Function_class_(PH_ENUM_DIRECTORY_FILE)
+static BOOLEAN SetupStageFilesCallback(
+    _In_ HANDLE RootDirectory,
+    _In_ PFILE_DIRECTORY_INFORMATION Information,
+    _In_ PVOID Context
+    )
+{
+    PSETUP_STAGE_CONTEXT context = Context;
+    PH_STRINGREF fileName;
+    PPH_STRING relativeName;
+    PPH_STRING stagedName;
+    PPH_STRING finalName;
+
+    if (!NT_SUCCESS(context->Status))
+        return FALSE;
+
+    fileName.Buffer = Information->FileName;
+    fileName.Length = Information->FileNameLength;
+
+    if (PATH_IS_WIN32_RELATIVE_PREFIX(&fileName))
+        return TRUE;
+
+    relativeName = PhConcatStringRef2(&context->RelativePath->sr, &fileName);
+    stagedName = PhConcatStringRef2(&context->StagingRoot->sr, &relativeName->sr);
+    finalName = PhConcatStringRef2(&context->InstallRoot->sr, &relativeName->sr);
+
+    if (FlagOn(Information->FileAttributes, FILE_ATTRIBUTE_DIRECTORY))
+    {
+        if (!FlagOn(Information->FileAttributes, FILE_ATTRIBUTE_REPARSE_POINT))
         {
-        case IMAGE_FILE_MACHINE_I386:
-            return PROCESSOR_ARCHITECTURE_INTEL;
-        case IMAGE_FILE_MACHINE_AMD64:
-            return PROCESSOR_ARCHITECTURE_AMD64;
-        case IMAGE_FILE_MACHINE_ARM64:
-            return PROCESSOR_ARCHITECTURE_ARM64;
+            SETUP_STAGE_CONTEXT child = *context;
+            HANDLE directoryHandle;
+
+            child.RelativePath = PhConcatStringRef2(&relativeName->sr, &PhNtPathSeparatorString);
+
+            if (NT_SUCCESS(context->Status = PhCreateFileWin32(
+                &directoryHandle,
+                PhGetString(stagedName),
+                FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                FILE_ATTRIBUTE_DIRECTORY,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT
+                )))
+            {
+                PhEnumDirectoryFile(directoryHandle, NULL, SetupStageFilesCallback, &child);
+                NtClose(directoryHandle);
+
+                context->Status = child.Status;
+            }
+
+            PhDereferenceObject(child.RelativePath);
+        }
+    }
+    else
+    {
+        PPH_STRING sessionId = SetupGetSessionId(context->Setup);
+        PPH_STRING newName;
+
+        if (PhIsNullOrEmptyString(sessionId))
+        {
+            context->Status = STATUS_NO_MEMORY;
+        }
+        else if (NT_SUCCESS(context->Status = PhCreateDirectoryFullPathWin32(&finalName->sr)))
+        {
+            if (
+                PhEndsWithString2(finalName, L"\\ksi.dll", TRUE) &&
+                SetupIsFileUnchanged(finalName, stagedName)
+                )
+            {
+                // Don't replace an identical driver interface library that may still be loaded.
+                PhDeleteFileWin32(PhGetString(stagedName));
+            }
+            else
+            {
+                newName = PhConcatStrings(4, PhGetString(finalName), L".", PhGetString(sessionId), L".new");
+
+                if (NT_SUCCESS(context->Status = PhMoveFileWin32(PhGetString(stagedName), PhGetString(newName), FALSE)))
+                {
+                    PhAddItemList(context->StagedFiles, PhReferenceObject(finalName));
+                }
+
+                PhDereferenceObject(newName);
+            }
         }
     }
 
-    GetNativeSystemInfo(&info);
+    PhDereferenceObject(finalName);
+    PhDereferenceObject(stagedName);
+    PhDereferenceObject(relativeName);
 
-    return info.wProcessorArchitecture;
+    return NT_SUCCESS(context->Status);
 }
 
+
+/**
+ * Commits staged files to their final file names.
+ *
+ * \param Context The setup context.
+ * \param StagedFiles The staged files list.
+ * \return Successful or errant status.
+ */
+NTSTATUS SetupExtractBuildCommitFiles(
+    _In_ PPH_SETUP_CONTEXT Context,
+    _In_ PPH_LIST StagedFiles
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    for (ULONG i = 0; i < StagedFiles->Count; i++)
+    {
+        PPH_STRING file = StagedFiles->Items[i];
+        ULONG64 percent = 100;
+        PH_FORMAT format[2];
+        WCHAR string[MAX_PATH];
+        PPH_STRING baseName = PhGetBaseName(file);
+
+        if (StagedFiles->Count)
+        {
+            percent = 0;
+            PhMultiplyDivide64(i + 1, 100, StagedFiles->Count, &percent);
+        }
+
+        if (!NT_SUCCESS(status = SetupCommitFile(Context, file)))
+        {
+            if (baseName) PhDereferenceObject(baseName);
+            return status;
+        }
+
+        PhInitFormatS(&format[0], L"Finalizing: ");
+        PhInitFormatS(&format[1], PhGetStringOrEmpty(baseName));
+
+        if (PhFormatToBuffer(format, 2, string, sizeof(string), NULL))
+        {
+            SetupSetProgressText(Context, string, NULL);
+        }
+
+        SetupSetProgressValue(Context, (ULONG)percent);
+
+        if (baseName)
+            PhDereferenceObject(baseName);
+    }
+
+    return status;
+}
+
+
+/**
+ * Finalizes the files committed by SetupExtractBuild (removes their .bak backups).
+ *
+ * \param Context The setup context.
+ */
+VOID SetupFinalizeStagedFiles(
+    _In_ PPH_SETUP_CONTEXT Context
+    )
+{
+    PPH_LIST stagedFiles = Context->SetupStagedFiles;
+
+    if (!stagedFiles)
+        return;
+
+    Context->SetupStagedFiles = NULL;
+
+    for (ULONG i = 0; i < stagedFiles->Count; i++)
+    {
+        SetupFinalizeFile(Context, stagedFiles->Items[i]);
+        PhDereferenceObject(stagedFiles->Items[i]);
+    }
+
+    PhDereferenceObject(stagedFiles);
+}
+
+/**
+ * Rolls back the files committed by SetupExtractBuild (restores their .bak backups).
+ *
+ * \param Context The setup context.
+ */
+VOID SetupRollbackStagedFiles(
+    _In_ PPH_SETUP_CONTEXT Context
+    )
+{
+    PPH_LIST stagedFiles = Context->SetupStagedFiles;
+
+    if (!stagedFiles)
+        return;
+
+    Context->SetupStagedFiles = NULL;
+
+    for (ULONG i = 0; i < stagedFiles->Count; i++)
+    {
+        SetupRollbackFile(Context, stagedFiles->Items[i]);
+        PhDereferenceObject(stagedFiles->Items[i]);
+    }
+
+    PhDereferenceObject(stagedFiles);
+}
+
+/**
+ * Converts a 7-Zip wrapper result into an NTSTATUS.
+ *
+ * \param Result The SI7Z_RESULT returned by the wrapper.
+ * \return The corresponding status.
+ */
+static NTSTATUS SetupStatusFromSevenZipResult(
+    _In_ SI7Z_RESULT Result
+    )
+{
+    switch (Result)
+    {
+    case SI7Z_OK:
+        return STATUS_SUCCESS;
+    case SI7Z_ERROR_INVALID_ARGUMENT:
+        return STATUS_INVALID_PARAMETER;
+    case SI7Z_ERROR_UNSUPPORTED_FORMAT:
+    case SI7Z_ERROR_OPEN_FAILED:
+        return STATUS_INVALID_IMAGE_FORMAT;
+    case SI7Z_ERROR_UNSUPPORTED_METHOD:
+    case SI7Z_ERROR_NOT_IMPLEMENTED:
+        return STATUS_NOT_SUPPORTED;
+    case SI7Z_ERROR_OUT_OF_MEMORY:
+        return STATUS_NO_MEMORY;
+    case SI7Z_ERROR_ITEM_NOT_FOUND:
+        return STATUS_NOT_FOUND;
+    case SI7Z_ERROR_DATA_ERROR:
+        return STATUS_DATA_ERROR;
+    case SI7Z_ERROR_UNSAFE_PATH:
+        return STATUS_OBJECT_PATH_SYNTAX_BAD;
+    case SI7Z_ERROR_WRITE_FAILED:
+        return STATUS_CANNOT_MAKE;
+    default:
+        return STATUS_UNSUCCESSFUL;
+    }
+}
+
+/**
+ * Extracts the embedded build archive to the installation directory.
+ *
+ * The archive is extracted to a staging directory, each file is moved to
+ * "file.<session>.new" next to its final name and then committed with
+ * SetupCommitFile (the installed file is renamed to "file.<session>.bak"). A failure rolls
+ * every committed file back. On success the backups are finalized, unless
+ * SetupDeferFinalize is set, in which case the caller must call SetupFinalizeStagedFiles or
+ * SetupRollbackStagedFiles.
+ *
+ * \param Context The setup context.
+ * \return Successful or errant status.
+ */
+_Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS CALLBACK SetupExtractBuild(
     _In_ PPH_SETUP_CONTEXT Context
     )
@@ -144,244 +378,185 @@ NTSTATUS CALLBACK SetupExtractBuild(
     NTSTATUS status = STATUS_SUCCESS;
     ULONG resourceLength;
     PVOID resourceBuffer = NULL;
-    ULONG64 totalLength = 0;
-    ULONG64 currentLength = 0;
-    mz_zip_archive zipFileArchive = { 0 };
-    PPH_STRING extractPath = NULL;
-    USHORT nativeArchitecture;
+    PVOID zipBuffer = NULL;
+    SIZE_T zipBufferLength = 0;
+    PPH_STRING installRoot = NULL;
+    PPH_STRING stagingRoot = NULL;
+    PPH_STRING sessionId;
+    SETUP_STAGE_CONTEXT stageContext;
+    HANDLE directoryHandle;
 
-    status = PhLoadResource(
-        NtCurrentImageBase(),
-        MAKEINTRESOURCE(IDR_BIN_DATA),
-        RT_RCDATA,
-        &resourceLength,
-        &resourceBuffer
-        );
-
-    if (!NT_SUCCESS(status))
-        return status;
-
-    if (!mz_zip_reader_init_mem(&zipFileArchive, resourceBuffer, resourceLength, 0))
+    if (Context->SetupBuildZipPath)
     {
-        return STATUS_INVALID_BUFFER_SIZE;
-    }
-    //if (!(status = mz_zip_reader_init_mem(&zipFileArchive, Context->ZipBuffer, Context->ZipBufferLength, 0)))
-    //{
-    //    Context->LastStatus = STATUS_OBJECT_PATH_NOT_FOUND;
-    //    goto CleanupExit;
-    //}
+        HANDLE zipFileHandle = NULL;
+        LARGE_INTEGER zipFileSize;
+        ULONG bytesRead;
 
-    nativeArchitecture = SetupGetCurrentArchitecture();
-
-    for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&zipFileArchive); i++)
-    {
-        mz_zip_archive_file_stat zipFileStat;
-        PPH_STRING fileName;
-
-        if (!mz_zip_reader_file_stat(&zipFileArchive, i, &zipFileStat))
-            continue;
-
-        fileName = PhConvertUtf8ToUtf16(zipFileStat.m_filename);
-
-        if (PhFindStringInString(fileName, 0, L"SystemInformer.exe.settings.xml") != SIZE_MAX)
-            continue;
-        if (PhFindStringInString(fileName, 0, L"usernotesdb.xml") != SIZE_MAX)
-            continue;
-
-        if (nativeArchitecture == PROCESSOR_ARCHITECTURE_AMD64)
-        {
-            if (PhStartsWithString2(fileName, L"i386\\", TRUE) ||
-                PhStartsWithString2(fileName, L"arm64\\", TRUE))
-                continue;
-        }
-        else if (nativeArchitecture == PROCESSOR_ARCHITECTURE_ARM64)
-        {
-            if (PhStartsWithString2(fileName, L"i386\\", TRUE) ||
-                PhStartsWithString2(fileName, L"amd64\\", TRUE))
-                continue;
-        }
-        else
-        {
-            if (PhStartsWithString2(fileName, L"amd64\\", TRUE) ||
-                PhStartsWithString2(fileName, L"arm64\\", TRUE))
-                continue;
-        }
-
-        totalLength += zipFileStat.m_uncomp_size;
-    }
-
-    SendMessage(Context->DialogHandle, TDM_SET_MARQUEE_PROGRESS_BAR, FALSE, 0);
-
-    for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&zipFileArchive); i++)
-    {
-        PVOID buffer = NULL;
-        size_t zipFileBufferLength = 0;
-        PPH_STRING fileName = NULL;
-        mz_ulong zipFileCrc32 = 0;
-        mz_zip_archive_file_stat zipFileStat;
-
-        if (!mz_zip_reader_file_stat(&zipFileArchive, i, &zipFileStat))
-            continue;
-
-        fileName = PhConvertUtf8ToUtf16(zipFileStat.m_filename);
-
-        if (PhFindStringInString(fileName, 0, L"SystemInformer.exe.settings.xml") != SIZE_MAX)
-            continue;
-        if (PhFindStringInString(fileName, 0, L"usernotesdb.xml") != SIZE_MAX)
-            continue;
-
-        if (nativeArchitecture == PROCESSOR_ARCHITECTURE_AMD64)
-        {
-            if (PhStartsWithString2(fileName, L"i386\\", TRUE) ||
-                PhStartsWithString2(fileName, L"arm64\\", TRUE))
-                continue;
-
-            if (PhStartsWithString2(fileName, L"amd64\\", TRUE))
-                PhMoveReference(&fileName, PhSubstring(fileName, 6, (fileName->Length / sizeof(WCHAR)) - 6));
-        }
-        else if (nativeArchitecture == PROCESSOR_ARCHITECTURE_ARM64)
-        {
-            if (PhStartsWithString2(fileName, L"i386\\", TRUE) ||
-                PhStartsWithString2(fileName, L"amd64\\", TRUE))
-                continue;
-
-            if (PhStartsWithString2(fileName, L"arm64\\", TRUE))
-                PhMoveReference(&fileName, PhSubstring(fileName, 6, (fileName->Length / sizeof(WCHAR)) - 6));
-        }
-        else
-        {
-            if (PhStartsWithString2(fileName, L"amd64\\", TRUE) ||
-                PhStartsWithString2(fileName, L"arm64\\", TRUE))
-                continue;
-
-            if (PhStartsWithString2(fileName, L"i386\\", TRUE))
-                PhMoveReference(&fileName, PhSubstring(fileName, 5, (fileName->Length / sizeof(WCHAR)) - 5));
-        }
-
-        if (!(buffer = mz_zip_reader_extract_to_heap(&zipFileArchive, zipFileStat.m_file_index, &zipFileBufferLength, 0)))
-        {
-            status = STATUS_NO_MEMORY;
-            goto CleanupExit;
-        }
-
-        if ((zipFileCrc32 = mz_crc32(zipFileCrc32, buffer, zipFileBufferLength)) != zipFileStat.m_crc32)
-        {
-            status = STATUS_CRC_ERROR;
-            goto CleanupExit;
-        }
-
-        extractPath = PhConcatStringRef3(
-            &Context->SetupInstallPath->sr,
-            &PhNtPathSeparatorString,
-            &fileName->sr
+        status = PhCreateFileWin32Ex(
+            &zipFileHandle,
+            PhGetString(Context->SetupBuildZipPath),
+            FILE_GENERIC_READ,
+            NULL,
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            NULL
             );
 
-        if (!NT_SUCCESS(status = PhCreateDirectoryFullPathWin32(&extractPath->sr)))
+        if (NT_SUCCESS(status))
         {
+            status = PhGetFileSize(zipFileHandle, &zipFileSize);
+        }
+
+        if (NT_SUCCESS(status) && (zipFileSize.QuadPart <= 0 || zipFileSize.QuadPart > SETUP_MAX_DOWNLOAD_SIZE))
+        {
+            status = STATUS_FILE_TOO_LARGE;
+        }
+
+        if (NT_SUCCESS(status))
+        {
+            zipBufferLength = (SIZE_T)zipFileSize.QuadPart;
+            status = PhAllocateHeap(zipBufferLength, &zipBuffer);
+            if (!NT_SUCCESS(status))
+                goto CleanupExit;
+
+            status = PhReadFile(
+                zipFileHandle,
+                zipBuffer,
+                (ULONG)zipBufferLength,
+                NULL,
+                &bytesRead
+                );
+
+            if (NT_SUCCESS(status) && bytesRead != zipBufferLength)
+            {
+                status = STATUS_END_OF_FILE;
+            }
+        }
+
+        if (zipFileHandle)
+            NtClose(zipFileHandle);
+
+        if (!NT_SUCCESS(status))
+            goto CleanupExit;
+    }
+    else
+    {
+        status = PhLoadResource(
+            NtCurrentImageBase(),
+            MAKEINTRESOURCE(IDR_BIN_DATA),
+            RT_RCDATA,
+            &resourceLength,
+            &resourceBuffer
+            );
+
+        if (!NT_SUCCESS(status))
+            return status;
+
+        zipBufferLength = resourceLength;
+        zipBuffer = PhAllocateSafe(zipBufferLength);
+        if (!zipBuffer) return STATUS_NO_MEMORY;
+
+        if (!PhBase64Decode((PCSTR)resourceBuffer, resourceLength, zipBuffer, zipBufferLength, &zipBufferLength))
+        {
+            status = STATUS_INVALID_BUFFER_SIZE;
             goto CleanupExit;
         }
-
-        // TODO: Backup file and restore if the setup fails.
-        //{
-        //    PPH_STRING backupFilePath;
-        //
-        //    backupFilePath = PhConcatStrings(
-        //        4,
-        //        PhGetString(Context->SetupInstallPath),
-        //        L"\\",
-        //        PhGetString(fileName),
-        //        L".bak"
-        //        );
-        //
-        //    MoveFile(extractPath->Buffer, backupFilePath->Buffer);
-        //
-        //    PhDereferenceObject(backupFilePath);
-        //}
-
-        {
-            ULONG attempts = 5;
-            BOOLEAN updateKsiAttempt;
-
-            do
-            {
-                updateKsiAttempt = FALSE;
-
-                if (PhEndsWithString2(extractPath, L"\\ksi.dll", FALSE))
-                {
-                    if (NT_SUCCESS(SetupUseExistingKsi(extractPath, buffer, zipFileBufferLength)))
-                        break;
-                    if (NT_SUCCESS(SetupOverwriteFile(extractPath, buffer, zipFileBufferLength)))
-                        break;
-                    if (NT_SUCCESS(SetupUpdateKsi(Context, extractPath, buffer, zipFileBufferLength)))
-                        break;
-
-                    updateKsiAttempt = TRUE;
-                }
-                else
-                {
-                    if (NT_SUCCESS(SetupOverwriteFile(extractPath, buffer, zipFileBufferLength)))
-                        break;
-                }
-
-                PhDelayExecution(1000); // Wait 1 second and try again
-
-            } while (--attempts);
-
-            if (updateKsiAttempt)
-            {
-                status = STATUS_DEVICE_BUSY;
-                goto CleanupExit;
-            }
-        }
-
-        currentLength += zipFileBufferLength;
-
-        {
-            ULONG64 percent = 100 * currentLength / totalLength;
-            PH_FORMAT format[7];
-            WCHAR string[MAX_PATH];
-            PPH_STRING baseName = PhGetBaseName(extractPath);
-
-            PhInitFormatS(&format[0], L"Extracting: ");
-            PhInitFormatS(&format[1], PhGetStringOrEmpty(baseName));
-
-            if (PhFormatToBuffer(format, 2, string, sizeof(string), NULL))
-            {
-                SendMessage(Context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_MAIN_INSTRUCTION, (LPARAM)string);
-            }
-
-            PhInitFormatS(&format[0], L"Progress: ");
-            PhInitFormatSize(&format[1], currentLength);
-            PhInitFormatS(&format[2], L" of ");
-            PhInitFormatSize(&format[3], totalLength);
-            PhInitFormatS(&format[4], L" (");
-            PhInitFormatI64U(&format[5], percent);
-            PhInitFormatS(&format[6], L"%)");
-
-            if (PhFormatToBuffer(format, ARRAYSIZE(format), string, sizeof(string), NULL))
-            {
-                SendMessage(Context->DialogHandle, TDM_UPDATE_ELEMENT_TEXT, TDE_CONTENT, (LPARAM)string);
-            }
-
-            SendMessage(Context->DialogHandle, TDM_SET_PROGRESS_BAR_POS, (WPARAM)(INT)percent, 0);
-
-            if (baseName)
-                PhDereferenceObject(baseName);
-
-#ifdef FORCE_TEST_UPDATE_LOCAL_INSTALL
-            PhDelayExecution(100);
-#endif
-        }
-
-        mz_free(buffer);
     }
+
+    if (!(sessionId = SetupGetSessionId(Context)))
+    {
+        status = STATUS_NO_MEMORY;
+        goto CleanupExit;
+    }
+
+    if (PhEndsWithStringRef(&Context->SetupInstallPath->sr, &PhNtPathSeparatorString, FALSE))
+        installRoot = PhReferenceObject(Context->SetupInstallPath);
+    else
+        installRoot = PhConcatStringRef2(&Context->SetupInstallPath->sr, &PhNtPathSeparatorString);
+
+    stagingRoot = PhFormatString(L"%supdate.%s.staging\\", PhGetString(installRoot), PhGetString(sessionId));
+
+    // Remove a stale staging directory from a previous attempt.
+    PhDeleteDirectoryWin32(&stagingRoot->sr);
+
+    if (!NT_SUCCESS(status = PhCreateDirectoryWin32(&stagingRoot->sr)))
+        goto CleanupExit;
+
+    SetupSetProgressMarquee(Context, TRUE);
+
+    // Use the shared 7-Zip wrapper for extraction. It validates every entry path
+    // before writing (no "..", device names or writes through reparse points) and
+    // reads the embedded buffer directly, avoiding a second archive implementation.
+    if (!NT_SUCCESS(status = SetupStatusFromSevenZipResult(Si7zExtractBufferToDirectory(
+        zipBuffer,
+        zipBufferLength,
+        NULL,
+        PhGetString(stagingRoot)
+        ))))
+    {
+        goto CleanupExit;
+    }
+
+    // Move the extracted files next to their final names.
+    Context->SetupStagedFiles = PhCreateList(100);
+
+    memset(&stageContext, 0, sizeof(SETUP_STAGE_CONTEXT));
+    stageContext.Setup = Context;
+    stageContext.StagingRoot = stagingRoot;
+    stageContext.InstallRoot = installRoot;
+    stageContext.RelativePath = PhReferenceEmptyString();
+    stageContext.StagedFiles = Context->SetupStagedFiles;
+    stageContext.Status = STATUS_SUCCESS;
+
+    if (NT_SUCCESS(status = PhCreateFileWin32(
+        &directoryHandle,
+        PhGetString(stagingRoot),
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT
+        )))
+    {
+        status = PhEnumDirectoryFile(directoryHandle, NULL, SetupStageFilesCallback, &stageContext);
+        NtClose(directoryHandle);
+
+        if (!NT_SUCCESS(stageContext.Status))
+            status = stageContext.Status;
+    }
+
+    PhDereferenceObject(stageContext.RelativePath);
+
+    if (!NT_SUCCESS(status))
+        goto CleanupExit;
+
+    SetupSetProgressMarquee(Context, FALSE);
+    status = SetupExtractBuildCommitFiles(Context, Context->SetupStagedFiles);
 
 CleanupExit:
 
-    mz_zip_reader_end(&zipFileArchive);
+    if (stagingRoot)
+    {
+        PhDeleteDirectoryWin32(&stagingRoot->sr);
+        PhDereferenceObject(stagingRoot);
+    }
 
-    if (extractPath)
-        PhDereferenceObject(extractPath);
+    if (installRoot)
+        PhDereferenceObject(installRoot);
+
+    if (!NT_SUCCESS(status))
+    {
+        SetupRollbackStagedFiles(Context);
+    }
+    else if (!Context->SetupDeferFinalize)
+    {
+        SetupFinalizeStagedFiles(Context);
+    }
+
+    if (zipBuffer)
+        PhFree(zipBuffer);
 
     return status;
 }

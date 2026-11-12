@@ -6,37 +6,12 @@
  * Authors:
  *
  *     wj32    2009-2015
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_HIDNPROC_H
 #define PH_HIDNPROC_H
-
-typedef enum _PH_ZOMBIE_PROCESS_METHOD
-{
-    BruteForceScanMethod,
-    CsrHandlesScanMethod,
-    ProcessHandleScanMethod,
-    RegistryScanMethod,
-    EtwGuidScanMethod,
-    NtdllScanMethod,
-} PH_ZOMBIE_PROCESS_METHOD;
-
-typedef enum _PH_ZOMBIE_PROCESS_TYPE
-{
-    UnknownProcess,
-    NormalProcess,
-    ZombieProcess,
-    TerminatedProcess
-} PH_ZOMBIE_PROCESS_TYPE;
-
-typedef struct _PH_ZOMBIE_PROCESS_ENTRY
-{
-    HANDLE ProcessId;
-    PPH_STRING FileName;
-    PH_ZOMBIE_PROCESS_TYPE Type;
-} PH_ZOMBIE_PROCESS_ENTRY, *PPH_ZOMBIE_PROCESS_ENTRY;
 
 typedef struct _PH_CSR_HANDLE_INFO
 {
@@ -47,23 +22,12 @@ typedef struct _PH_CSR_HANDLE_INFO
     HANDLE ProcessId;
 } PH_CSR_HANDLE_INFO, *PPH_CSR_HANDLE_INFO;
 
-typedef BOOLEAN (NTAPI *PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK)(
-    _In_ PPH_ZOMBIE_PROCESS_ENTRY Process,
-    _In_opt_ PVOID Context
-    );
-
-NTSTATUS
-NTAPI
-PhEnumZombieProcesses(
-    _In_ PH_ZOMBIE_PROCESS_METHOD Method,
-    _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
-    _In_opt_ PVOID Context
-    );
-
-typedef BOOLEAN (NTAPI *PPH_ENUM_CSR_PROCESS_HANDLES_CALLBACK)(
+typedef _Function_class_(PH_ENUM_CSR_PROCESS_HANDLES_CALLBACK)
+BOOLEAN NTAPI PH_ENUM_CSR_PROCESS_HANDLES_CALLBACK(
     _In_ PPH_CSR_HANDLE_INFO Handle,
     _In_opt_ PVOID Context
     );
+typedef PH_ENUM_CSR_PROCESS_HANDLES_CALLBACK* PPH_ENUM_CSR_PROCESS_HANDLES_CALLBACK;
 
 NTSTATUS
 NTAPI

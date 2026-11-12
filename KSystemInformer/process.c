@@ -277,6 +277,8 @@ NTSTATUS KphOpenProcessJob(
 
     KPH_PAGED_CODE_PASSIVE();
 
+    job = NULL;
+
     status = ObReferenceObjectByHandle(ProcessHandle,
                                        0,
                                        *PsProcessType,
@@ -294,7 +296,25 @@ NTSTATUS KphOpenProcessJob(
         goto Exit;
     }
 
+    status = PsAcquireProcessExitSynchronization(process);
+    if (!NT_SUCCESS(status))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      GENERAL,
+                      "PsAcquireProcessExitSynchronization failed: %!STATUS!",
+                      status);
+
+        goto Exit;
+    }
+
     job = PsGetProcessJob(process);
+    if (job)
+    {
+        ObReferenceObject(job);
+    }
+
+    PsReleaseProcessExitSynchronization(process);
+
     if (!job)
     {
         status = STATUS_NOT_FOUND;
@@ -341,6 +361,11 @@ NTSTATUS KphOpenProcessJob(
     status = KphWriteHandleToMode(JobHandle, jobHandle, AccessMode);
 
 Exit:
+
+    if (job)
+    {
+        ObDereferenceObject(job);
+    }
 
     if (process)
     {
@@ -537,8 +562,7 @@ NTSTATUS KphQueryInformationProcess(
                 goto Exit;
             }
 
-            KphAcquireRWLockShared(&process->ThreadListLock);
-            KphAcquireRWLockShared(&process->ProtectionLock);
+            RtlZeroMemory(&info, sizeof(info));
 
             info.ProcessState = KphGetProcessState(process);
             info.ProcessStartKey = KphGetProcessStartKey(processObject);
@@ -546,9 +570,6 @@ NTSTATUS KphQueryInformationProcess(
             info.CreatorClientId.UniqueThread = process->CreatorClientId.UniqueThread;
             info.NumberOfImageLoads = ReadSizeTNoFence(&process->NumberOfImageLoads);
             info.Flags = process->Flags;
-            info.NumberOfThreads = process->NumberOfThreads;
-            info.ProcessAllowedMask = process->ProcessAllowedMask;
-            info.ThreadAllowedMask = process->ThreadAllowedMask;
             info.NumberOfMicrosoftImageLoads = ReadSizeTNoFence(&process->NumberOfMicrosoftImageLoads);
             info.NumberOfAntimalwareImageLoads = ReadSizeTNoFence(&process->NumberOfAntimalwareImageLoads);
             info.NumberOfVerifiedImageLoads = ReadSizeTNoFence(&process->NumberOfVerifiedImageLoads);
@@ -562,7 +583,13 @@ NTSTATUS KphQueryInformationProcess(
                     MmDoesFileHaveUserWritableReferences(process->FileObject->SectionObjectPointer);
             }
 
-            KphReleaseRWLock(&process->ProtectionLock);
+            KphAcquireRWLockShared(&process->Protection.AllowedMaskLock);
+            info.ProcessAllowedMask = process->Protection.ProcessAllowedMask;
+            info.ThreadAllowedMask = process->Protection.ThreadAllowedMask;
+            KphReleaseRWLock(&process->Protection.AllowedMaskLock);
+
+            KphAcquireRWLockShared(&process->ThreadListLock);
+            info.NumberOfThreads = process->NumberOfThreads;
             KphReleaseRWLock(&process->ThreadListLock);
 
             status = KphCopyToMode(ProcessInformation,

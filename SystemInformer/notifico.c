@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -294,7 +294,7 @@ VOID PhNfCreateIconThreadDelayed(
 PPH_NF_ICON PhNfRegisterIcon(
     _In_opt_ PPH_PLUGIN Plugin,
     _In_ ULONG Id,
-    _In_ GUID Guid,
+    _In_ PCGUID Guid,
     _In_opt_ PVOID Context,
     _In_ PCWSTR Text,
     _In_ ULONG Flags,
@@ -315,17 +315,18 @@ PPH_NF_ICON PhNfRegisterIcon(
     icon->MessageCallback = MessageCallback;
     icon->TextCache = PhReferenceEmptyString();
     icon->IconId = PhTrayIconItemList->Count + 1; // HACK
-    icon->IconGuid = Guid;
+    icon->IconGuid = *Guid;
 
     PhAddItemList(PhTrayIconItemList, icon);
 
     return icon;
 }
 
+_Function_class_(PH_REGISTER_TRAY_ICON)
 PPH_NF_ICON PhNfPluginRegisterIcon(
     _In_ PPH_PLUGIN Plugin,
     _In_ ULONG SubId,
-    _In_ GUID Guid,
+    _In_ PCGUID Guid,
     _In_opt_ PVOID Context,
     _In_ PCWSTR Text,
     _In_ ULONG Flags,
@@ -357,16 +358,16 @@ VOID PhNfLoadStage2(
         PhNfLoadGuids();
     }
 
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_USAGE, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_USAGE], NULL, L"CPU &usage", 0, PhNfpCpuUsageIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_HISTORY, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_HISTORY], NULL, L"CPU &history", 0, PhNfpCpuHistoryIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_IO_HISTORY, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_IO_HISTORY], NULL, L"&I/O history", 0, PhNfpIoHistoryIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_COMMIT_HISTORY, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_COMMIT_HISTORY], NULL, L"&Commit charge history", 0, PhNfpCommitHistoryIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PHYSICAL_HISTORY, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PHYSICAL_HISTORY], NULL, L"&Physical memory history", 0, PhNfpPhysicalHistoryIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_TEXT, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_TEXT], NULL, L"CPU usage (text)", 0, PhNfpCpuUsageTextIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_IO_TEXT, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_IO_TEXT], NULL, L"IO usage (text)", 0, PhNfpIoUsageTextIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_COMMIT_TEXT, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_COMMIT_TEXT], NULL, L"Commit usage (text)", 0, PhNfpCommitTextIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PHYSICAL_TEXT, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PHYSICAL_TEXT], NULL, L"Physical usage (text)", 0, PhNfpPhysicalUsageTextIconUpdateCallback, NULL);
-    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PLAIN_ICON, PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PLAIN_ICON], NULL, L"System Informer icon (static)", 0, PhNfpPlainIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_USAGE, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_USAGE], NULL, L"CPU &usage", 0, PhNfpCpuUsageIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_HISTORY, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_HISTORY], NULL, L"CPU &history", 0, PhNfpCpuHistoryIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_IO_HISTORY, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_IO_HISTORY], NULL, L"&I/O history", 0, PhNfpIoHistoryIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_COMMIT_HISTORY, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_COMMIT_HISTORY], NULL, L"&Commit charge history", 0, PhNfpCommitHistoryIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PHYSICAL_HISTORY, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PHYSICAL_HISTORY], NULL, L"&Physical memory history", 0, PhNfpPhysicalHistoryIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_CPU_TEXT, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_CPU_TEXT], NULL, L"CPU usage (text)", 0, PhNfpCpuUsageTextIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_IO_TEXT, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_IO_TEXT], NULL, L"IO usage (text)", 0, PhNfpIoUsageTextIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_COMMIT_TEXT, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_COMMIT_TEXT], NULL, L"Commit usage (text)", 0, PhNfpCommitTextIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PHYSICAL_TEXT, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PHYSICAL_TEXT], NULL, L"Physical usage (text)", 0, PhNfpPhysicalUsageTextIconUpdateCallback, NULL);
+    PhNfRegisterIcon(NULL, PH_TRAY_ICON_ID_PLAIN_ICON, &PhNfpTrayIconItemGuids[PH_TRAY_ICON_GUID_PLAIN_ICON], NULL, L"System Informer icon (static)", 0, PhNfpPlainIconUpdateCallback, NULL);
 
     if (PhPluginsEnabled)
     {
@@ -429,6 +430,66 @@ VOID PhNfUninitialization(
 //        NtWaitForSingleObject(PhpTrayIconThreadHandle, FALSE, PhTimeoutFromMilliseconds(&timeout, 1000));
 //    }
 //#endif
+}
+
+ULONG PhNfpCountEnabledTrayIcons(
+    VOID
+    )
+{
+    ULONG count = 0;
+
+    if (!PhTrayIconItemList)
+        return 0;
+
+    for (ULONG i = 0; i < PhTrayIconItemList->Count; i++)
+    {
+        PPH_NF_ICON icon = PhTrayIconItemList->Items[i];
+
+        if (icon && BooleanFlagOn(icon->Flags, PH_NF_ICON_ENABLED))
+        {
+            count++;
+
+            if (count > 1)
+                break;
+        }
+    }
+
+    return count;
+}
+
+PCWSTR PhNfpGetMiniInfoInitialSectionName(
+    _In_ PPH_NF_ICON Icon,
+    _In_opt_ PCWSTR SectionName
+    )
+{
+    if (!SectionName)
+        return NULL;
+
+    if (!PhGetIntegerSetting(SETTING_MINI_INFO_SHOW_GRAPHS_DEFAULT))
+        return SectionName;
+
+    if (PhNfpCountEnabledTrayIcons() != 1)
+        return SectionName;
+
+    if (Icon->Plugin)
+        return SectionName;
+
+    switch (Icon->SubId)
+    {
+    case PH_TRAY_ICON_ID_CPU_HISTORY:
+    case PH_TRAY_ICON_ID_CPU_USAGE:
+    case PH_TRAY_ICON_ID_CPU_TEXT:
+    case PH_TRAY_ICON_ID_PLAIN_ICON:
+    case PH_TRAY_ICON_ID_IO_HISTORY:
+    case PH_TRAY_ICON_ID_IO_TEXT:
+    case PH_TRAY_ICON_ID_COMMIT_HISTORY:
+    case PH_TRAY_ICON_ID_COMMIT_TEXT:
+    case PH_TRAY_ICON_ID_PHYSICAL_HISTORY:
+    case PH_TRAY_ICON_ID_PHYSICAL_TEXT:
+        return L"Graphs";
+    }
+
+    return SectionName;
 }
 
 VOID PhNfForwardMessage(
@@ -503,7 +564,9 @@ VOID PhNfForwardMessage(
 
                     if (showMiniInfoSectionData.SectionName)
                     {
-                        IconClickShowMiniInfoSectionData.SectionName = PhDuplicateStringZ(showMiniInfoSectionData.SectionName);
+                        IconClickShowMiniInfoSectionData.SectionName = PhDuplicateStringZ(
+                            PhNfpGetMiniInfoInitialSectionName(registeredIcon, showMiniInfoSectionData.SectionName)
+                            );
                     }
 
                     PhSetTimer(WindowHandle, TIMER_ICON_CLICK_ACTIVATE, GetDoubleClickTime() + NFP_ICON_CLICK_ACTIVATE_DELAY, PhNfpIconClickActivateTimerProc);
@@ -585,7 +648,7 @@ VOID PhNfForwardMessage(
                 {
                     GetCursorPos(&location);
                     PhPinMiniInformation(MiniInfoIconPinType, 1, 0, PH_MINIINFO_DONT_CHANGE_SECTION_IF_PINNED,
-                        showMiniInfoSectionData.SectionName, &location);
+                        PhNfpGetMiniInfoInitialSectionName(registeredIcon, showMiniInfoSectionData.SectionName), &location);
                 }
             }
         }
@@ -645,6 +708,7 @@ VOID PhNfSetVisibleIcon(
 #endif
 }
 
+_Function_class_(PH_TOAST_CALLBACK)
 VOID NTAPI PhpToastCallback(
     _In_ HRESULT Result,
     _In_ PH_TOAST_REASON Reason,
@@ -989,7 +1053,7 @@ HICON PhNfGetApplicationIcon(
             DpiValue = PhGetTaskbarDpi();
         }
 
-        PhNfAppTrayIcon = PhGetApplicationIconEx(FALSE, DpiValue);
+        PhNfAppTrayIcon = PhGetApplicationIcon(FALSE, DpiValue);
     }
 
     return PhNfAppTrayIcon;
@@ -1003,6 +1067,7 @@ HICON PhNfpGetBlackIcon(
     {
         ULONG width;
         ULONG height;
+        SIZE_T bitsSize;
         PVOID bits;
         HDC hdc;
         HBITMAP mask;
@@ -1010,12 +1075,25 @@ HICON PhNfpGetBlackIcon(
         ICONINFO iconInfo;
 
         PhNfpBeginBitmap2(&PhNfpBlackBitmapContext, &width, &height, &PhNfpBlackBitmap, &bits, &hdc, &oldBitmap);
-        memset(bits, PhNfTransparencyEnabled ? 1 : 0, width * height * sizeof(RGBQUAD));
+
+        if (!NT_SUCCESS(RtlSIZETMult(width, height, &bitsSize)))
+        {
+            SelectBitmap(hdc, oldBitmap);
+            return NULL;
+        }
+
+        if (!NT_SUCCESS(RtlSIZETMult(bitsSize, sizeof(RGBQUAD), &bitsSize)))
+        {
+            SelectBitmap(hdc, oldBitmap);
+            return NULL;
+        }
+
+        memset(bits, PhNfTransparencyEnabled ? 1 : 0, bitsSize);
 
         // Create a monochrome mask bitmap for the icon.
         if (!(mask = CreateBitmap(width, height, 1, 1, NULL)))
             return NULL;
-        
+
         iconInfo.fIcon = TRUE;
         iconInfo.xHotspot = 0;
         iconInfo.yHotspot = 0;
@@ -1115,7 +1193,7 @@ HFONT PhNfGetTrayIconFont(
         }
 
         PhNfTrayIconFont = CreateFont(
-            PhGetDpi(-11, DpiValue),
+            PhScaleToDisplay(-11, DpiValue),
             0,
             0,
             0,
@@ -1123,7 +1201,7 @@ HFONT PhNfGetTrayIconFont(
             FALSE,
             FALSE,
             FALSE,
-            ANSI_CHARSET,
+            DEFAULT_CHARSET,
             OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS,
             ANTIALIASED_QUALITY,
@@ -1163,7 +1241,7 @@ BOOLEAN PhNfpAddNotifyIcon(
         _TRUNCATE
         );
     //notifyIcon.hIcon = PhNfpGetBlackIcon();
-    notifyIcon.hIcon = PhGetApplicationIcon(TRUE); // Fixes GH#1845 (dmex)
+    notifyIcon.hIcon = PhNfGetApplicationIcon(0); // Fixes GH#1845 (dmex)
 
     if (!PhNfMiniInfoEnabled || PhNfMiniInfoPinned || FlagOn(Icon->Flags, PH_NF_ICON_NOSHOW_MINIINFO))
         SetFlag(notifyIcon.uFlags, NIF_SHOWTIP);
@@ -1395,7 +1473,8 @@ VOID PhNfpProcessesUpdatedHandler(
     _In_opt_ PVOID Context
     )
 {
-    ULONG runCount = PtrToUlong(Parameter);
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
+    ULONG runCount = updateEvent->RunCount;
 
     // Update the icons on a separate thread so we don't block the main window
     // or provider threads when explorer is not responding. (dmex)
@@ -1492,12 +1571,19 @@ VOID PhNfpBeginBitmap2(
 {
     LONG dpiValue = PhGetTaskbarDpi();
 
+    *Width = 0;
+    *Height = 0;
+    *Bitmap = NULL;
+    if (Bits) *Bits = NULL;
+    *Hdc = NULL;
+    *OldBitmap = NULL;
+
     // Initialize and cache the current system metrics. (dmex)
 
     if (Context->TaskbarDpi == 0 || Context->TaskbarDpi != dpiValue)
     {
         Context->Width = PhGetSystemMetrics(SM_CXSMICON, dpiValue);
-        Context->Height = PhGetSystemMetrics(SM_CXSMICON, dpiValue);
+        Context->Height = PhGetSystemMetrics(SM_CYSMICON, dpiValue);
 
         // Re-initialize fonts with updated DPI (only when there's an existing handle). (dmex)
         //PhNfGetTrayIconFont(dpiValue);
@@ -1565,6 +1651,10 @@ VOID PhNfpCpuHistoryIconUpdateCallback(
     _In_opt_ PVOID Context
     )
 {
+    *NewIconOrBitmap = NULL;
+    *Flags = 0;
+    *NewText = NULL;
+
     static PH_GRAPH_DRAW_INFO drawInfo =
     {
         16,
@@ -1665,6 +1755,10 @@ VOID PhNfpIoHistoryIconUpdateCallback(
     _In_opt_ PVOID Context
     )
 {
+    *NewIconOrBitmap = NULL;
+    *Flags = 0;
+    *NewText = NULL;
+
     static PH_GRAPH_DRAW_INFO drawInfo =
     {
         16,
@@ -1781,6 +1875,10 @@ VOID PhNfpCommitHistoryIconUpdateCallback(
     _In_opt_ PVOID Context
     )
 {
+    *NewIconOrBitmap = NULL;
+    *Flags = 0;
+    *NewText = NULL;
+
     static PH_GRAPH_DRAW_INFO drawInfo =
     {
         16,
@@ -1862,6 +1960,10 @@ VOID PhNfpPhysicalHistoryIconUpdateCallback(
     _In_opt_ PVOID Context
     )
 {
+    *NewIconOrBitmap = NULL;
+    *Flags = 0;
+    *NewText = NULL;
+
     static PH_GRAPH_DRAW_INFO drawInfo =
     {
         16,
@@ -1975,7 +2077,7 @@ VOID PhNfpCpuUsageIconUpdateCallback(
         HPEN dcPen;
         POINT points[2];
 
-        dcBrush = PhGetStockBrush(DC_BRUSH);
+        dcBrush = PhStockDcBrush;
         dcPen = PhGetStockPen(DC_PEN);
         rect.left = 0;
         rect.top = 0;
@@ -2527,7 +2629,7 @@ BOOLEAN PhNfpGetShowMiniInfoSectionData(
 }
 
 VOID PhNfpIconClickActivateTimerProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ UINT_PTR idEvent,
     _In_ ULONG dwTime
@@ -2548,7 +2650,7 @@ VOID PhNfpDisableHover(
 }
 
 VOID PhNfpIconRestoreHoverTimerProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ UINT_PTR idEvent,
     _In_ ULONG dwTime
@@ -2572,7 +2674,7 @@ VOID PhNfpIconDisablePopupHoverWin11Workaround(
 }
 
 VOID PhNfpIconShowPopupHoverTimerProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ UINT_PTR idEvent,
     _In_ ULONG dwTime
@@ -2589,6 +2691,6 @@ VOID PhNfpIconShowPopupHoverTimerProc(
     {
         GetCursorPos(&location);
         PhPinMiniInformation(MiniInfoIconPinType, 1, 0, PH_MINIINFO_DONT_CHANGE_SECTION_IF_PINNED,
-            showMiniInfoSectionData.SectionName, &location);
+            PhNfpGetMiniInfoInitialSectionName(PopupRegisteredIcon, showMiniInfoSectionData.SectionName), &location);
     }
 }

@@ -26,15 +26,18 @@ typedef struct _KPH_ENUMERATE_PROCESS_HANDLES_CONTEXT
 } KPH_ENUMERATE_PROCESS_HANDLES_CONTEXT, *PKPH_ENUMERATE_PROCESS_HANDLES_CONTEXT;
 
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
-static const UNICODE_STRING KphpEtwRegistrationName = RTL_CONSTANT_STRING(L"EtwRegistration");
+DECLARE_CONST_UNICODE_STRING(KphpEtwRegistrationName, L"EtwRegistration");
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PVOID KphObpDecodeObject(
     _In_ PKPH_DYN Dyn,
     _In_ PHANDLE_TABLE_ENTRY HandleTableEntry
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
 #if defined(_M_X64) || defined(_M_ARM64)
     if (Dyn->ObDecodeShift != ULONG_MAX)
     {
@@ -61,11 +64,14 @@ PVOID KphObpDecodeObject(
 #endif
 }
 
+_IRQL_requires_max_(HIGH_LEVEL)
 ULONG KphObpGetHandleAttributes(
     _In_ PKPH_DYN Dyn,
     _In_ PHANDLE_TABLE_ENTRY HandleTableEntry
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
 #if defined(_M_X64) || defined(_M_ARM64)
     if (Dyn->ObAttributesShift != ULONG_MAX)
     {
@@ -103,8 +109,20 @@ VOID KphpGetFileObjectInformation(
     //
     KPH_NPAGED_CODE_PASSIVE();
 
-    attachedDevice = IoGetAttachedDevice(FileObject->DeviceObject);
+    if (FileObject->DeviceObject)
+    {
+        attachedDevice = IoGetAttachedDeviceReference(FileObject->DeviceObject);
+    }
+    else
+    {
+        attachedDevice = NULL;
+    }
+
     relatedDevice = IoGetRelatedDeviceObject(FileObject);
+    if (relatedDevice)
+    {
+        ObReferenceObject(relatedDevice);
+    }
 
     RtlZeroMemory(Information, sizeof(KPH_FILE_OBJECT_INFORMATION));
 
@@ -129,17 +147,26 @@ VOID KphpGetFileObjectInformation(
     Information->Waiters = FileObject->Waiters;
     Information->Busy = FileObject->Busy;
 
-    Information->Device.Type = FileObject->DeviceObject->DeviceType;
-    Information->Device.Characteristics = FileObject->DeviceObject->Characteristics;
-    Information->Device.Flags = FileObject->DeviceObject->Flags;
+    if (FileObject->DeviceObject)
+    {
+        Information->Device.Type = FileObject->DeviceObject->DeviceType;
+        Information->Device.Characteristics = FileObject->DeviceObject->Characteristics;
+        Information->Device.Flags = FileObject->DeviceObject->Flags;
+    }
 
-    Information->AttachedDevice.Type = attachedDevice->DeviceType;
-    Information->AttachedDevice.Characteristics = attachedDevice->Characteristics;
-    Information->AttachedDevice.Flags = attachedDevice->Flags;
+    if (attachedDevice)
+    {
+        Information->AttachedDevice.Type = attachedDevice->DeviceType;
+        Information->AttachedDevice.Characteristics = attachedDevice->Characteristics;
+        Information->AttachedDevice.Flags = attachedDevice->Flags;
+    }
 
-    Information->RelatedDevice.Type = relatedDevice->DeviceType;
-    Information->RelatedDevice.Characteristics = relatedDevice->Characteristics;
-    Information->RelatedDevice.Flags = relatedDevice->Flags;
+    if (relatedDevice)
+    {
+        Information->RelatedDevice.Type = relatedDevice->DeviceType;
+        Information->RelatedDevice.Characteristics = relatedDevice->Characteristics;
+        Information->RelatedDevice.Flags = relatedDevice->Flags;
+    }
 
     C_ASSERT(ARRAYSIZE(Information->Vpb.VolumeLabel) == ARRAYSIZE(vpb->VolumeLabel));
 
@@ -164,50 +191,69 @@ VOID KphpGetFileObjectInformation(
                       ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
     }
 
-    vpb = FileObject->DeviceObject->Vpb;
-    if (vpb)
+    if (FileObject->DeviceObject)
     {
-        Information->Device.Vpb.Type = vpb->Type;
-        Information->Device.Vpb.Size = vpb->Size;
-        Information->Device.Vpb.Flags = vpb->Flags;
-        Information->Device.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
-        Information->Device.Vpb.SerialNumber = vpb->SerialNumber;
-        Information->Device.Vpb.ReferenceCount = vpb->ReferenceCount;
-        RtlCopyMemory(Information->Device.Vpb.VolumeLabel,
-                      vpb->VolumeLabel,
-                      ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        vpb = FileObject->DeviceObject->Vpb;
+        if (vpb)
+        {
+            Information->Device.Vpb.Type = vpb->Type;
+            Information->Device.Vpb.Size = vpb->Size;
+            Information->Device.Vpb.Flags = vpb->Flags;
+            Information->Device.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
+            Information->Device.Vpb.SerialNumber = vpb->SerialNumber;
+            Information->Device.Vpb.ReferenceCount = vpb->ReferenceCount;
+            RtlCopyMemory(Information->Device.Vpb.VolumeLabel,
+                          vpb->VolumeLabel,
+                          ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        }
     }
 
-    vpb = attachedDevice->Vpb;
-    if (vpb)
+    if (attachedDevice)
     {
-        Information->AttachedDevice.Vpb.Type = vpb->Type;
-        Information->AttachedDevice.Vpb.Size = vpb->Size;
-        Information->AttachedDevice.Vpb.Flags = vpb->Flags;
-        Information->AttachedDevice.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
-        Information->AttachedDevice.Vpb.SerialNumber = vpb->SerialNumber;
-        Information->AttachedDevice.Vpb.ReferenceCount = vpb->ReferenceCount;
-        RtlCopyMemory(Information->AttachedDevice.Vpb.VolumeLabel,
-                      vpb->VolumeLabel,
-                      ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        vpb = attachedDevice->Vpb;
+        if (vpb)
+        {
+            Information->AttachedDevice.Vpb.Type = vpb->Type;
+            Information->AttachedDevice.Vpb.Size = vpb->Size;
+            Information->AttachedDevice.Vpb.Flags = vpb->Flags;
+            Information->AttachedDevice.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
+            Information->AttachedDevice.Vpb.SerialNumber = vpb->SerialNumber;
+            Information->AttachedDevice.Vpb.ReferenceCount = vpb->ReferenceCount;
+            RtlCopyMemory(Information->AttachedDevice.Vpb.VolumeLabel,
+                          vpb->VolumeLabel,
+                          ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        }
     }
 
-    vpb = relatedDevice->Vpb;
-    if (vpb)
+    if (relatedDevice)
     {
-        Information->RelatedDevice.Vpb.Type = vpb->Type;
-        Information->RelatedDevice.Vpb.Size = vpb->Size;
-        Information->RelatedDevice.Vpb.Flags = vpb->Flags;
-        Information->RelatedDevice.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
-        Information->RelatedDevice.Vpb.SerialNumber = vpb->SerialNumber;
-        Information->RelatedDevice.Vpb.ReferenceCount = vpb->ReferenceCount;
-        RtlCopyMemory(Information->RelatedDevice.Vpb.VolumeLabel,
-                      vpb->VolumeLabel,
-                      ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        vpb = relatedDevice->Vpb;
+        if (vpb)
+        {
+            Information->RelatedDevice.Vpb.Type = vpb->Type;
+            Information->RelatedDevice.Vpb.Size = vpb->Size;
+            Information->RelatedDevice.Vpb.Flags = vpb->Flags;
+            Information->RelatedDevice.Vpb.VolumeLabelLength = vpb->VolumeLabelLength;
+            Information->RelatedDevice.Vpb.SerialNumber = vpb->SerialNumber;
+            Information->RelatedDevice.Vpb.ReferenceCount = vpb->ReferenceCount;
+            RtlCopyMemory(Information->RelatedDevice.Vpb.VolumeLabel,
+                          vpb->VolumeLabel,
+                          ARRAYSIZE(vpb->VolumeLabel) * sizeof(WCHAR));
+        }
     }
 #pragma prefast(pop)
 
     IoReleaseVpbSpinLock(irql);
+
+    if (relatedDevice)
+    {
+        ObDereferenceObject(relatedDevice);
+    }
+
+    if (attachedDevice)
+    {
+        ObDereferenceObject(attachedDevice);
+    }
 }
 
 KPH_PAGED_FILE();
@@ -846,8 +892,15 @@ NTSTATUS KphpExtractNameFileObject(
         // around this, it's not perfect but we get value from this routine
         // for cases where extracting the full name is otherwise impossible.
         //
-        if ((ObGetObjectType(fileObject) != *IoFileObjectType) ||
-            FlagOn(fileObject->Flags, FO_CLEANUP_COMPLETE))
+        __try
+        {
+            if ((ObGetObjectType(fileObject) != *IoFileObjectType) ||
+                FlagOn(fileObject->Flags, FO_CLEANUP_COMPLETE))
+            {
+                break;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
         {
             break;
         }
@@ -1057,6 +1110,7 @@ NTSTATUS KphQueryInformationObject(
                       "ObReferenceObjectByHandle failed %!STATUS!",
                       status);
 
+        process = NULL;
         goto Exit;
     }
 
@@ -1072,6 +1126,7 @@ NTSTATUS KphQueryInformationObject(
             status = STATUS_INVALID_HANDLE;
             goto Exit;
         }
+
         accessMode = AccessMode;
     }
 
@@ -1197,7 +1252,16 @@ NTSTATUS KphQueryInformationObject(
             // work around this bug, we add some (generous) padding to our
             // allocation.
             //
-            allocateSize += sizeof(ULONG64);
+            status = RtlULongAdd(allocateSize, sizeof(ULONG64), &allocateSize);
+            if (!NT_SUCCESS(status))
+            {
+                KphTracePrint(TRACE_LEVEL_VERBOSE,
+                              GENERAL,
+                              "RtlULongAdd failed: %!STATUS!",
+                              status);
+
+                goto Exit;
+            }
 
             buffer = KphAllocatePagedA(allocateSize,
                                        KPH_TAG_OBJECT_QUERY,
@@ -1209,6 +1273,7 @@ NTSTATUS KphQueryInformationObject(
             }
 
             typeInfo = (POBJECT_TYPE_INFORMATION)buffer;
+            NT_ASSERT(allocateSize >= ObjectInformationLength);
 
             KeStackAttachProcess(process, &apcState);
             status = ZwQueryObject(Handle,
@@ -1649,7 +1714,17 @@ NTSTATUS KphQueryInformationObject(
             {
                 allocateSize = sizeof(THREAD_NAME_INFORMATION);
             }
-            allocateSize += sizeof(ULONG64);
+
+            status = RtlULongAdd(allocateSize, sizeof(ULONG64), &allocateSize);
+            if (!NT_SUCCESS(status))
+            {
+                KphTracePrint(TRACE_LEVEL_VERBOSE,
+                              GENERAL,
+                              "RtlULongAdd failed: %!STATUS!",
+                              status);
+
+                goto Exit;
+            }
 
             buffer = KphAllocatePagedA(allocateSize,
                                        KPH_TAG_OBJECT_QUERY,
@@ -1661,6 +1736,7 @@ NTSTATUS KphQueryInformationObject(
             }
 
             nameInfo = (PTHREAD_NAME_INFORMATION)buffer;
+            NT_ASSERT(allocateSize >= ObjectInformationLength);
 
             KeStackAttachProcess(process, &apcState);
             status = ZwQueryInformationThread(Handle,
@@ -1754,6 +1830,7 @@ NTSTATUS KphQueryInformationObject(
                                          &returnLength,
                                          KernelMode);
                 KeUnstackDetachProcess(&apcState);
+
                 if (NT_SUCCESS(status))
                 {
                     status = KphCopyToMode(ObjectInformation,
@@ -1797,23 +1874,20 @@ NTSTATUS KphQueryInformationObject(
                                         ObjectInformationLength,
                                         &length);
                 KeUnstackDetachProcess(&apcState);
+
+                if (!NT_SUCCESS(RtlSizeTToULong(length, &returnLength)))
+                {
+                    returnLength = 0;
+                    status = STATUS_INTEGER_OVERFLOW;
+                    goto Exit;
+                }
+
                 if (NT_SUCCESS(status))
                 {
-                    if (length > ULONG_MAX)
-                    {
-                        status = STATUS_INTEGER_OVERFLOW;
-                        returnLength = 0;
-                        goto Exit;
-                    }
-
                     status = KphCopyToMode(ObjectInformation,
                                            buffer,
-                                           length,
+                                           returnLength,
                                            AccessMode);
-                    if (NT_SUCCESS(status))
-                    {
-                        returnLength = (ULONG)length;
-                    }
                 }
             }
 
@@ -1833,7 +1907,17 @@ NTSTATUS KphQueryInformationObject(
             {
                 allocateSize = sizeof(UNICODE_STRING);
             }
-            allocateSize += sizeof(ULONG64);
+
+            status = RtlULongAdd(allocateSize, sizeof(ULONG64), &allocateSize);
+            if (!NT_SUCCESS(status))
+            {
+                KphTracePrint(TRACE_LEVEL_VERBOSE,
+                              GENERAL,
+                              "RtlULongAdd failed: %!STATUS!",
+                              status);
+
+                goto Exit;
+            }
 
             buffer = KphAllocatePagedA(allocateSize,
                                        KPH_TAG_OBJECT_QUERY,
@@ -1845,6 +1929,7 @@ NTSTATUS KphQueryInformationObject(
             }
 
             sectionFileName = (PUNICODE_STRING)buffer;
+            NT_ASSERT(allocateSize >= ObjectInformationLength);
 
             status = ObDuplicateObject(process,
                                        Handle,

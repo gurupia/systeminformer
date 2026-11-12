@@ -6,17 +6,19 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #include <ph.h>
+#include <phcrypt.h>
 #include <phintrnl.h>
 #include <trace.h>
 
 PVOID PhInstanceHandle = NULL;
 PCWSTR PhApplicationName = NULL;
 HANDLE PhHeapHandle = NULL;
+BOOLEAN PhEnableHighResolution = TRUE;
 RTL_OSVERSIONINFOEX PhOsVersion = { 0 };
 PHLIBAPI PH_SYSTEM_BASIC_INFORMATION PhSystemBasicInformation = { 0 };
 PH_SYSTEM_PROCESSOR_INFORMATION PhSystemProcessorInformation = { 0 };
@@ -54,6 +56,8 @@ NTSTATUS PhInitializePhLib(
         return status;
 
     PhInitializeProcessorInformation();
+
+    PhSymCryptInitialize();
 
     return STATUS_SUCCESS;
 }
@@ -177,13 +181,21 @@ NTSTATUS PhInitializeWindowsInformation(
     // Windows 10, Windows Server 2016
     else if (majorVersion == 10 && minorVersion == 0)
     {
-        if (buildVersion > 28000)
+        if (buildVersion > 29500)
         {
             WindowsVersion = WINDOWS_NEW;
+        }
+        else if (buildVersion >= 29500)
+        {
+            WindowsVersion = WINDOWS_11_27H2;
         }
         else if (buildVersion >= 28000)
         {
             WindowsVersion = WINDOWS_11_26H1;
+        }
+        else if (buildVersion >= 26300)
+        {
+            WindowsVersion = WINDOWS_11_26H2;
         }
         else if (buildVersion >= 26200)
         {
@@ -335,10 +347,11 @@ NTSTATUS PhInitializeProcessorInformation(
     )
 {
     if (
+        WindowsVersion != WINDOWS_NEW && (
         USER_SHARED_DATA->ActiveGroupCount == 1 && // optimization (dmex)
         USER_SHARED_DATA->ActiveProcessorCount > 0 &&
         USER_SHARED_DATA->ActiveProcessorCount <= MAXIMUM_PROC_PER_GROUP
-        )
+        ))
     {
         PhSystemProcessorInformation.SingleProcessorGroup = TRUE;
         PhSystemProcessorInformation.NumberOfProcessors = PhSystemBasicInformation.NumberOfProcessors;

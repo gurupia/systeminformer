@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -182,7 +182,7 @@ static BOOLEAN PhpShowThreadErrorAffinity(
 
 VOID PhpShowThreadErrorAffinityList(
     _In_ PPH_AFFINITY_DIALOG_CONTEXT Context,
-    _Inout_ PPH_LIST AffinityErrorsList
+    _In_ PPH_LIST AffinityErrorsList
     )
 {
     PH_STRING_BUILDER stringBuilder;
@@ -860,7 +860,7 @@ NTSTATUS PhSetProcessItemPriority(
 // Note: Workaround for UserNotes plugin dialog overrides (dmex)
 NTSTATUS PhSetProcessItemPriorityBoost(
     _In_ PPH_PROCESS_ITEM ProcessItem,
-    _In_ BOOLEAN PriorityBoost
+    _In_ BOOLEAN DisablePriorityBoost
     )
 {
     NTSTATUS status;
@@ -874,7 +874,7 @@ NTSTATUS PhSetProcessItemPriorityBoost(
 
     if (NT_SUCCESS(status))
     {
-        status = PhSetProcessPriorityBoost(processHandle, PriorityBoost);
+        status = PhSetProcessPriorityBoost(processHandle, DisablePriorityBoost);
         NtClose(processHandle);
     }
 

@@ -36,6 +36,8 @@ PVOID KsipGetSystemRoutineAddress(
 {
     UNICODE_STRING systemRoutineName;
 
+    KPH_NPAGED_CODE_PASSIVE();
+
     RtlInitUnicodeString(&systemRoutineName, SystemRoutineName);
 
     return MmGetSystemRoutineAddress(&systemRoutineName);
@@ -71,6 +73,8 @@ VOID NTAPI KsipApcRundownRoutine(
     PDRIVER_OBJECT driverObject;
     PKSI_KCLEANUP_ROUTINE cleanupRoutine;
 
+    KPH_NPAGED_CODE_PASSIVE();
+
     apc = (PKSI_KAPC)Apc;
     driverObject = apc->DriverObject;
     cleanupRoutine = (PKSI_KCLEANUP_ROUTINE)apc->InternalCleanup;
@@ -93,6 +97,8 @@ VOID NTAPI KsipApcNormalRoutine(
     PDRIVER_OBJECT driverObject;
     PKNORMAL_ROUTINE normalRoutine;
     PKSI_KCLEANUP_ROUTINE cleanupRoutine;
+
+    KPH_NPAGED_CODE_PASSIVE();
 
     NT_ASSERT(NormalContext);
 
@@ -124,6 +130,8 @@ VOID NTAPI KsipApcKernelRoutine(
     PKSI_KKERNEL_ROUTINE kernelRoutine;
     PKSI_KCLEANUP_ROUTINE cleanupRoutine;
 
+    KPH_NPAGED_CODE_APC_MAX();
+
     apc = (PKSI_KAPC)Apc;
     driverObject = apc->DriverObject;
     kernelRoutine = (PKSI_KKERNEL_ROUTINE)apc->InternalRoutine;
@@ -149,6 +157,7 @@ VOID NTAPI KsipApcKernelRoutine(
     ObDereferenceObjectDeferDelete(driverObject);
 }
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID KSIAPI KsiInitializeApc(
     _Out_ PKSI_KAPC Apc,
     _In_ PDRIVER_OBJECT DriverObject,
@@ -161,6 +170,8 @@ VOID KSIAPI KsiInitializeApc(
     _In_opt_ PVOID NormalContext
     )
 {
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
     KeInitializeApc(&Apc->Apc,
                     Thread,
                     Environment,
@@ -176,6 +187,7 @@ VOID KSIAPI KsiInitializeApc(
     Apc->InternalContext = NULL;
 }
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 BOOLEAN KSIAPI KsiInsertQueueApc(
     _Inout_ PKSI_KAPC Apc,
     _In_opt_ PVOID SystemArgument1,
@@ -184,6 +196,8 @@ BOOLEAN KSIAPI KsiInsertQueueApc(
     )
 {
     BOOLEAN result;
+
+    KPH_NPAGED_CODE_DISPATCH_MAX();
 
     ObReferenceObject(Apc->DriverObject);
 
@@ -199,12 +213,15 @@ BOOLEAN KSIAPI KsiInsertQueueApc(
     return result;
 }
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
 NTSTATUS KSIAPI KsiRemoveQueueApc(
     _Inout_ PKSI_KAPC Apc
     )
 {
     PDRIVER_OBJECT driverObject;
     PKSI_KCLEANUP_ROUTINE cleanupRoutine;
+
+    KPH_NPAGED_CODE_DISPATCH_MAX();
 
     if (!KsipKeRemoveQueueApc)
     {
@@ -256,6 +273,8 @@ VOID KsipWorkItemRoutine(
     PDRIVER_OBJECT driverObject;
     PKSI_WORK_QUEUE_ROUTINE routine;
 
+    KPH_NPAGED_CODE_PASSIVE();
+
     workItem = Parameter;
     driverObject = workItem->DriverObject;
     routine = workItem->Routine;
@@ -273,6 +292,8 @@ VOID KSIAPI KsiInitializeWorkItem(
     _In_opt_ PVOID Parameter
     )
 {
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
     WorkItem->DriverObject = DriverObject;
     WorkItem->Routine = Routine;
     WorkItem->Parameter = Parameter;
@@ -287,6 +308,8 @@ VOID KSIAPI KsiQueueWorkItem(
     _In_ WORK_QUEUE_TYPE QueueType
     )
 {
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
     ObReferenceObject(WorkItem->DriverObject);
 
 #pragma prefast(push)
@@ -294,6 +317,141 @@ VOID KSIAPI KsiQueueWorkItem(
 #pragma warning(suppress: 4996)
     ExQueueWorkItem(&WorkItem->WorkItem, QueueType);
 #pragma prefast(pop)
+}
+
+//
+// This is an extension of the DPC functionality in Windows to enable a driver
+// to be unloaded while there are outstanding queued or in-flight DPCs on the
+// system that reference it.
+//
+// N.B. While this library guarantees the driver will not be unmapped, it does
+// not prevent DriverUnload from being invoked. Drivers using this library may
+// check DIRVER_OBJECT.Flags for DRVO_UNLOAD_INVOKED to know if the system has
+// or is about to invoke DriverUnload. If applicable the driver should act
+// accordingly in their routines.
+//
+
+_Function_class_(KDEFERRED_ROUTINE)
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_IRQL_requires_min_(DISPATCH_LEVEL)
+_IRQL_requires_(DISPATCH_LEVEL)
+_IRQL_requires_same_
+VOID KsipDpcRoutine(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2
+    )
+{
+    PKSI_KDPC ksiDpc;
+    PDRIVER_OBJECT driverObject;
+    PKDEFERRED_ROUTINE routine;
+    PVOID context;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    NT_ASSERT(DeferredContext);
+
+    ksiDpc = DeferredContext;
+    driverObject = ksiDpc->DriverObject;
+    routine = ksiDpc->Routine;
+    context = ksiDpc->Context;
+
+    routine(&ksiDpc->Dpc, context, SystemArgument1, SystemArgument2);
+
+    ObDereferenceObjectDeferDelete(driverObject);
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID KSIAPI KsiInitializeDpc(
+    _Out_ PKSI_KDPC Dpc,
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PKDEFERRED_ROUTINE DeferredRoutine,
+    _In_opt_ PVOID DeferredContext
+    )
+{
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    Dpc->DriverObject = DriverObject;
+    Dpc->Routine = DeferredRoutine;
+    Dpc->Context = DeferredContext;
+
+    KeInitializeDpc(&Dpc->Dpc, KsipDpcRoutine, Dpc);
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+VOID KSIAPI KsiInitializeThreadedDpc(
+    _Out_ PKSI_KDPC Dpc,
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PKDEFERRED_ROUTINE DeferredRoutine,
+    _In_opt_ PVOID DeferredContext
+    )
+{
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    Dpc->DriverObject = DriverObject;
+    Dpc->Routine = DeferredRoutine;
+    Dpc->Context = DeferredContext;
+
+    KeInitializeThreadedDpc(&Dpc->Dpc, KsipDpcRoutine, Dpc);
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+BOOLEAN KSIAPI KsiInsertQueueDpc(
+    _Inout_ PKSI_KDPC Dpc,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2
+    )
+{
+    BOOLEAN result;
+
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+#pragma warning(suppress: 28121)
+    ObReferenceObject(Dpc->DriverObject);
+
+    result = KeInsertQueueDpc(&Dpc->Dpc, SystemArgument1, SystemArgument2);
+    if (!result)
+    {
+#pragma warning(suppress: 28121)
+        ObDereferenceObject(Dpc->DriverObject);
+    }
+
+    return result;
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+BOOLEAN KSIAPI KsiRemoveQueueDpc(
+    _Inout_ PKSI_KDPC Dpc
+    )
+{
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (!KeRemoveQueueDpc(&Dpc->Dpc))
+    {
+        return FALSE;
+    }
+
+    ObDereferenceObjectDeferDelete(Dpc->DriverObject);
+
+    return TRUE;
+}
+
+_IRQL_requires_max_(HIGH_LEVEL)
+BOOLEAN KSIAPI KsiRemoveQueueDpcEx(
+    _Inout_ PKSI_KDPC Dpc,
+    _In_ BOOLEAN WaitIfActive
+    )
+{
+    KPH_NPAGED_CODE_HIGH_MAX();
+
+    if (!KeRemoveQueueDpcEx(&Dpc->Dpc, WaitIfActive))
+    {
+        return FALSE;
+    }
+
+    ObDereferenceObjectDeferDelete(Dpc->DriverObject);
+
+    return TRUE;
 }
 
 //
@@ -319,12 +477,15 @@ VOID KSIAPI KsiQueueWorkItem(
 // should be used only by System Informer during driver initialization.
 //
 
+_IRQL_requires_max_(PASSIVE_LEVEL)
 _IRQL_requires_same_
 _Function_class_(KSTART_ROUTINE)
 VOID KsipDummyThreadRoutine(
     _In_ PVOID StartContext
     )
 {
+    KPH_NPAGED_CODE_PASSIVE();
+
     UNREFERENCED_PARAMETER(StartContext);
 
     //
@@ -350,6 +511,8 @@ NTSTATUS KSIAPI KsiInitializeSystemProcess(
     NTSTATUS status;
     HANDLE threadHandle;
     OBJECT_ATTRIBUTES objectAttributes;
+
+    KPH_NPAGED_CODE_PASSIVE();
 
     NT_ASSERT(PsGetCurrentProcess() == PsInitialSystemProcess);
 
@@ -448,6 +611,8 @@ NTSTATUS KSIAPI KsiInitialize(
     _In_opt_ PVOID Reserved
     )
 {
+    KPH_NPAGED_CODE_PASSIVE();
+
     UNREFERENCED_PARAMETER(DriverObject);
     UNREFERENCED_PARAMETER(Reserved);
 
@@ -465,14 +630,19 @@ VOID KSIAPI KsiUninitialize(
     _In_ ULONG Reserved
     )
 {
+    KPH_NPAGED_CODE_PASSIVE();
+
     UNREFERENCED_PARAMETER(DriverObject);
     UNREFERENCED_PARAMETER(Reserved);
 }
 
+_IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS DllUnload(
     VOID
     )
 {
+    KPH_NPAGED_CODE_PASSIVE();
+
     //
     // N.B. It used to be that not specifying a DllUnload routine would
     // enforce that your export driver can not be unloaded by not activating
@@ -483,10 +653,13 @@ NTSTATUS DllUnload(
     return STATUS_NOT_SUPPORTED;
 }
 
+_IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS DllInitialize(
     _In_ PUNICODE_STRING RegistryPath
     )
 {
+    KPH_NPAGED_CODE_PASSIVE();
+
     UNREFERENCED_PARAMETER(RegistryPath);
 
     __security_init_cookie();

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -52,7 +52,7 @@ LONG PhpModuleTreeNewPostSortFunction(
     );
 
 BOOLEAN NTAPI PhpModuleTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -118,6 +118,7 @@ VOID PhInitializeModuleList(
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PHMOTLC_ENCLAVE_BASE_ADDRESS, FALSE, L"Enclave base address", 80, PH_ALIGN_LEFT | (enableMonospaceFont ? PH_ALIGN_MONOSPACE_FONT : 0), ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PHMOTLC_ENCLAVE_SIZE, FALSE, L"Enclave size", 80, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(Context->TreeNewHandle, PHMOTLC_ARCHITECTURE, FALSE, L"Architecture", 80, PH_ALIGN_LEFT, ULONG_MAX, DT_RIGHT, TRUE);
+    PhAddTreeNewColumn(Context->TreeNewHandle, PHMOTLC_LDRFLAGS, FALSE, L"LDR flags", 120, PH_ALIGN_LEFT, ULONG_MAX, 0);
 
     PhCmInitializeManager(&Context->Cm, Context->TreeNewHandle, PHMOTLC_MAXIMUM, PhpModuleTreeNewPostSortFunction);
     PhInitializeTreeNewFilterSupport(&Context->TreeFilterSupport, Context->TreeNewHandle, Context->NodeList);
@@ -267,8 +268,6 @@ PPH_MODULE_NODE PhCreateModuleNode(
     memset(moduleNode, 0, sizeof(PH_MODULE_NODE));
     PhInitializeTreeNewNode(&moduleNode->Node);
 
-    moduleNode->Children = PhCreateList(1);
-
     if (Context->EnableStateHighlighting && RunId != 1)
     {
         PhChangeShStateTn(
@@ -281,7 +280,9 @@ PPH_MODULE_NODE PhCreateModuleNode(
             );
     }
 
-    moduleNode->ModuleItem = PhReferenceObject(ModuleItem);
+    PhReferenceObject(ModuleItem);
+    moduleNode->ModuleItem = ModuleItem;
+    moduleNode->Children = PhCreateList(1);
 
     memset(moduleNode->TextCache, 0, sizeof(PH_STRINGREF) * PHMOTLC_MAXIMUM);
     moduleNode->Node.TextCache = moduleNode->TextCache;
@@ -424,6 +425,7 @@ VOID PhpDestroyModuleNode(
     if (ModuleNode->ImageCoherencyText) PhDereferenceObject(ModuleNode->ImageCoherencyText);
     if (ModuleNode->ServiceText) PhDereferenceObject(ModuleNode->ServiceText);
     if (ModuleNode->EnclaveSizeText) PhDereferenceObject(ModuleNode->EnclaveSizeText);
+    if (ModuleNode->LdrFlagsText) PhDereferenceObject(ModuleNode->LdrFlagsText);
 
     PhDereferenceObject(ModuleNode->ModuleItem);
 
@@ -457,7 +459,7 @@ VOID PhUpdateModuleNode(
 
     ModuleNode->ValidMask = 0;
     PhInvalidateTreeNewNode(&ModuleNode->Node, TN_CACHE_COLOR);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    TreeNew_InvalidateNode(Context->TreeNewHandle, &ModuleNode->Node);
 }
 
 VOID PhInvalidateAllModuleNodes(
@@ -473,8 +475,8 @@ VOID PhInvalidateAllModuleNodes(
         PhInvalidateTreeNewNode(&moduleNode->Node, TN_CACHE_COLOR | TN_CACHE_FONT);
     }
 
-    InvalidateRect(Context->TreeNewHandle, NULL, FALSE);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    if (Context->TreeNewSortOrder != NoSortOrder)
+        TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
 VOID PhInvalidateAllModuleBaseAddressNodes(
@@ -505,8 +507,8 @@ VOID PhInvalidateAllModuleBaseAddressNodes(
         PhInvalidateTreeNewNode(&moduleNode->Node, TN_CACHE_COLOR);
     }
 
-    InvalidateRect(Context->TreeNewHandle, NULL, FALSE);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
+    if (Context->TreeNewSortOrder != NoSortOrder)
+        TreeNew_NodesStructured(Context->TreeNewHandle);
 }
 
 VOID PhExpandAllModuleNodes(
@@ -792,8 +794,96 @@ BEGIN_SORT_FUNCTION(Architecture)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(LdrFlags)
+{
+    sortResult = uintcmp(moduleItem1->Flags, moduleItem2->Flags);
+}
+END_SORT_FUNCTION
+
+static PPH_STRING PhpGetModuleLdrFlagsText(
+    _In_ ULONG Flags
+    )
+{
+    PH_STRING_BUILDER stringBuilder;
+    WCHAR pointer[PH_PTR_STR_LEN_1];
+
+    if (Flags == 0)
+        return NULL;
+
+    PhInitializeStringBuilder(&stringBuilder, 0x40);
+
+    if (Flags & LDRP_PACKAGED_BINARY)
+        PhAppendStringBuilder2(&stringBuilder, L"Packaged binary, ");
+    if (Flags & LDRP_MARKED_FOR_REMOVAL)
+        PhAppendStringBuilder2(&stringBuilder, L"Marked for removal, ");
+    if (Flags & LDRP_IMAGE_DLL)
+        PhAppendStringBuilder2(&stringBuilder, L"Image dll, ");
+    if (Flags & LDRP_LOAD_NOTIFICATIONS_SENT)
+        PhAppendStringBuilder2(&stringBuilder, L"Load notifications sent, ");
+    if (Flags & LDRP_TELEMETRY_ENTRY_PROCESSED)
+        PhAppendStringBuilder2(&stringBuilder, L"Telemetry entry processed, ");
+    if (Flags & LDRP_PROCESS_STATIC_IMPORT)
+        PhAppendStringBuilder2(&stringBuilder, L"Static import, ");
+    if (Flags & LDRP_IN_LEGACY_LISTS)
+        PhAppendStringBuilder2(&stringBuilder, L"In legacy lists, ");
+    if (Flags & LDRP_IN_INDEXES)
+        PhAppendStringBuilder2(&stringBuilder, L"In indexes, ");
+    if (Flags & LDRP_SHIM_DLL)
+        PhAppendStringBuilder2(&stringBuilder, L"Shim dll, ");
+    if (Flags & LDRP_IN_EXCEPTION_TABLE)
+        PhAppendStringBuilder2(&stringBuilder, L"In exception table, ");
+    if (Flags & LDRP_VERIFIER_PROVIDER)
+        PhAppendStringBuilder2(&stringBuilder, L"Verifier provider, ");
+    if (Flags & LDRP_SHIM_ENGINE_CALLOUT_SENT)
+        PhAppendStringBuilder2(&stringBuilder, L"Shim engine callout sent, ");
+    if (Flags & LDRP_LOAD_IN_PROGRESS)
+        PhAppendStringBuilder2(&stringBuilder, L"Load in progress, ");
+    if (Flags & LDRP_LOAD_CONFIG_PROCESSED)
+        PhAppendStringBuilder2(&stringBuilder, L"Load config processed, ");
+    if (Flags & LDRP_ENTRY_PROCESSED)
+        PhAppendStringBuilder2(&stringBuilder, L"Entry processed, ");
+    if (Flags & LDRP_PROTECT_DELAY_LOAD)
+        PhAppendStringBuilder2(&stringBuilder, L"Protect delay load, ");
+    if (Flags & LDRP_AUX_IAT_COPY_PRIVATE)
+        PhAppendStringBuilder2(&stringBuilder, L"Aux IAT copy private, ");
+    if (Flags & LDRP_DONT_CALL_FOR_THREADS)
+        PhAppendStringBuilder2(&stringBuilder, L"Don't call for threads, ");
+    if (Flags & LDRP_PROCESS_ATTACH_CALLED)
+        PhAppendStringBuilder2(&stringBuilder, L"Process attach called, ");
+    if (Flags & LDRP_PROCESS_ATTACH_FAILED)
+        PhAppendStringBuilder2(&stringBuilder, L"Process attach failed, ");
+    if (Flags & LDRP_SCP_IN_EXCEPTION_TABLE)
+        PhAppendStringBuilder2(&stringBuilder, L"SCP in exception table, ");
+    if (Flags & LDRP_COR_IMAGE)
+        PhAppendStringBuilder2(&stringBuilder, L"COR image, ");
+    if (Flags & LDRP_DONT_RELOCATE)
+        PhAppendStringBuilder2(&stringBuilder, L"Don't relocate, ");
+    if (Flags & LDRP_COR_IL_ONLY)
+        PhAppendStringBuilder2(&stringBuilder, L"COR IL only, ");
+    if (Flags & LDRP_CHPE_IMAGE)
+        PhAppendStringBuilder2(&stringBuilder, L"CHPE image, ");
+    if (Flags & LDRP_CHPE_EMULATOR_IMAGE)
+        PhAppendStringBuilder2(&stringBuilder, L"CHPE emulator image, ");
+    if (Flags & LDRP_REDIRECTED)
+        PhAppendStringBuilder2(&stringBuilder, L"Redirected, ");
+    if (Flags & LDRP_COMPAT_DATABASE_PROCESSED)
+        PhAppendStringBuilder2(&stringBuilder, L"Compat database processed, ");
+
+    if (PhEndsWithString2(stringBuilder.String, L", ", FALSE))
+        PhRemoveEndStringBuilder(&stringBuilder, 2);
+
+    PhPrintPointer(pointer, UlongToPtr(Flags));
+
+    if (PhIsNullOrEmptyString(stringBuilder.String))
+        PhAppendFormatStringBuilder(&stringBuilder, L"%s", pointer);
+    else
+        PhAppendFormatStringBuilder(&stringBuilder, L" (%s)", pointer);
+
+    return PhFinalStringBuilderString(&stringBuilder);
+}
+
 BOOLEAN NTAPI PhpModuleTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -803,7 +893,7 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
     PPH_MODULE_LIST_CONTEXT context = Context;
     PPH_MODULE_NODE node;
 
-    if (PhCmForwardMessage(hwnd, Message, Parameter1, Parameter2, &context->Cm))
+    if (PhCmForwardMessage(WindowHandle, Message, Parameter1, Parameter2, &context->Cm))
         return TRUE;
 
     switch (Message)
@@ -830,7 +920,7 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
             }
             else
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     SORT_FUNCTION(BaseAddress),
@@ -861,8 +951,9 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                     SORT_FUNCTION(EnclaveBaseAddress),
                     SORT_FUNCTION(EnclaveSize),
                     SORT_FUNCTION(Architecture),
+                    SORT_FUNCTION(LdrFlags),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHMOTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -966,10 +1057,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                         getCellText->Text.Buffer = string->Buffer;
                         getCellText->Text.Length = string->Length;
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHMOTLC_LOADCOUNT:
@@ -987,20 +1074,16 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                             PhInitializeStringRef(&getCellText->Text, L"Static");
                         }
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHMOTLC_VERIFICATIONSTATUS:
                 {
                     if (PhEnableProcessQueryStage2)
                     {
-                        if (moduleItem->Type != PH_MODULE_TYPE_ELF_MAPPED_IMAGE)
-                            getCellText->Text = PhVerifyResultToStringRef(moduleItem->VerifyResult);
-                        else
+                        if (context->IsSubsystemProcess)
                             PhInitializeEmptyStringRef(&getCellText->Text);
+                        else
+                            getCellText->Text = PhVerifyResultToStringRef(moduleItem->VerifyResult);
                     }
                     else
                     {
@@ -1036,10 +1119,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                         PhMoveReference(&node->TimeStampText, PhFormatDateTime(&systemTime));
                         getCellText->Text = node->TimeStampText->sr;
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHMOTLC_CFGUARD:
@@ -1063,10 +1142,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                         PhMoveReference(&node->LoadTimeText, PhFormatDateTime(&systemTime));
                         getCellText->Text = node->LoadTimeText->sr;
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHMOTLC_LOADREASON:
@@ -1086,14 +1161,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                             getCellText->Text.Buffer = string->Buffer;
                             getCellText->Text.Length = string->Length;
                         }
-                        else
-                        {
-                            PhInitializeEmptyStringRef(&getCellText->Text);
-                        }
-                    }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
                     }
                 }
                 break;
@@ -1107,10 +1174,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                         PhMoveReference(&node->FileModifiedTimeText, PhFormatDateTime(&systemTime));
                         getCellText->Text = node->FileModifiedTimeText->sr;
                     }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
-                    }
                 }
                 break;
             case PHMOTLC_FILESIZE:
@@ -1119,10 +1182,6 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                     {
                         PhMoveReference(&node->FileSizeText, PhFormatSize(moduleItem->FileEndOfFile.QuadPart, ULONG_MAX));
                         getCellText->Text = PhGetStringRef(node->FileSizeText);
-                    }
-                    else
-                    {
-                        PhInitializeEmptyStringRef(&getCellText->Text);
                     }
                 }
                 break;
@@ -1297,6 +1356,12 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                     }
                 }
                 break;
+            case PHMOTLC_LDRFLAGS:
+                {
+                    PhMoveReference(&node->LdrFlagsText, PhpGetModuleLdrFlagsText(moduleItem->Flags));
+                    getCellText->Text = PhGetStringRef(node->LdrFlagsText);
+                }
+                break;
             default:
                 return FALSE;
             }
@@ -1314,7 +1379,9 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
 
             if (!moduleItem)
                 ; // Dummy
-            else if (PhEnableProcessQueryStage2 &&
+            else if (
+                PhEnableProcessQueryStage2 &&
+                PhCsUseColorModuleUnknown &&
                 context->HighlightUntrustedModules &&
                 PH_VERIFY_UNTRUSTED(moduleItem->VerifyResult) &&
                 (moduleItem->Type == PH_MODULE_TYPE_MODULE ||
@@ -1322,25 +1389,59 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
                 moduleItem->Type == PH_MODULE_TYPE_MAPPED_IMAGE ||
                 moduleItem->Type == PH_MODULE_TYPE_KERNEL_MODULE))
             {
-                getNodeColor->BackColor = PhCsColorUnknown;
+                getNodeColor->BackColor = PhCsColorModuleUnknown;
             }
-            else if (PhEnableImageCoherencySupport && context->HighlightLowImageCoherency && PhShouldShowModuleCoherency(moduleItem, TRUE))
-                getNodeColor->BackColor = PhCsColorLowImageCoherency;
-            else if (context->HighlightDotNetModules && FlagOn(moduleItem->Flags, LDRP_COR_IMAGE))
-                getNodeColor->BackColor = PhCsColorDotNet;
-            else if (context->HighlightImmersiveModules && FlagOn(moduleItem->ImageDllCharacteristics, IMAGE_DLLCHARACTERISTICS_APPCONTAINER))
-                getNodeColor->BackColor = PhCsColorImmersiveProcesses;
-            else if (context->HighlightRelocatedModules && moduleItem->ImageNotAtBase)
-                getNodeColor->BackColor = PhCsColorRelocatedModules;
-            else if (context->HighlightImageKnownDll && moduleItem->ImageKnownDll)
-                getNodeColor->BackColor = PhCsColorElevatedProcesses;
-            else if (PhEnableProcessQueryStage2 &&
+            else if (PhEnableImageCoherencySupport && PhCsUseColorModuleLowImageCoherency && context->HighlightLowImageCoherency && PhShouldShowModuleCoherency(moduleItem, TRUE))
+            {
+                getNodeColor->BackColor = PhCsColorModuleLowImageCoherency;
+            }
+            else if (PhCsUseColorModuleDotNet && context->HighlightDotNetModules && FlagOn(moduleItem->Flags, LDRP_COR_IMAGE))
+            {
+                getNodeColor->BackColor = PhCsColorModuleDotNet;
+            }
+            else if (PhCsUseColorModuleImmersive && context->HighlightImmersiveModules && FlagOn(moduleItem->ImageDllCharacteristics, IMAGE_DLLCHARACTERISTICS_APPCONTAINER))
+            {
+                getNodeColor->BackColor = PhCsColorModuleImmersive;
+            }
+            else if (PhCsUseColorModuleRelocated && context->HighlightRelocatedModules && moduleItem->ImageNotAtBase)
+            {
+                getNodeColor->BackColor = PhCsColorModuleRelocated;
+            }
+            else if (PhCsUseColorModuleImageKnownDll && context->HighlightImageKnownDll && moduleItem->ImageKnownDll)
+            {
+                getNodeColor->BackColor = PhCsColorModuleImageKnownDll;
+            }
+            else if (
+                PhEnableProcessQueryStage2 &&
+                PhCsUseColorModuleSystem &&
                 context->HighlightSystemModules &&
                 moduleItem->VerifyResult == VrTrusted &&
                 PhEqualStringRef2(&moduleItem->VerifySignerName->sr, L"Microsoft Windows", TRUE)
                 )
             {
-                getNodeColor->BackColor = PhCsColorSystemProcesses;
+                getNodeColor->BackColor = PhCsColorModuleSystem;
+            }
+            else
+            {
+                switch (moduleItem->Type)
+                {
+                case PH_MODULE_TYPE_MODULE:
+                case PH_MODULE_TYPE_WOW64_MODULE:
+                case PH_MODULE_TYPE_KERNEL_MODULE:
+                    {
+                        if (PhCsUseColorModuleSystem)
+                            getNodeColor->BackColor = PhCsColorModuleSystem;
+                    }
+                    break;
+                case PH_MODULE_TYPE_MAPPED_FILE:
+                case PH_MODULE_TYPE_MAPPED_IMAGE:
+                case PH_MODULE_TYPE_ENCLAVE_MODULE:
+                    {
+                        if (PhCsUseColorModuleMapped)
+                            getNodeColor->BackColor = PhCsColorModuleMapped;
+                    }
+                    break;
+                }
             }
 
             getNodeColor->Flags = TN_AUTO_FORECOLOR;
@@ -1440,7 +1541,7 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
             context->TreeNewSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -1469,13 +1570,13 @@ BOOLEAN NTAPI PhpModuleTreeNewCallback(
         {
             PH_TN_COLUMN_MENU_DATA data;
 
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = 0;
             data.DefaultSortOrder = NoSortOrder;
             PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_SHOW_RESET_SORT);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
+            data.Selection = PhShowEMenu(data.Menu, WindowHandle, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);

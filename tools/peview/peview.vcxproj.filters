@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -27,10 +27,16 @@
     <ClCompile Include="main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="start.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="misc.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="prpsh.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pvtheme.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="settings.c">
@@ -63,7 +69,13 @@
     <ClCompile Include="peprp.c">
       <Filter>Source Files\Pages\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="peprpicon.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="resprp.c">
+      <Filter>Source Files\Pages\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="resviewer.c">
       <Filter>Source Files\Pages\Windows</Filter>
     </ClCompile>
     <ClCompile Include="libprp.c">
@@ -101,6 +113,9 @@
     </ClCompile>
     <ClCompile Include="debugprp.c">
       <Filter>Source Files\Pages\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="runtimedebugprp.c">
+      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="pedirprp.c">
       <Filter>Source Files\Pages\Windows</Filter>
@@ -200,6 +215,12 @@
     <ClInclude Include="include\prpsh.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\pvtheme.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\pvresources.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="colmgr.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -211,7 +232,7 @@
     <ResourceCompile Include="version.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
-    <ResourceCompile Include="..\..\kphlib\include\sistatus.rc">
+    <ResourceCompile Include="$(SystemInformerRoot)kphlib\bin\$(Configuration)$(PlatformArchitecture)\sistatus.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>

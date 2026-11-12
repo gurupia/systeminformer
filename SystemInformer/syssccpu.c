@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -17,12 +17,14 @@
 #include <procprv.h>
 #include <phsettings.h>
 #include <phfirmware.h>
+#include <phintrin.h>
 #include <devguid.h>
 
 static PPH_SYSINFO_SECTION CpuSection;
 static HWND CpuDialog;
 static PH_LAYOUT_MANAGER CpuLayoutManager;
 static RECT CpuGraphMargin;
+static RECT CpuGraphMarginScaled;
 static HWND CpuGraphHandle;
 static PH_GRAPH_STATE CpuGraphState;
 static HWND *CpusGraphHandle;
@@ -31,6 +33,7 @@ static BOOLEAN OneGraphPerCpu;
 static HWND CpuPanel;
 static ULONG CpuTicked;
 static ULONG CpuMaxMhz;
+static PULONG CpuNominalMhz; // Per processor nominal frequency (hybrid processors have more than one)
 static ULONG NumberOfProcessors;
 static FLOAT CpuTimerResolution;
 static PFLOAT CpuFrequencyInformation;
@@ -39,6 +42,8 @@ static PSYSTEM_INTERRUPT_INFORMATION InterruptInformation;
 static PPROCESSOR_POWER_INFORMATION PowerInformation;
 static PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION CurrentPerformanceDistribution;
 static PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION PreviousPerformanceDistribution;
+static PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION *CurrentPerformanceDistributionEx; // Per processor group (multi-group machines)
+static PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION *PreviousPerformanceDistributionEx; // Per processor group (multi-group machines)
 static PH_LOGICAL_PROCESSOR_INFORMATION LogicalProcessorInformation;
 static PH_UINT32_DELTA ContextSwitchesDelta;
 static PH_UINT32_DELTA InterruptsDelta;
@@ -247,6 +252,7 @@ VOID PhSipInitializeCpuDialog(
     CpusGraphState = PhAllocate(sizeof(PH_GRAPH_STATE) * NumberOfProcessors);
     InterruptInformation = PhAllocate(sizeof(SYSTEM_INTERRUPT_INFORMATION) * NumberOfProcessors);
     PowerInformation = PhAllocate(sizeof(PROCESSOR_POWER_INFORMATION) * NumberOfProcessors);
+    CpuNominalMhz = PhAllocateZero(sizeof(ULONG) * NumberOfProcessors);
 
     if (PhGetIntegerSetting(SETTING_SYSINFO_SHOW_CPU_SPEED_PER_CPU))
     {
@@ -265,8 +271,21 @@ VOID PhSipInitializeCpuDialog(
     PhSipUpdateProcessorInformation();
     PhSipUpdateProcessorFrequency();
 
-    CurrentPerformanceDistribution = NULL;
-    PhGetSystemProcessorPerformanceDistribution(&CurrentPerformanceDistribution);
+    if (PhSystemProcessorInformation.SingleProcessorGroup)
+    {
+        CurrentPerformanceDistribution = NULL;
+        PhGetSystemProcessorPerformanceDistribution(&CurrentPerformanceDistribution);
+    }
+    else
+    {
+        CurrentPerformanceDistributionEx = PhAllocateZero(sizeof(PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION) * PhSystemProcessorInformation.NumberOfProcessorGroups);
+        PreviousPerformanceDistributionEx = PhAllocateZero(sizeof(PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION) * PhSystemProcessorInformation.NumberOfProcessorGroups);
+
+        for (USHORT processorGroup = 0; processorGroup < PhSystemProcessorInformation.NumberOfProcessorGroups; processorGroup++)
+        {
+            PhGetSystemProcessorPerformanceDistributionEx(processorGroup, &CurrentPerformanceDistributionEx[processorGroup]);
+        }
+    }
 
     PhGetSystemLogicalProcessorRelationInformation(&LogicalProcessorInformation);
 }
@@ -286,6 +305,8 @@ VOID PhSipUninitializeCpuDialog(
     PhFree(CpusGraphState);
     PhFree(InterruptInformation);
     PhFree(PowerInformation);
+    PhFree(CpuNominalMhz);
+    PhFree(CpuFrequencyInformation);
 
     // Note: Required for SysInfoViewChanging (dmex)
     NumberOfProcessors = 0;
@@ -294,6 +315,33 @@ VOID PhSipUninitializeCpuDialog(
     CpusGraphState = NULL;
     InterruptInformation = NULL;
     PowerInformation = NULL;
+    CpuNominalMhz = NULL;
+    CpuFrequencyInformation = NULL;
+
+    for (USHORT processorGroup = 0; processorGroup < PhSystemProcessorInformation.NumberOfProcessorGroups; processorGroup++)
+    {
+        if (CurrentPerformanceDistributionEx && CurrentPerformanceDistributionEx[processorGroup])
+        {
+            PhFree(CurrentPerformanceDistributionEx[processorGroup]);
+            CurrentPerformanceDistributionEx[processorGroup] = NULL;
+        }
+        if (PreviousPerformanceDistributionEx && PreviousPerformanceDistributionEx[processorGroup])
+        {
+            PhFree(PreviousPerformanceDistributionEx[processorGroup]);
+            PreviousPerformanceDistributionEx[processorGroup] = NULL;
+        }
+    }
+
+    if (CurrentPerformanceDistributionEx)
+    {
+        PhFree(CurrentPerformanceDistributionEx);
+        CurrentPerformanceDistributionEx = NULL;
+    }
+    if (PreviousPerformanceDistributionEx)
+    {
+        PhFree(PreviousPerformanceDistributionEx);
+        PreviousPerformanceDistributionEx = NULL;
+    }
 
     if (CurrentPerformanceDistribution)
     {
@@ -324,7 +372,10 @@ VOID PhSipTickCpuDialog(
 
     PhSipUpdateTimerResolution();
     PhSipUpdateProcessorInformation();
-    PhSipUpdateProcessorPerformanceDistribution();
+    if (PhSystemProcessorInformation.NumberOfProcessorGroups > 1)
+        PhSipUpdateProcessorPerformanceDistributionEx();
+    else
+        PhSipUpdateProcessorPerformanceDistribution();
     //PhGetSystemLogicalProcessorRelationInformation(&LogicalProcessorInformation);
 
     if (CpuTicked < 2)
@@ -360,6 +411,8 @@ INT_PTR CALLBACK PhSipCpuDialogProc(
             graphItem = PhAddLayoutItem(&CpuLayoutManager, GetDlgItem(hwndDlg, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
             panelItem = PhAddLayoutItem(&CpuLayoutManager, GetDlgItem(hwndDlg, IDC_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             CpuGraphMargin = graphItem->Margin;
+            CpuGraphMarginScaled = CpuGraphMargin;
+            PhGetMarginDpiValue(&CpuGraphMarginScaled, CpuSection->Parameters->WindowDpi, TRUE);
 
             SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), CpuSection->Parameters->LargeFont, FALSE);
             SetWindowFont(labelHandle, CpuSection->Parameters->MediumFont, FALSE);
@@ -370,7 +423,7 @@ INT_PTR CALLBACK PhSipCpuDialogProc(
 
             CpuPanel = PhCreateDialog(PhInstanceHandle, MAKEINTRESOURCE(IDD_SYSINFO_CPUPANEL), hwndDlg, PhSipCpuPanelDialogProc, NULL);
             ShowWindow(CpuPanel, SW_SHOW);
-            PhAddLayoutItemEx(&CpuLayoutManager, CpuPanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
+            PhAddLayoutItemExLogical(&CpuLayoutManager, CpuPanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
 
             PhSipCreateCpuGraphs();
 
@@ -398,6 +451,9 @@ INT_PTR CALLBACK PhSipCpuDialogProc(
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
+            CpuGraphMarginScaled = CpuGraphMargin;
+            PhGetMarginDpiValue(&CpuGraphMarginScaled, CpuSection->Parameters->WindowDpi, TRUE);
+
             if (CpuSection->Parameters->LargeFont)
             {
                 SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), CpuSection->Parameters->LargeFont, FALSE);
@@ -469,6 +525,7 @@ INT_PTR CALLBACK PhSipCpuPanelDialogProc(
     {
     case WM_INITDIALOG:
         {
+            PhInitializeThemeWindowGroupBoxes(hwndDlg);
             CpuL1CacheSize = 0;
             CpuL2CacheSize = 0;
             CpuL3CacheSize = 0;
@@ -503,8 +560,14 @@ INT_PTR CALLBACK PhSipCpuPanelDialogProc(
             case IDC_ONEGRAPHPERCPU:
                 {
                     OneGraphPerCpu = Button_GetCheck(GET_WM_COMMAND_HWND(wParam, lParam)) == BST_CHECKED;
+
+                    // Suspend painting so the graphs switch in a single repaint.
+                    SendMessage(CpuDialog, WM_SETREDRAW, FALSE, 0);
                     PhSipLayoutCpuGraphs();
                     PhSipSetOneGraphPerCpu();
+                    PhSipUpdateCpuGraphs();
+                    SendMessage(CpuDialog, WM_SETREDRAW, TRUE, 0);
+                    RedrawWindow(CpuDialog, NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                 }
                 break;
             }
@@ -550,7 +613,7 @@ VOID PhSipCreateCpuGraphs(
     CpuGraphHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_CHILD | WS_BORDER,
+        WS_CHILD | WS_CLIPSIBLINGS | WS_BORDER,
         0,
         0,
         0,
@@ -573,7 +636,7 @@ VOID PhSipCreateCpuGraphs(
         CpusGraphHandle[i] = PhCreateWindow(
             PH_GRAPH_CLASSNAME,
             NULL,
-            WS_CHILD | WS_BORDER,
+            WS_CHILD | WS_CLIPSIBLINGS | WS_BORDER,
             0,
             0,
             0,
@@ -599,8 +662,7 @@ VOID PhSipLayoutCpuGraphs(
     RECT rect;
     HDWP deferHandle;
 
-    rect = CpuGraphMargin;
-    PhGetSizeDpiValue(&rect, CpuSection->Parameters->WindowDpi, TRUE);
+    rect = CpuGraphMarginScaled;
 
     if (!PhGetClientRect(CpuDialog, &clientRect))
         return;
@@ -1059,16 +1121,7 @@ VOID PhSipUpdateCpuPanel(
     )
 {
     LARGE_INTEGER systemUptime;
-    LARGE_INTEGER performanceCounterStart;
-    LARGE_INTEGER performanceCounterEnd;
     LARGE_INTEGER performanceCounterTicks;
-    ULONG64 timeStampCounterStart;
-    ULONG64 timeStampCounterEnd;
-#ifdef _ARM64_
-    ULONG64 currentExceptionLevel;
-#else
-    LONG cpubrand[4];
-#endif
     PH_FORMAT format[6];
     WCHAR formatBuffer[256];
     WCHAR uptimeString[PH_TIMESPAN_STR_LEN_1] = { L"Unknown" };
@@ -1244,30 +1297,7 @@ VOID PhSipUpdateCpuPanel(
             PhSetWindowText(CpuPanelLogicalLabel, PhaFormatUInt64(LogicalProcessorInformation.ProcessorLogicalCount, TRUE)->Buffer);
     }
 
-    // Do not optimize (dmex)
-    PhQueryPerformanceCounter(&performanceCounterStart);
-    timeStampCounterStart = PhReadTimeStampCounter();
-#ifdef _ARM64_
-    // 0b11    0b000    0b0100    0b0010    0b010    CurrentEL     Current Exception Level
-    currentExceptionLevel = _ReadStatusReg(ARM64_SYSREG(3, 0, 4, 2, 2));
-#else
-    CpuIdEx(cpubrand, 0, 0);
-#endif
-    MemoryBarrier();
-    timeStampCounterEnd = PhReadTimeStampCounter();
-    PhQueryPerformanceCounter(&performanceCounterEnd);
-    performanceCounterTicks.QuadPart = performanceCounterEnd.QuadPart - performanceCounterStart.QuadPart;
-
-    if (timeStampCounterStart == 0 && timeStampCounterEnd == 0 &&
-#ifdef _ARM64_
-        currentExceptionLevel == MAXULONG64
-#else
-        cpubrand[0] == 0 && cpubrand[3] == 0
-#endif
-        )
-    {
-        performanceCounterTicks.QuadPart = 0;
-    }
+    performanceCounterTicks = PhSipGetCpuInterceptLatency();
 
     PhInitFormatI64UGroupDigits(&format[0], performanceCounterTicks.QuadPart);
     PhInitFormatS(&format[1], L" | ");
@@ -1386,17 +1416,17 @@ PPH_STRING PhSipGetCpuBrandString(
     static CONST PH_STRINGREF whitespace = PH_STRINGREF_INIT(L" ");
     PPH_STRING brand = NULL;
     ULONG brandLength;
-    CHAR brandString[49];
+    SYSTEM_PROCESSOR_BRAND_STRING brandString;
 
     if (NT_SUCCESS(NtQuerySystemInformation(
         SystemProcessorBrandString,
-        brandString,
+        &brandString,
         sizeof(brandString),
         NULL
         )))
     {
-        brandLength = sizeof(brandString) - sizeof(ANSI_NULL);
-        brand = PhConvertUtf8ToUtf16Ex(brandString, brandLength);
+        brandLength = sizeof(brandString.BrandString) - sizeof(ANSI_NULL);
+        brand = PhConvertUtf8ToUtf16Ex(brandString.BrandString, brandLength);
     }
     else
     {
@@ -1484,15 +1514,182 @@ PPH_STRING PhSipGetCpuBrandString(
     return brand;
 }
 
+#ifdef _ARM64_
+/**
+ * Selects the system register used to measure hypervisor intercept latency on ARM64.
+ *
+ * \return The ARM64_SYSREG encoding of the register to read, or 0 if none is usable.
+ *
+ * \remarks CPUID on x64 is an unconditional VM exit, but ARM64 has no EL0 instruction that
+ * is guaranteed to exit to EL2. The closest equivalent is an EL0-accessible system register
+ * whose only possible intercept is a hypervisor trap. PMUSERENR_EL0 is architecturally
+ * readable at EL0 whenever FEAT_PMUv3 is implemented (no SCTLR_EL1 or PMUSERENR_EL0.EN gate)
+ * and the only trap is to EL2 via MDCR_EL2.TPM. The read is UNDEFINED when the PMU is absent
+ * (e.g. a guest without a virtual PMU), so it is probed once under SEH and the result cached,
+ * keeping exceptions out of the timed path. Previously CurrentEL was used, which is only
+ * accessible at EL1 or above; Windows 11 emulates the EL0 read but Windows 10 does not, which
+ * raised STATUS_ILLEGAL_INSTRUCTION (#3110). CTR_EL0 is not a usable fallback because Windows
+ * leaves SCTLR_EL1.UCT clear, so EL0 reads of it fault as well.
+ */
+static ULONG PhSipGetCpuInterceptRegister(
+    VOID
+    )
+{
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static ULONG interceptRegister = 0;
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        volatile ULONG64 value;
+
+        __try
+        {
+            value = _ReadStatusReg(ARM64_PMUSERENR_EL0);
+            interceptRegister = ARM64_PMUSERENR_EL0;
+        }
+        __except (GetExceptionCode() == STATUS_ILLEGAL_INSTRUCTION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+        {
+            NOTHING;
+        }
+
+        PhEndInitOnce(&initOnce);
+    }
+
+    return interceptRegister;
+}
+#endif
+
+LARGE_INTEGER PhSipGetCpuInterceptLatency(
+    VOID
+    )
+{
+    LARGE_INTEGER performanceCounterStart;
+    LARGE_INTEGER performanceCounterEnd;
+    LARGE_INTEGER performanceCounterTicks;
+    ULONG64 timeStampCounterStart;
+    ULONG64 timeStampCounterEnd;
+    BOOLEAN counterValid = FALSE;
+    volatile ULONG64 cpuInfoValid = 0;
+
+#ifndef _ARM64_
+    LONG cpuInfo[4];
+#endif
+
+#ifdef _ARM64_
+    if (PhSipGetCpuInterceptRegister() == 0)
+    {
+        performanceCounterTicks.QuadPart = 0;
+        return performanceCounterTicks;
+    }
+#endif
+
+    PhQueryPerformanceCounter(&performanceCounterStart);
+    timeStampCounterStart = PhReadTimeStampCounter();
+
+#ifdef _ARM64_
+    cpuInfoValid = _ReadStatusReg(ARM64_PMUSERENR_EL0);
+    counterValid = TRUE;
+#else
+    CpuIdEx(cpuInfo, 0, 0);
+    cpuInfoValid = ((ULONG64)(ULONG)cpuInfo[0]) | ((ULONG64)(ULONG)cpuInfo[3] << 32);
+    counterValid = cpuInfoValid != 0;
+#endif
+
+    MemoryBarrier();
+
+    timeStampCounterEnd = PhReadTimeStampCounter();
+    PhQueryPerformanceCounter(&performanceCounterEnd);
+
+    performanceCounterTicks.QuadPart = performanceCounterEnd.QuadPart - performanceCounterStart.QuadPart;
+
+    if (timeStampCounterStart == 0 && timeStampCounterEnd == 0 && !counterValid)
+        performanceCounterTicks.QuadPart = 0;
+
+    return performanceCounterTicks;
+}
+
+VOID PhSipUpdateProcessorFrequencyFromPowerInformation(
+    VOID
+    )
+{
+    ULONGLONG currentMhzTotal = 0;
+
+    // Derive the CPU page frequency from the processor power information that
+    // PhSipUpdateProcessorInformation() already retrieved via NtPowerInformation(ProcessorInformation), matching the
+    // approach used by Task Manager (average of PROCESSOR_POWER_INFORMATION.CurrentMhz). (dmex)
+
+    for (ULONG i = 0; i < NumberOfProcessors; i++)
+    {
+        if (CpuFrequencyInformation)
+            CpuFrequencyInformation[i] = (FLOAT)PowerInformation[i].CurrentMhz;
+
+        currentMhzTotal += PowerInformation[i].CurrentMhz;
+    }
+
+    if (NumberOfProcessors != 0)
+        CpuCurrentFrequency = (FLOAT)((DOUBLE)currentMhzTotal / (DOUBLE)NumberOfProcessors);
+    else
+        CpuCurrentFrequency = (FLOAT)PowerInformation[0].CurrentMhz;
+}
+
+_Success_(return)
+BOOLEAN PhSipAccumulateProcessorPerformanceDistribution(
+    _In_ PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION Current,
+    _In_ PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION Previous,
+    _In_ ULONG BaseProcessorIndex,
+    _Inout_ PDOUBLE TotalWeightedFrequency,
+    _Inout_ PULONG64 TotalHitCount
+    )
+{
+    DOUBLE totalWeightedFrequency = 0;
+    ULONG64 totalHitCount = 0;
+
+    // PercentPerformance is relative to the nominal frequency of this processor's performance
+    // domain, not the system wide nominal frequency.
+    //
+    // Note: Windows 10 encodes the performance as a pseudo distribution with PercentFrequency
+    // values of 0 and 255, so PercentPerformance cannot exceed 255 percent. Hybrid processors
+    // with a low efficiency core nominal frequency can run above that and the value is capped.
+    // We keep the capped value until the driver can provide APERF/MPERF data.
+    // https://github.com/winsiderss/systeminformer/issues/3109 (dmex)
+
+    if (Current->ProcessorCount != Previous->ProcessorCount)
+        return FALSE;
+
+    for (ULONG i = 0; i < Current->ProcessorCount; i++)
+    {
+        PH_PROCESSOR_PERFORMANCE_DELTA delta;
+        ULONG processorIndex = BaseProcessorIndex + i;
+        DOUBLE frequency;
+
+        if (processorIndex >= NumberOfProcessors)
+            break;
+
+        if (!PhCalculateProcessorPerformanceDistributionDelta(Current, Previous, i, &delta))
+            return FALSE;
+
+        frequency = (DOUBLE)delta.PercentPerformance * (DOUBLE)CpuNominalMhz[processorIndex] / 100.0;
+
+        if (CpuFrequencyInformation)
+        {
+            CpuFrequencyInformation[processorIndex] = delta.TotalHitCount ? (FLOAT)frequency : 0.0f;
+        }
+
+        totalWeightedFrequency += frequency * (DOUBLE)delta.TotalHitCount;
+        totalHitCount += delta.TotalHitCount;
+    }
+
+    *TotalWeightedFrequency += totalWeightedFrequency;
+    *TotalHitCount += totalHitCount;
+    return TRUE;
+}
+
 VOID PhSipUpdateProcessorPerformanceDistribution(
     VOID
     )
 {
-    ULONG i, j;
-    PSYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION current = NULL;
-    PSYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION previous = NULL;
-    ULONGLONG totalCount = 0;
-    ULONGLONG totalValue = 0;
+    DOUBLE totalWeightedFrequency = 0;
+    ULONG64 totalHitCount = 0;
 
     if (PreviousPerformanceDistribution)
     {
@@ -1507,93 +1704,97 @@ VOID PhSipUpdateProcessorPerformanceDistribution(
 
     if (!CurrentPerformanceDistribution || !PreviousPerformanceDistribution)
         goto CleanupExit;
-    if (CurrentPerformanceDistribution->ProcessorCount != PreviousPerformanceDistribution->ProcessorCount)
-        goto CleanupExit;
-    if (CurrentPerformanceDistribution->ProcessorCount != NumberOfProcessors)
-        goto CleanupExit;
 
-    for (i = 0; i < NumberOfProcessors; i++)
+    if (!PhSipAccumulateProcessorPerformanceDistribution(
+        CurrentPerformanceDistribution,
+        PreviousPerformanceDistribution,
+        0,
+        &totalWeightedFrequency,
+        &totalHitCount
+        ))
     {
-        ULONGLONG count = 0;
-        ULONGLONG value = 0;
-
-        current = PTR_ADD_OFFSET(CurrentPerformanceDistribution, CurrentPerformanceDistribution->Offsets[i]);
-        previous = PTR_ADD_OFFSET(PreviousPerformanceDistribution, PreviousPerformanceDistribution->Offsets[i]);
-
-        if (current->StateCount != previous->StateCount)
-            goto CleanupExit;
-
-        if (WindowsVersion >= WINDOWS_8_1)
-        {
-            for (j = 0; j < current->StateCount; j++)
-            {
-                PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT hitcountCurrent = PTR_ADD_OFFSET(current->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT) * j);
-                PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT hitcountPrevious = PTR_ADD_OFFSET(previous->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT) * j);
-                ULONGLONG delta = hitcountCurrent->Hits - hitcountPrevious->Hits;
-
-                if (delta)
-                {
-                    count += delta;
-                    value += delta * hitcountCurrent->PercentFrequency * CpuMaxMhz;
-                }
-            }
-        }
-        else
-        {
-            for (j = 0; j < current->StateCount; j++)
-            {
-                PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8 hitcountOldCurrent = PTR_ADD_OFFSET(current->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8) * j);
-                PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8 hitcountOldPrevious = PTR_ADD_OFFSET(previous->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8) * j);
-                ULONGLONG delta = hitcountOldCurrent->Hits - hitcountOldPrevious->Hits;
-
-                if (delta)
-                {
-                    count += delta;
-                    value += delta * hitcountOldCurrent->PercentFrequency * CpuMaxMhz;
-                }
-            }
-        }
-
-        if (CpuFrequencyInformation)
-        {
-            CpuFrequencyInformation[i] = count ? (FLOAT)((DOUBLE)value / (DOUBLE)count / 100.0) : 0.0f;
-        }
-
-        totalCount += count;
-        totalValue += value;
+        goto CleanupExit;
     }
 
-    if (PreviousPerformanceDistribution)
+    if (totalHitCount == 0)
     {
-        PhFree(PreviousPerformanceDistribution);
-        PreviousPerformanceDistribution = NULL;
+        PhSipUpdateProcessorFrequencyFromPowerInformation();
+        return;
     }
 
-    if (totalCount == 0)
-        CpuCurrentFrequency = (FLOAT)PowerInformation[0].CurrentMhz;
-    else
-        CpuCurrentFrequency = (FLOAT)((DOUBLE)totalValue / (DOUBLE)totalCount / 100.0);
-
+    CpuCurrentFrequency = (FLOAT)(totalWeightedFrequency / (DOUBLE)totalHitCount);
     return;
 
 CleanupExit:
-    if (CurrentPerformanceDistribution)
-    {
-        PhFree(CurrentPerformanceDistribution);
-        CurrentPerformanceDistribution = NULL;
-    }
+    // Keep the current distribution as the baseline for the next update. Freeing it here
+    // would leave the next update without a previous sample, and that one would fail too. (dmex)
     if (PreviousPerformanceDistribution)
     {
         PhFree(PreviousPerformanceDistribution);
         PreviousPerformanceDistribution = NULL;
     }
 
-    if (CpuFrequencyInformation)
+    PhSipUpdateProcessorFrequencyFromPowerInformation();
+}
+
+VOID PhSipUpdateProcessorPerformanceDistributionEx(
+    VOID
+    )
+{
+    DOUBLE totalWeightedFrequency = 0;
+    ULONG64 totalHitCount = 0;
+    ULONG processorIndex = 0; // Global (system-wide) processor index across all groups.
+    BOOLEAN valid = TRUE;
+
+    // The SystemProcessorPerformanceDistribution class only returns data for a single
+    // processor group per query, so iterate every group and aggregate the per-processor
+    // frequency into the system-wide CpuFrequencyInformation array (indexed in group
+    // order) and into the overall CpuCurrentFrequency average. Every group is rotated
+    // even when another group fails so each keeps a baseline for the next update. (dmex)
+
+    for (USHORT processorGroup = 0; processorGroup < PhSystemProcessorInformation.NumberOfProcessorGroups; processorGroup++)
     {
-        memset(CpuFrequencyInformation, 0, sizeof(FLOAT) * NumberOfProcessors);
+        if (PreviousPerformanceDistributionEx[processorGroup])
+        {
+            PhFree(PreviousPerformanceDistributionEx[processorGroup]);
+            PreviousPerformanceDistributionEx[processorGroup] = NULL;
+        }
+
+        PreviousPerformanceDistributionEx[processorGroup] = CurrentPerformanceDistributionEx[processorGroup];
+        CurrentPerformanceDistributionEx[processorGroup] = NULL;
+
+        PhGetSystemProcessorPerformanceDistributionEx(processorGroup, &CurrentPerformanceDistributionEx[processorGroup]);
+
+        if (
+            !CurrentPerformanceDistributionEx[processorGroup] ||
+            !PreviousPerformanceDistributionEx[processorGroup] ||
+            !PhSipAccumulateProcessorPerformanceDistribution(
+                CurrentPerformanceDistributionEx[processorGroup],
+                PreviousPerformanceDistributionEx[processorGroup],
+                processorIndex,
+                &totalWeightedFrequency,
+                &totalHitCount
+                ))
+        {
+            if (PreviousPerformanceDistributionEx[processorGroup])
+            {
+                PhFree(PreviousPerformanceDistributionEx[processorGroup]);
+                PreviousPerformanceDistributionEx[processorGroup] = NULL;
+            }
+
+            valid = FALSE;
+        }
+
+        processorIndex += PhGetActiveProcessorCount(processorGroup);
     }
 
-    CpuCurrentFrequency = (FLOAT)PowerInformation[0].CurrentMhz;
+    if (!valid || totalHitCount == 0)
+    {
+        PhSipUpdateProcessorFrequencyFromPowerInformation();
+        return;
+    }
+
+    CpuCurrentFrequency = (FLOAT)(totalWeightedFrequency / (DOUBLE)totalHitCount);
 }
 
 _Success_(return)
@@ -1627,8 +1828,8 @@ BOOLEAN PhSipGetCpuFrequencyFromDistributionLegacy(
         if (stateDistribution->StateCount != 2)
         {
             PhFree(differences);
-        return FALSE;
-    }
+            return FALSE;
+        }
 
         for (j = 0; j < stateDistribution->StateCount; j++)
         {
@@ -1747,8 +1948,9 @@ BOOLEAN PhSipGetCpuFrequencyFromDistribution(
 
             for (j = 0; j < current->StateCount; j++)
             {
-                hitcountCurrent = PTR_ADD_OFFSET(current->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT) * j);
-                hitcountPrevious = PTR_ADD_OFFSET(previous->States, sizeof(SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT) * j);
+                hitcountCurrent = &current->States[j];
+                hitcountPrevious = &previous->States[j];
+
                 delta = hitcountCurrent->Hits - hitcountPrevious->Hits;
                 percent = hitcountCurrent->PercentFrequency;
 
@@ -1977,7 +2179,7 @@ PCPH_STRINGREF PhGetHybridProcessorType(
         PhEndInitOnce(&initOnce);
     }
 
-    if (!hybridProcessorTypeList || ProcessorIndex > hybridProcessorTypeList->Count)
+    if (!hybridProcessorTypeList || ProcessorIndex >= hybridProcessorTypeList->Count)
         return NULL;
 
     switch (PtrToUlong(hybridProcessorTypeList->Items[ProcessorIndex]))
@@ -2058,7 +2260,7 @@ PCPH_STRINGREF PhGetHybridProcessorType(
         PhEndInitOnce(&initOnce);
     }
 
-    if (!hybridProcessorTypeList || ProcessorIndex > hybridProcessorTypeList->Count)
+    if (!hybridProcessorTypeList || ProcessorIndex >= hybridProcessorTypeList->Count)
         return NULL;
 
     switch (PtrToUlong(hybridProcessorTypeList->Items[ProcessorIndex]))
@@ -2289,37 +2491,30 @@ VOID PhSipUpdateProcessorFrequency(
     VOID
     )
 {
-    POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_INPUT input;
-    POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_OUTPUT output;
+    // The performance distribution reports each processor as a percentage of its own
+    // performance domain nominal frequency, and hybrid processors have a different nominal
+    // frequency for each core type. Query every processor rather than processor 0 only. (dmex)
 
-    memset(&input, 0, sizeof(POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_INPUT));
-    input.InternalType = PowerInternalProcessorBrandedFrequency;
-    input.ProcessorNumber.Group = USHRT_MAX;
-    input.ProcessorNumber.Number = UCHAR_MAX;
-    input.ProcessorNumber.Reserved = UCHAR_MAX;
-
-    memset(&output, 0, sizeof(POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_OUTPUT));
-    output.Version = POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_VERSION;
-
-    if (NT_SUCCESS(NtPowerInformation(
-        PowerInformationInternal,
-        &input,
-        sizeof(input),
-        &output,
-        sizeof(output)
-        )))
-    {
-        if (output.Version == POWER_INTERNAL_PROCESSOR_BRANDED_FREQUENCY_VERSION)
-        {
-            CpuMaxMhz = output.NominalFrequency;
-            return;
-        }
-    }
+    CpuMaxMhz = 0;
 
     for (ULONG i = 0; i < NumberOfProcessors; i++)
     {
-        if (CpuMaxMhz < PowerInformation[i].MaxMhz)
-            CpuMaxMhz = PowerInformation[i].MaxMhz;
+        PH_PROCESSOR_NUMBER processorNumber;
+        ULONG nominalFrequency = 0;
+
+        if (NT_SUCCESS(PhGetProcessorNumberFromIndex(i, &processorNumber)))
+        {
+            if (!NT_SUCCESS(PhGetProcessorNominalFrequency(&processorNumber, &nominalFrequency)))
+                nominalFrequency = 0;
+        }
+
+        if (nominalFrequency == 0)
+            nominalFrequency = PowerInformation[i].MaxMhz;
+
+        CpuNominalMhz[i] = nominalFrequency;
+
+        if (CpuMaxMhz < nominalFrequency)
+            CpuMaxMhz = nominalFrequency;
     }
 }
 
@@ -2341,6 +2536,89 @@ VOID PhSipUpdateTimerResolution(
     }
 }
 
+#define PHP_SIP_CACHE_LEVEL_L1 1
+#define PHP_SIP_CACHE_LEVEL_L2 2
+#define PHP_SIP_CACHE_LEVEL_L3 3
+
+BOOLEAN PhpSipUpdateCpuCacheTopology(
+    VOID
+    )
+{
+    ULONG bufferLength;
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX logicalInformation;
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX processorInfo;
+
+    if (!NT_SUCCESS(PhGetSystemLogicalProcessorInformation(RelationCache, &logicalInformation, &bufferLength)))
+        return FALSE;
+
+    CpuL1CacheSize = 0;
+    CpuL2CacheSize = 0;
+    CpuL3CacheSize = 0;
+
+    for (processorInfo = logicalInformation;
+         (ULONG_PTR)processorInfo < (ULONG_PTR)PTR_ADD_OFFSET(logicalInformation, bufferLength);
+         processorInfo = PTR_ADD_OFFSET(processorInfo, processorInfo->Size))
+    {
+        switch (processorInfo->Cache.Level)
+        {
+        case PHP_SIP_CACHE_LEVEL_L1:
+            CpuL1CacheSize += processorInfo->Cache.CacheSize;
+            break;
+        case PHP_SIP_CACHE_LEVEL_L2:
+            CpuL2CacheSize += processorInfo->Cache.CacheSize;
+            break;
+        case PHP_SIP_CACHE_LEVEL_L3:
+            CpuL3CacheSize += processorInfo->Cache.CacheSize;
+            break;
+        }
+    }
+
+    PhFree(logicalInformation);
+
+    return CpuL1CacheSize || CpuL2CacheSize || CpuL3CacheSize;
+}
+
+#define PHP_SIP_SMBIOS_CACHE_GRANULARITY_64K 0x10000
+#define PHP_SIP_SMBIOS_CACHE_GRANULARITY_1K  0x400
+#define PHP_SIP_SMBIOS_CACHE_LEVEL_L1 0
+#define PHP_SIP_SMBIOS_CACHE_LEVEL_L2 1
+#define PHP_SIP_SMBIOS_CACHE_LEVEL_L3 2
+
+typedef struct _PHP_SIP_SMBIOS_CONTEXT
+{
+    USHORT CacheHandles[128];
+    ULONG CacheHandleCount;
+} PHP_SIP_SMBIOS_CONTEXT, *PPHP_SIP_SMBIOS_CONTEXT;
+
+_Function_class_(PH_ENUM_SMBIOS_CALLBACK)
+BOOLEAN NTAPI PhpSipCpuSMBIOSProcessorCallback(
+    _In_ ULONG_PTR EnumHandle,
+    _In_ UCHAR MajorVersion,
+    _In_ UCHAR MinorVersion,
+    _In_ PPH_SMBIOS_ENTRY Entry,
+    _In_opt_ PVOID Context
+    )
+{
+    PPHP_SIP_SMBIOS_CONTEXT context = Context;
+
+    if (!context || Entry->Header.Type != SMBIOS_PROCESSOR_INFORMATION_TYPE)
+        return FALSE;
+
+    if (PH_SMBIOS_CONTAINS_FIELD(Entry, Processor, L3CacheHandle))
+    {
+        if (Entry->Processor.L1CacheHandle != 0xFFFF && context->CacheHandleCount < RTL_NUMBER_OF(context->CacheHandles))
+            context->CacheHandles[context->CacheHandleCount++] = Entry->Processor.L1CacheHandle;
+
+        if (Entry->Processor.L2CacheHandle != 0xFFFF && context->CacheHandleCount < RTL_NUMBER_OF(context->CacheHandles))
+            context->CacheHandles[context->CacheHandleCount++] = Entry->Processor.L2CacheHandle;
+
+        if (Entry->Processor.L3CacheHandle != 0xFFFF && context->CacheHandleCount < RTL_NUMBER_OF(context->CacheHandles))
+            context->CacheHandles[context->CacheHandleCount++] = Entry->Processor.L3CacheHandle;
+    }
+
+    return FALSE;
+}
+
 _Function_class_(PH_ENUM_SMBIOS_CALLBACK)
 BOOLEAN NTAPI PhpSipCpuSMBIOSCallback(
     _In_ ULONG_PTR EnumHandle,
@@ -2350,7 +2628,10 @@ BOOLEAN NTAPI PhpSipCpuSMBIOSCallback(
     _In_opt_ PVOID Context
     )
 {
+    PPHP_SIP_SMBIOS_CONTEXT context = Context;
     ULONG64 size;
+    ULONG i;
+    BOOLEAN handleMatched;
 
     if (Entry->Header.Type != SMBIOS_CACHE_INFORMATION_TYPE)
         return FALSE;
@@ -2361,6 +2642,22 @@ BOOLEAN NTAPI PhpSipCpuSMBIOSCallback(
         return FALSE;
     }
 
+    if (context)
+    {
+        handleMatched = FALSE;
+        for (i = 0; i < context->CacheHandleCount; i++)
+        {
+            if (context->CacheHandles[i] == Entry->Header.Handle)
+            {
+                handleMatched = TRUE;
+                break;
+            }
+        }
+
+        if (!handleMatched)
+            return FALSE;
+    }
+
     size = 0;
 
     if (PH_SMBIOS_CONTAINS_FIELD(Entry, Cache, InstalledSize))
@@ -2369,28 +2666,28 @@ BOOLEAN NTAPI PhpSipCpuSMBIOSCallback(
             PH_SMBIOS_CONTAINS_FIELD(Entry, Cache, InstalledSize2))
         {
             if (Entry->Cache.InstalledSize2.Granularity)
-                size = (ULONG64)Entry->Cache.InstalledSize2.Size * 0x10000;
+                size = (ULONG64)Entry->Cache.InstalledSize2.Size * PHP_SIP_SMBIOS_CACHE_GRANULARITY_64K;
             else
-                size = (ULONG64)Entry->Cache.InstalledSize2.Size * 0x400;
+                size = (ULONG64)Entry->Cache.InstalledSize2.Size * PHP_SIP_SMBIOS_CACHE_GRANULARITY_1K;
         }
         else
         {
             if (Entry->Cache.InstalledSize.Granularity)
-                size = (ULONG64)Entry->Cache.InstalledSize.Size * 0x10000;
+                size = (ULONG64)Entry->Cache.InstalledSize.Size * PHP_SIP_SMBIOS_CACHE_GRANULARITY_64K;
             else
-                size = (ULONG64)Entry->Cache.InstalledSize.Size * 0x400;
+                size = (ULONG64)Entry->Cache.InstalledSize.Size * PHP_SIP_SMBIOS_CACHE_GRANULARITY_1K;
         }
     }
 
     switch (Entry->Cache.Configuration.Level)
     {
-    case 0:
+    case PHP_SIP_SMBIOS_CACHE_LEVEL_L1:
         CpuL1CacheSize += size;
         break;
-    case 1:
+    case PHP_SIP_SMBIOS_CACHE_LEVEL_L2:
         CpuL2CacheSize += size;
         break;
-    case 2:
+    case PHP_SIP_SMBIOS_CACHE_LEVEL_L3:
         CpuL3CacheSize += size;
         break;
     }
@@ -2403,6 +2700,15 @@ NTSTATUS NTAPI PhSipCpuSMBIOSWorkRoutine(
     _In_ PVOID ThreadParameter
     )
 {
-    PhEnumSMBIOS(PhpSipCpuSMBIOSCallback, NULL);
+    if (!PhpSipUpdateCpuCacheTopology())
+    {
+        PHP_SIP_SMBIOS_CONTEXT context;
+
+        RtlZeroMemory(&context, sizeof(PHP_SIP_SMBIOS_CONTEXT));
+
+        PhEnumSMBIOS(PhpSipCpuSMBIOSProcessorCallback, &context);
+        PhEnumSMBIOS(PhpSipCpuSMBIOSCallback, &context);
+    }
+
     return STATUS_SUCCESS;
 }

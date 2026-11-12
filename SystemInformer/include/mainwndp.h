@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -32,6 +32,14 @@ extern PH_PROVIDER_REGISTRATION PhMwpProcessProviderRegistration;
 extern PH_PROVIDER_REGISTRATION PhMwpServiceProviderRegistration;
 extern PH_PROVIDER_REGISTRATION PhMwpNetworkProviderRegistration;
 extern BOOLEAN PhMwpUpdateAutomatically;
+
+VOID PhMwpSetUpdateAutomatically(
+    _In_ BOOLEAN UpdateAutomatically
+    );
+
+VOID PhMwpSetTemporaryUpdatePause(
+    _In_ BOOLEAN Pause
+    );
 
 extern ULONG PhMwpNotifyIconNotifyMask;
 extern ULONG PhMwpLastNotificationType;
@@ -61,6 +69,7 @@ VOID PhMwpInitializeProviders(
     );
 
 VOID PhMwpShowWindow(
+    _In_ HWND WindowHandle,
     _In_ LONG ShowCommand
     );
 
@@ -107,7 +116,7 @@ VOID PhMwpInvokeUpdateWindowFont(
     );
 
 VOID PhMwpInvokeUpdateWindowFontMonospace(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_opt_ PVOID Parameter
     );
 
@@ -270,7 +279,8 @@ VOID PhMwpOnDeviceChanged(
 
 VOID PhMwpOnDpiChanged(
     _In_ HWND WindowHandle,
-    _In_ LONG WindowDpi
+    _In_ LONG WindowDpi,
+    _In_opt_ PRECT SuggestedRect
     );
 
 LRESULT PhMwpOnUserMessage(
@@ -299,6 +309,14 @@ VOID PhMwpSaveWindowState(
 //
 // Misc.
 //
+
+VOID PhMwpSaveTabLayoutSetting(
+    VOID
+    );
+
+VOID PhMwpRestoreTabLayout(
+    VOID
+    );
 
 VOID PhMwpUpdateLayoutPadding(
     VOID
@@ -346,7 +364,7 @@ VOID PhMwpDispatchMenuCommand(
     );
 
 VOID PhMwpInitializeSubMenu(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PPH_EMENU Menu,
     _In_ ULONG Index
     );
@@ -430,6 +448,30 @@ BOOLEAN PhMwpPluginNotifyEvent(
 
 typedef struct _PH_MAIN_TAB_PAGE *PPH_MAIN_TAB_PAGE;
 typedef struct _PH_PROVIDER_EVENT_QUEUE PH_PROVIDER_EVENT_QUEUE, *PPH_PROVIDER_EVENT_QUEUE;
+
+typedef _Function_class_(INVOKE_START_ROUTINE)
+NTSTATUS NTAPI INVOKE_START_ROUTINE(
+    _In_ PVOID ThreadParameter
+    );
+typedef INVOKE_START_ROUTINE* PINVOKE_START_ROUTINE;
+
+NTSTATUS PhInvokeOnMainThread(
+    _In_opt_ PINVOKE_START_ROUTINE Command,
+    _In_opt_ PVOID Parameter
+    );
+
+typedef struct DECLSPEC_ALIGN(MEMORY_ALLOCATION_ALIGNMENT) _PH_INVOKE_ENTRY
+{
+    SLIST_ENTRY ListEntry;
+    PINVOKE_START_ROUTINE Command;
+    PVOID Parameter;
+    //HANDLE ThreadId;
+    //ULONG64 SubmitTime;
+} PH_INVOKE_ENTRY, * PPH_INVOKE_ENTRY;
+
+extern SLIST_HEADER PhMainThreadInvokeQueue;
+extern PH_FREE_LIST PhMainThreadInvokeQueueFreeList;
+extern volatile LONG PhMainThreadInvokePending;
 
 //
 // Processes

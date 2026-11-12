@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -30,16 +30,32 @@ typedef struct _PH_MODULE_QUERY_DATA
     SLIST_ENTRY ListEntry;
     PPH_MODULE_PROVIDER ModuleProvider;
     PPH_MODULE_ITEM ModuleItem;
+    ULONG Flags;
 
     VERIFY_RESULT VerifyResult;
     PPH_STRING VerifySignerName;
+    BOOLEAN VerifyResultValid;
     ULONG ImageFlags;
     ULONG GuardFlags;
     BOOLEAN ImageKnownDll;
 
+    NTSTATUS FileAttributesStatus;
+    LARGE_INTEGER FileLastWriteTime;
+    LARGE_INTEGER FileEndOfFile;
+
     NTSTATUS ImageCoherencyStatus;
     FLOAT ImageCoherency;
 } PH_MODULE_QUERY_DATA, *PPH_MODULE_QUERY_DATA;
+
+#define PH_MODULE_QUERY_FULL 0x1
+#define PH_MODULE_QUERY_FILE_ATTRIBUTES 0x2
+
+typedef struct _PH_MODULE_KEY
+{
+    PVOID BaseAddress;
+    PVOID EnclaveBaseAddress;
+    PPH_STRING FileName;
+} PH_MODULE_KEY, *PPH_MODULE_KEY;
 
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpModuleProviderDeleteProcedure(
@@ -64,6 +80,17 @@ ULONG NTAPI PhpModuleHashtableHashFunction(
     _In_ PVOID Entry
     );
 
+_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
+BOOLEAN NTAPI PhpModuleKeyHashtableEqualFunction(
+    _In_ PVOID Entry1,
+    _In_ PVOID Entry2
+    );
+
+_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
+ULONG NTAPI PhpModuleKeyHashtableHashFunction(
+    _In_ PVOID Entry
+    );
+
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhModuleEnclaveListInitialize(
     _In_ PVOID ThreadParameter
@@ -76,8 +103,16 @@ NTSTATUS PhEnumGenericEnclaveModules(
 
 PPH_OBJECT_TYPE PhModuleProviderType = NULL;
 PPH_OBJECT_TYPE PhModuleItemType = NULL;
+PH_INITONCE PhpModuleQueryWorkQueueInitOnce = PH_INITONCE_INIT;
+PH_WORK_QUEUE PhpModuleQueryWorkQueue;
 PVOID PhLdrEnclaveList = NULL;
 
+/**
+ * Creates a module provider.
+ *
+ * \param ProcessId The ID of the process.
+ * \return The created module provider.
+ */
 PPH_MODULE_PROVIDER PhCreateModuleProvider(
     _In_ HANDLE ProcessId
     )
@@ -218,6 +253,12 @@ PPH_MODULE_PROVIDER PhCreateModuleProvider(
     return moduleProvider;
 }
 
+/**
+ * Module provider delete procedure.
+ *
+ * \param Object The module provider object.
+ * \param Flags The flags.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID PhpModuleProviderDeleteProcedure(
     _In_ PVOID Object,
@@ -262,6 +303,11 @@ VOID PhpModuleProviderDeleteProcedure(
     if (moduleProvider->ProcessHandle) NtClose(moduleProvider->ProcessHandle);
 }
 
+/**
+ * Creates a module item.
+ *
+ * \return The created module item.
+ */
 PPH_MODULE_ITEM PhCreateModuleItem(
     VOID
     )
@@ -286,6 +332,12 @@ PPH_MODULE_ITEM PhCreateModuleItem(
     return moduleItem;
 }
 
+/**
+ * Module item delete procedure.
+ *
+ * \param Object The module item object.
+ * \param Flags The flags.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID PhpModuleItemDeleteProcedure(
     _In_ PVOID Object,
@@ -302,6 +354,13 @@ VOID PhpModuleItemDeleteProcedure(
     PhDeleteImageVersionInfo(&moduleItem->VersionInfo);
 }
 
+/**
+ * Module hashtable equal function.
+ *
+ * \param Entry1 The first entry.
+ * \param Entry2 The second entry.
+ * \return TRUE if the entries are equal, FALSE otherwise.
+ */
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN NTAPI PhpModuleHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -324,6 +383,12 @@ BOOLEAN NTAPI PhpModuleHashtableEqualFunction(
     }
 }
 
+/**
+ * Module hashtable hash function.
+ *
+ * \param Entry The entry.
+ * \return The hash value.
+ */
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
 ULONG NTAPI PhpModuleHashtableHashFunction(
     _In_ PVOID Entry
@@ -336,6 +401,62 @@ ULONG NTAPI PhpModuleHashtableHashFunction(
     return baseAddressHash ^ (enclaveBaseAddressHash << 1);
 }
 
+/**
+ * Module key hashtable equal function.
+ *
+ * \param Entry1 The first entry.
+ * \param Entry2 The second entry.
+ * \return TRUE if the entries are equal, FALSE otherwise.
+ */
+_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
+BOOLEAN NTAPI PhpModuleKeyHashtableEqualFunction(
+    _In_ PVOID Entry1,
+    _In_ PVOID Entry2
+    )
+{
+    PPH_MODULE_KEY entry1 = (PPH_MODULE_KEY)Entry1;
+    PPH_MODULE_KEY entry2 = (PPH_MODULE_KEY)Entry2;
+
+    if (entry1->BaseAddress != entry2->BaseAddress ||
+        entry1->EnclaveBaseAddress != entry2->EnclaveBaseAddress)
+    {
+        return FALSE;
+    }
+
+    if (entry1->FileName && entry2->FileName)
+        return PhEqualString(entry1->FileName, entry2->FileName, FALSE);
+
+    return entry1->FileName == entry2->FileName;
+}
+
+/**
+ * Module key hashtable hash function.
+ *
+ * \param Entry The entry.
+ * \return The hash value.
+ */
+_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
+ULONG NTAPI PhpModuleKeyHashtableHashFunction(
+    _In_ PVOID Entry
+    )
+{
+    PPH_MODULE_KEY entry = (PPH_MODULE_KEY)Entry;
+    ULONG baseAddressHash = PhHashIntPtr((ULONG_PTR)entry->BaseAddress);
+    ULONG enclaveBaseAddressHash = PhHashIntPtr((ULONG_PTR)entry->EnclaveBaseAddress);
+    ULONG fileNameHash = entry->FileName ? PhHashStringRef(&entry->FileName->sr, FALSE) : 0;
+
+    return baseAddressHash ^ (enclaveBaseAddressHash << 1) ^ fileNameHash;
+}
+
+/**
+ * References a module item.
+ *
+ * \param ModuleProvider The module provider.
+ * \param BaseAddress The base address of the module.
+ * \param EnclaveBaseAddress The enclave base address of the module.
+ * \param FileName The file name of the module.
+ * \return The referenced module item, or NULL if it was not found.
+ */
 PPH_MODULE_ITEM PhReferenceModuleItemEx(
     _In_ PPH_MODULE_PROVIDER ModuleProvider,
     _In_ PVOID BaseAddress,
@@ -374,6 +495,13 @@ PPH_MODULE_ITEM PhReferenceModuleItemEx(
     return moduleItem;
 }
 
+/**
+ * References a module item.
+ *
+ * \param ModuleProvider The module provider.
+ * \param BaseAddress The base address of the module.
+ * \return The referenced module item, or NULL if it was not found.
+ */
 PPH_MODULE_ITEM PhReferenceModuleItem(
     _In_ PPH_MODULE_PROVIDER ModuleProvider,
     _In_ PVOID BaseAddress
@@ -387,6 +515,11 @@ PPH_MODULE_ITEM PhReferenceModuleItem(
         );
 }
 
+/**
+ * Dereferences all module items in the module provider.
+ *
+ * \param ModuleProvider The module provider.
+ */
 VOID PhDereferenceAllModuleItems(
     _In_ PPH_MODULE_PROVIDER ModuleProvider
     )
@@ -404,6 +537,12 @@ VOID PhDereferenceAllModuleItems(
     PhReleaseFastLockExclusive(&ModuleProvider->ModuleHashtableLock);
 }
 
+/**
+ * Removes a module item from the module provider.
+ *
+ * \param ModuleProvider The module provider.
+ * \param ModuleItem The module item to remove.
+ */
 VOID PhpRemoveModuleItem(
     _In_ PPH_MODULE_PROVIDER ModuleProvider,
     _In_ PPH_MODULE_ITEM ModuleItem
@@ -413,6 +552,17 @@ VOID PhpRemoveModuleItem(
     PhDereferenceObject(ModuleItem);
 }
 
+/**
+ * Module item read virtual memory callback.
+ *
+ * \param ProcessHandle The process handle.
+ * \param BaseAddress The base address.
+ * \param Buffer The buffer.
+ * \param BufferSize The buffer size.
+ * \param NumberOfBytesRead The number of bytes read.
+ * \param Context The module item.
+ * \return Successful or errant status.
+ */
 _Function_class_(PH_READ_VIRTUAL_MEMORY_CALLBACK)
 static NTSTATUS PhModuleItemReadVirtualMemoryCallback(
     _In_ HANDLE ProcessHandle,
@@ -431,6 +581,12 @@ static NTSTATUS PhModuleItemReadVirtualMemoryCallback(
     return PhReadVirtualMemory(ProcessHandle, BaseAddress, Buffer, BufferSize, NumberOfBytesRead);
 }
 
+/**
+ * Module query worker thread routine.
+ *
+ * \param Parameter The worker thread parameter.
+ * \return Successful or errant status.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhpModuleQueryWorker(
     _In_ PVOID Parameter
@@ -440,7 +596,23 @@ NTSTATUS PhpModuleQueryWorker(
     PPH_MODULE_PROVIDER moduleProvider = data->ModuleProvider;
     PPH_MODULE_ITEM moduleItem = data->ModuleItem;
 
-    if (PhEnableProcessQueryStage2)
+    if ((data->Flags & PH_MODULE_QUERY_FILE_ATTRIBUTES) && moduleItem->FileName)
+    {
+        FILE_NETWORK_OPEN_INFORMATION networkOpenInfo;
+
+        data->FileAttributesStatus = PhQueryFullAttributesFile(
+            &moduleItem->FileName->sr,
+            &networkOpenInfo
+            );
+
+        if (NT_SUCCESS(data->FileAttributesStatus))
+        {
+            data->FileLastWriteTime = networkOpenInfo.LastWriteTime;
+            data->FileEndOfFile = networkOpenInfo.EndOfFile;
+        }
+    }
+
+    if ((data->Flags & PH_MODULE_QUERY_FULL) && PhEnableProcessQueryStage2 && moduleItem->FileName)
     {
         data->VerifyResult = PhVerifyFileCached(
             moduleItem->FileName,
@@ -449,9 +621,10 @@ NTSTATUS PhpModuleQueryWorker(
             TRUE,
             FALSE
             );
+        data->VerifyResultValid = TRUE;
     }
 
-    if (moduleProvider->IsHandleValid && !moduleProvider->IsSubsystemProcess)
+    if ((data->Flags & PH_MODULE_QUERY_FULL) && moduleItem->FileName && moduleProvider->IsHandleValid && !moduleProvider->IsSubsystemProcess)
     {
         if (
             moduleItem->Type == PH_MODULE_TYPE_MODULE ||
@@ -647,7 +820,7 @@ NTSTATUS PhpModuleQueryWorker(
             ClearFlag(moduleItem->ImageDllCharacteristicsEx, IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT);
     }
 
-    if (PhEnableImageCoherencySupport && moduleProvider->IsHandleValid && !data->ModuleProvider->IsSubsystemProcess)
+    if ((data->Flags & PH_MODULE_QUERY_FULL) && moduleItem->FileName && PhEnableImageCoherencySupport && moduleProvider->IsHandleValid && !data->ModuleProvider->IsSubsystemProcess)
     {
         if (data->ModuleItem->Type == PH_MODULE_TYPE_MODULE ||
             data->ModuleItem->Type == PH_MODULE_TYPE_WOW64_MODULE ||
@@ -676,7 +849,7 @@ NTSTATUS PhpModuleQueryWorker(
         }
     }
 
-    if (data->ModuleItem->FileName)
+    if ((data->Flags & PH_MODULE_QUERY_FULL) && data->ModuleItem->FileName)
     {
         data->ImageKnownDll = PhIsKnownDllFileName(data->ModuleItem->FileName);
     }
@@ -688,30 +861,74 @@ NTSTATUS PhpModuleQueryWorker(
     return STATUS_SUCCESS;
 }
 
+/**
+ * Gets the module query work queue.
+ *
+ * \return The module query work queue.
+ */
+PPH_WORK_QUEUE PhpGetModuleQueryWorkQueue(
+    VOID
+    )
+{
+    if (PhBeginInitOnce(&PhpModuleQueryWorkQueueInitOnce))
+    {
+        PhInitializeWorkQueue(
+            &PhpModuleQueryWorkQueue,
+            0,
+            3,
+            1000
+            );
+        PhEndInitOnce(&PhpModuleQueryWorkQueueInitOnce);
+    }
+
+    return &PhpModuleQueryWorkQueue;
+}
+
+/**
+ * Queues a module query.
+ *
+ * \param ModuleProvider The module provider.
+ * \param ModuleItem The module item.
+ * \param Flags The query flags.
+ */
 VOID PhpQueueModuleQuery(
     _In_ PPH_MODULE_PROVIDER ModuleProvider,
-    _In_ PPH_MODULE_ITEM ModuleItem
+    _In_ PPH_MODULE_ITEM ModuleItem,
+    _In_ ULONG Flags
     )
 {
     PPH_MODULE_QUERY_DATA data;
     PH_WORK_QUEUE_ENVIRONMENT environment;
 
+    if (ReadAcquire(&ModuleItem->QueryPending))
+        return;
+
     data = PhAllocate(sizeof(PH_MODULE_QUERY_DATA));
     memset(data, 0, sizeof(PH_MODULE_QUERY_DATA));
     data->ModuleProvider = ModuleProvider;
     data->ModuleItem = ModuleItem;
+    data->Flags = Flags;
+    data->FileAttributesStatus = STATUS_UNSUCCESSFUL;
 
     PhReferenceObject(ModuleProvider);
     PhReferenceObject(ModuleItem);
+    InterlockedExchange(&ModuleItem->QueryPending, TRUE);
 
     PhInitializeWorkQueueEnvironment(&environment);
     environment.BasePriority = THREAD_PRIORITY_BELOW_NORMAL;
     environment.IoPriority = IoPriorityLow;
     environment.PagePriority = MEMORY_PRIORITY_LOW;
 
-    PhQueueItemWorkQueueEx(PhGetGlobalWorkQueue(), PhpModuleQueryWorker, data, NULL, &environment);
+    PhQueueItemWorkQueueEx(PhpGetModuleQueryWorkQueue(), PhpModuleQueryWorker, data, NULL, &environment);
 }
 
+/**
+ * Enum modules callback.
+ *
+ * \param Module The module information.
+ * \param Context The callback context.
+ * \return TRUE to continue enumeration, FALSE otherwise.
+ */
 _Function_class_(PH_ENUM_GENERIC_MODULES_CALLBACK)
 static BOOLEAN NTAPI PhpEnumModulesCallback(
     _In_ PPH_MODULE_INFO Module,
@@ -730,6 +947,11 @@ static BOOLEAN NTAPI PhpEnumModulesCallback(
     return TRUE;
 }
 
+/**
+ * Updates the module provider.
+ *
+ * \param Object The module provider object.
+ */
 _Function_class_(PH_PROVIDER_FUNCTION)
 VOID PhModuleProviderUpdate(
     _In_ PVOID Object
@@ -745,7 +967,7 @@ VOID PhModuleProviderUpdate(
     if (!moduleProvider->ProcessHandle && moduleProvider->ProcessId != SYSTEM_PROCESS_ID)
         goto UpdateExit;
 
-    modules = PhCreateList(100);
+    modules = PhCreateList(50);
 
     moduleProvider->RunStatus = PhEnumGenericModules(
         moduleProvider->ProcessId,
@@ -762,29 +984,39 @@ VOID PhModuleProviderUpdate(
 
     // Look for removed modules.
     {
+        PPH_HASHTABLE moduleKeyHashtable;
         PPH_LIST modulesToRemove = NULL;
         ULONG enumerationKey = 0;
         PPH_MODULE_ITEM *moduleItem;
 
+        moduleKeyHashtable = PhCreateHashtable(
+            sizeof(PH_MODULE_KEY),
+            PhpModuleKeyHashtableEqualFunction,
+            PhpModuleKeyHashtableHashFunction,
+            modules->Count
+            );
+
+        for (i = 0; i < modules->Count; i++)
+        {
+            PPH_MODULE_INFO module = modules->Items[i];
+            PH_MODULE_KEY key;
+
+            key.BaseAddress = module->BaseAddress;
+            key.EnclaveBaseAddress = module->EnclaveBaseAddress;
+            key.FileName = module->FileName;
+
+            PhAddEntryHashtable(moduleKeyHashtable, &key);
+        }
+
         while (PhEnumHashtable(moduleProvider->ModuleHashtable, (PVOID *)&moduleItem, &enumerationKey))
         {
-            BOOLEAN found = FALSE;
+            PH_MODULE_KEY key;
 
-            // Check if the module still exists.
-            for (i = 0; i < modules->Count; i++)
-            {
-                PPH_MODULE_INFO module = modules->Items[i];
+            key.BaseAddress = (*moduleItem)->BaseAddress;
+            key.EnclaveBaseAddress = (*moduleItem)->EnclaveBaseAddress;
+            key.FileName = (*moduleItem)->FileName;
 
-                if ((*moduleItem)->BaseAddress == module->BaseAddress &&
-                    (*moduleItem)->EnclaveBaseAddress == module->EnclaveBaseAddress &&
-                    PhEqualString((*moduleItem)->FileName, module->FileName, FALSE))
-                {
-                    found = TRUE;
-                    break;
-                }
-            }
-
-            if (!found)
+            if (!PhFindEntryHashtable(moduleKeyHashtable, &key))
             {
                 // Raise the module removed event.
                 PhInvokeCallback(&moduleProvider->ModuleRemovedEvent, *moduleItem);
@@ -811,6 +1043,8 @@ VOID PhModuleProviderUpdate(
             PhReleaseFastLockExclusive(&moduleProvider->ModuleHashtableLock);
             PhDereferenceObject(modulesToRemove);
         }
+
+        PhDereferenceObject(moduleKeyHashtable);
     }
 
     // Go through the queued thread query data.
@@ -822,18 +1056,67 @@ VOID PhModuleProviderUpdate(
 
         while (entry)
         {
+            BOOLEAN modified;
+
             data = CONTAINING_RECORD(entry, PH_MODULE_QUERY_DATA, ListEntry);
             entry = entry->Next;
 
-            data->ModuleItem->VerifyResult = data->VerifyResult;
-            data->ModuleItem->VerifySignerName = data->VerifySignerName;
-            data->ModuleItem->Flags |= data->ImageFlags;
-            data->ModuleItem->GuardFlags = data->GuardFlags;
-            data->ModuleItem->ImageCoherencyStatus = data->ImageCoherencyStatus;
-            data->ModuleItem->ImageCoherency = data->ImageCoherency;
-            data->ModuleItem->ImageKnownDll = data->ImageKnownDll;
+            modified = !!(data->Flags & PH_MODULE_QUERY_FULL);
 
-            data->ModuleItem->JustProcessed = TRUE;
+            if (data->Flags & PH_MODULE_QUERY_FULL)
+            {
+                if (data->VerifyResultValid)
+                {
+                    data->ModuleItem->VerifyResult = data->VerifyResult;
+                    PhMoveReference(&data->ModuleItem->VerifySignerName, data->VerifySignerName);
+                    data->VerifySignerName = NULL;
+                }
+
+                data->ModuleItem->Flags |= data->ImageFlags;
+                data->ModuleItem->GuardFlags = data->GuardFlags;
+                data->ModuleItem->ImageCoherencyStatus = data->ImageCoherencyStatus;
+                data->ModuleItem->ImageCoherency = data->ImageCoherency;
+                data->ModuleItem->ImageKnownDll = data->ImageKnownDll;
+            }
+
+            if (data->Flags & PH_MODULE_QUERY_FILE_ATTRIBUTES)
+            {
+                if (NT_SUCCESS(data->FileAttributesStatus))
+                {
+                    if (data->ModuleItem->FileLastWriteTime.QuadPart != data->FileLastWriteTime.QuadPart)
+                    {
+                        data->ModuleItem->FileLastWriteTime = data->FileLastWriteTime;
+                        modified = TRUE;
+                    }
+
+                    if (data->ModuleItem->FileEndOfFile.QuadPart != data->FileEndOfFile.QuadPart)
+                    {
+                        data->ModuleItem->FileEndOfFile = data->FileEndOfFile;
+                        modified = TRUE;
+                    }
+                }
+                else
+                {
+                    if (data->ModuleItem->FileLastWriteTime.QuadPart != 0)
+                    {
+                        data->ModuleItem->FileLastWriteTime.QuadPart = 0;
+                        modified = TRUE;
+                    }
+
+                    if (data->ModuleItem->FileEndOfFile.QuadPart != 0)
+                    {
+                        data->ModuleItem->FileEndOfFile.QuadPart = 0;
+                        modified = TRUE;
+                    }
+                }
+            }
+
+            InterlockedExchange(&data->ModuleItem->QueryPending, FALSE);
+
+            if (modified)
+            {
+                InterlockedExchange(&data->ModuleItem->JustProcessed, TRUE);
+            }
 
             PhDereferenceObject(data->ModuleItem);
             PhFree(data);
@@ -845,7 +1128,6 @@ VOID PhModuleProviderUpdate(
     {
         PPH_MODULE_INFO module = modules->Items[i];
         PPH_MODULE_ITEM moduleItem;
-        FILE_NETWORK_OPEN_INFORMATION networkOpenInfo;
 
         moduleItem = PhReferenceModuleItemEx(
             moduleProvider,
@@ -895,12 +1177,7 @@ VOID PhModuleProviderUpdate(
 
             PhInitializeImageVersionInfoEx(&moduleItem->VersionInfo, &moduleItem->FileName->sr, !!PhCsEnableVersionSupport);
 
-            if (moduleProvider->IsSubsystemProcess)
-            {
-                // HACK: Update the module type. (TODO: Move into PhEnumGenericModules) (dmex)
-                moduleItem->Type = PH_MODULE_TYPE_ELF_MAPPED_IMAGE;
-            }
-            else
+            if (!moduleProvider->IsSubsystemProcess)
             {
                 // Fix up the load count. If this is not an ordinary DLL or kernel module, set the load count to 0.
                 if (moduleItem->Type != PH_MODULE_TYPE_MODULE &&
@@ -929,19 +1206,17 @@ VOID PhModuleProviderUpdate(
                 }
             }
 
-            if (NT_SUCCESS(PhQueryFullAttributesFile(&moduleItem->FileName->sr, &networkOpenInfo)))
-            {
-                moduleItem->FileLastWriteTime = networkOpenInfo.LastWriteTime;
-                moduleItem->FileEndOfFile = networkOpenInfo.EndOfFile;
-            }
-
-            if (moduleItem->Type != PH_MODULE_TYPE_ELF_MAPPED_IMAGE)
+            if (!moduleProvider->IsSubsystemProcess)
             {
                 // See if the file has already been verified; if not, queue for verification.
                 moduleItem->VerifyResult = PhVerifyFileCached(moduleItem->FileName, NULL, &moduleItem->VerifySignerName, TRUE, TRUE);
 
                 //if (moduleItem->VerifyResult == VrUnknown) // (dmex)
-                PhpQueueModuleQuery(moduleProvider, moduleItem);
+                PhpQueueModuleQuery(moduleProvider, moduleItem, PH_MODULE_QUERY_FULL | PH_MODULE_QUERY_FILE_ATTRIBUTES);
+            }
+            else
+            {
+                PhpQueueModuleQuery(moduleProvider, moduleItem, PH_MODULE_QUERY_FILE_ATTRIBUTES);
             }
 
             // Add the module item to the hashtable.
@@ -956,10 +1231,9 @@ VOID PhModuleProviderUpdate(
         {
             BOOLEAN modified = FALSE;
 
-            if (moduleItem->JustProcessed)
+            if (InterlockedExchangeAcquire(&moduleItem->JustProcessed, FALSE))
                 modified = TRUE;
 
-            moduleItem->JustProcessed = FALSE;
 
             if (moduleItem->LoadCount != module->LoadCount)
             {
@@ -967,34 +1241,7 @@ VOID PhModuleProviderUpdate(
                 modified = TRUE;
             }
 
-            if (NT_SUCCESS(PhQueryFullAttributesFile(&moduleItem->FileName->sr, &networkOpenInfo)))
-            {
-                if (moduleItem->FileLastWriteTime.QuadPart != networkOpenInfo.LastWriteTime.QuadPart)
-                {
-                    moduleItem->FileLastWriteTime.QuadPart = networkOpenInfo.LastWriteTime.QuadPart;
-                    modified = TRUE;
-                }
-
-                if (moduleItem->FileEndOfFile.QuadPart != networkOpenInfo.EndOfFile.QuadPart)
-                {
-                    moduleItem->FileEndOfFile.QuadPart = networkOpenInfo.EndOfFile.QuadPart;
-                    modified = TRUE;
-                }
-            }
-            else
-            {
-                if (moduleItem->FileLastWriteTime.QuadPart != 0)
-                {
-                    moduleItem->FileLastWriteTime.QuadPart = 0;
-                    modified = TRUE;
-                }
-
-                if (moduleItem->FileEndOfFile.QuadPart != 0)
-                {
-                    moduleItem->FileEndOfFile.QuadPart = 0;
-                    modified = TRUE;
-                }
-            }
+            PhpQueueModuleQuery(moduleProvider, moduleItem, PH_MODULE_QUERY_FILE_ATTRIBUTES);
 
             if (modified)
                 PhInvokeCallback(&moduleProvider->ModuleModifiedEvent, moduleItem);
@@ -1031,10 +1278,15 @@ static CONST PH_KEY_VALUE_PAIR PhModuleTypePairs[] =
     SIP(SREF(L"WOW64 DLL"), PH_MODULE_TYPE_WOW64_MODULE),
     SIP(SREF(L"Kernel module"), PH_MODULE_TYPE_KERNEL_MODULE),
     SIP(SREF(L"Mapped image"), PH_MODULE_TYPE_MAPPED_IMAGE),
-    SIP(SREF(L"Mapped image"), PH_MODULE_TYPE_ELF_MAPPED_IMAGE),
     SIP(SREF(L"Enclave module"), PH_MODULE_TYPE_ENCLAVE_MODULE),
 };
 
+/**
+ * Gets the module type name.
+ *
+ * \param ModuleType The module type.
+ * \return The module type name.
+ */
 PCPH_STRINGREF PhGetModuleTypeName(
     _In_ ULONG ModuleType
     )
@@ -1069,6 +1321,12 @@ static CONST PH_KEY_VALUE_PAIR PhModuleLoadReasonTypePairs[] =
     SIP(SREF(L"Unknown"), LoadReasonUnknown),
 };
 
+/**
+ * Gets the module load reason type name.
+ *
+ * \param LoadReason The module load reason.
+ * \return The module load reason type name.
+ */
 PCPH_STRINGREF PhGetModuleLoadReasonTypeName(
     _In_ USHORT LoadReason
     )
@@ -1096,6 +1354,12 @@ static CONST PH_KEY_VALUE_PAIR PhModuleEnclaveTypePairs[] =
     SIP(SREF(L"VBS"), ENCLAVE_TYPE_VBS)
 };
 
+/**
+ * Gets the module enclave type name.
+ *
+ * \param EnclaveType The module enclave type.
+ * \return The module enclave type name.
+ */
 PCPH_STRINGREF PhGetModuleEnclaveTypeName(
     _In_ ULONG EnclaveType
     )
@@ -1115,6 +1379,15 @@ PCPH_STRINGREF PhGetModuleEnclaveTypeName(
     return NULL;
 }
 
+/**
+ * Adds an enclave module to the list.
+ *
+ * \param ProcessHandle The process handle.
+ * \param Enclave The enclave information.
+ * \param Entry The data table entry.
+ * \param LoadOrderIndex The load order index.
+ * \param Modules The list of modules.
+ */
 static VOID PhModuleAddEnclaveModule(
     _In_ HANDLE ProcessHandle,
     _In_ PLDR_SOFTWARE_ENCLAVE Enclave,
@@ -1162,6 +1435,16 @@ typedef struct _PHP_ENUM_ENCLAVE_MODULES_CONTEXT
     USHORT LoadOrderIndex;
 } PHP_ENUM_ENCLAVE_MODULES_CONTEXT, *PPHP_ENUM_ENCLAVE_MODULES_CONTEXT;
 
+/**
+ * Enclave module enumeration callback.
+ *
+ * \param ProcessHandle The process handle.
+ * \param Enclave The enclave information.
+ * \param EntryAddress The entry address.
+ * \param Entry The data table entry.
+ * \param Context The callback context.
+ * \return TRUE to continue enumeration, FALSE otherwise.
+ */
 static BOOLEAN NTAPI PhModuleEnumEnclaveModulesCallback(
     _In_ HANDLE ProcessHandle,
     _In_ PLDR_SOFTWARE_ENCLAVE Enclave,
@@ -1185,6 +1468,15 @@ static BOOLEAN NTAPI PhModuleEnumEnclaveModulesCallback(
     return TRUE;
 }
 
+/**
+ * Enclaves enumeration callback.
+ *
+ * \param ProcessHandle The process handle.
+ * \param EnclaveAddress The enclave address.
+ * \param Enclave The enclave information.
+ * \param Context The callback context.
+ * \return TRUE to continue enumeration, FALSE otherwise.
+ */
 static BOOLEAN NTAPI PhModuleEnumEnclavesCallback(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID EnclaveAddress,
@@ -1208,6 +1500,13 @@ static BOOLEAN NTAPI PhModuleEnumEnclavesCallback(
     return TRUE;
 }
 
+/**
+ * Enumerates enclave modules in a process.
+ *
+ * \param ProcessHandle The process handle.
+ * \param Context The callback context.
+ * \return Successful or errant status.
+ */
 NTSTATUS PhEnumGenericEnclaveModules(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID Context
@@ -1233,6 +1532,12 @@ NTSTATUS PhEnumGenericEnclaveModules(
     return status;
 }
 
+/**
+ * Initializes the enclave list.
+ *
+ * \param ThreadParameter The thread parameter.
+ * \return Successful or errant status.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhModuleEnclaveListInitialize(
     _In_ PVOID ThreadParameter

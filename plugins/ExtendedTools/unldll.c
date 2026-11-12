@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -21,11 +21,13 @@ typedef struct _UNLOADED_DLLS_CONTEXT
     PVOID CapturedEventTrace;
     HANDLE ProcessId;
     HANDLE QueryHandle;
+    PPH_PROCESS_ITEM ProcessItem;
+    PPH_FONT WindowFont;
 } UNLOADED_DLLS_CONTEXT, *PUNLOADED_DLLS_CONTEXT;
 
 INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
@@ -35,28 +37,11 @@ VOID EtShowUnloadedDllsDialog(
     _In_ PPH_PROCESS_ITEM ProcessItem
     )
 {
-    NTSTATUS status;
     PUNLOADED_DLLS_CONTEXT context;
-    HANDLE queryHandle;
 
-    status = PhOpenProcess(
-        &queryHandle,
-        PROCESS_QUERY_INFORMATION,
-        ProcessItem->ProcessId
-        );
-
-    if (!NT_SUCCESS(status))
+    if (!ProcessItem->QueryHandle)
     {
-        status = PhOpenProcess(
-            &queryHandle,
-            PROCESS_QUERY_LIMITED_INFORMATION,
-            ProcessItem->ProcessId
-            );
-    }
-
-    if (!NT_SUCCESS(status))
-    {
-        PhShowStatus(ParentWindowHandle, L"Unable to open the process.", status, 0);
+        PhShowStatus(ParentWindowHandle, L"Unable to open the process.", STATUS_INVALID_HANDLE, 0);
         return;
     }
 
@@ -64,7 +49,8 @@ VOID EtShowUnloadedDllsDialog(
     context->ParentWindowHandle = ParentWindowHandle;
     context->ProcessId = ProcessItem->ProcessId;
     context->IsWow64Process = !!ProcessItem->IsWow64Process;
-    context->QueryHandle = queryHandle;
+    context->ProcessItem = PhReferenceObject(ProcessItem);
+    context->QueryHandle = ProcessItem->QueryHandle;
 
     PhDialogBox(
         PluginInstance->DllBase,
@@ -76,7 +62,7 @@ VOID EtShowUnloadedDllsDialog(
 }
 
 NTSTATUS EtpRefreshUnloadedDlls(
-    _In_ HWND hwndDlg,
+    _In_ HWND WindowHandle,
     _In_ PUNLOADED_DLLS_CONTEXT Context
     )
 {
@@ -97,7 +83,7 @@ NTSTATUS EtpRefreshUnloadedDlls(
         PPH_BYTES eventTraceUtf8String;
         ULONG capturedEventTraceLength;
 
-        if (!PhUiConnectToPhSvcEx(hwndDlg, Wow64PhSvcMode, FALSE))
+        if (!PhUiConnectToPhSvcEx(WindowHandle, Wow64PhSvcMode, FALSE))
             return STATUS_FAIL_CHECK;
 
         if (!NT_SUCCESS(status = CallGetProcessUnloadedDlls(Context->ProcessId, &eventTraceUtf8String)))
@@ -135,7 +121,7 @@ NTSTATUS EtpRefreshUnloadedDlls(
         for (i = 0; i < RTL_UNLOAD_EVENT_TRACE_NUMBER; i++)
         {
             PRTL_UNLOAD_EVENT_TRACE32 rtlEvent = PTR_ADD_OFFSET(capturedEventTrace, sizeof(RTL_UNLOAD_EVENT_TRACE32) * i);
-            INT lvItemIndex;
+            LONG lvItemIndex;
             WCHAR buffer[128];
             PH_FORMAT format[7];
             PPH_STRING string;
@@ -213,7 +199,7 @@ NTSTATUS EtpRefreshUnloadedDlls(
         for (i = 0; i < capturedElementCount; i++)
         {
             PRTL_UNLOAD_EVENT_TRACE rtlEvent = currentEvent;
-            INT lvItemIndex;
+            LONG lvItemIndex;
             WCHAR buffer[128];
             PH_FORMAT format[7];
             PPH_STRING string;
@@ -282,7 +268,7 @@ NTSTATUS EtpRefreshUnloadedDlls(
     return status;
 }
 
-static INT NTAPI EtpNumberCompareFunction(
+static LONG NTAPI EtpNumberCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -308,7 +294,7 @@ static INT NTAPI EtpNumberCompareFunction(
     }
 }
 
-static INT NTAPI EtpBaseAddressCompareFunction(
+static LONG NTAPI EtpBaseAddressCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -334,7 +320,7 @@ static INT NTAPI EtpBaseAddressCompareFunction(
     }
 }
 
-static INT NTAPI EtpSizeCompareFunction(
+static LONG NTAPI EtpSizeCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -360,7 +346,7 @@ static INT NTAPI EtpSizeCompareFunction(
     }
 }
 
-static INT NTAPI EtpTimeStampCompareFunction(
+static LONG NTAPI EtpTimeStampCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -386,7 +372,7 @@ static INT NTAPI EtpTimeStampCompareFunction(
     }
 }
 
-static INT NTAPI EtpVersionCompareFunction(
+static LONG NTAPI EtpVersionCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -421,7 +407,7 @@ static INT NTAPI EtpVersionCompareFunction(
     }
 }
 
-static INT NTAPI EtpCheckSumCompareFunction(
+static LONG NTAPI EtpCheckSumCompareFunction(
     _In_ PVOID Item1,
     _In_ PVOID Item2,
     _In_opt_ PVOID Context
@@ -448,44 +434,46 @@ static INT NTAPI EtpCheckSumCompareFunction(
 }
 
 INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PUNLOADED_DLLS_CONTEXT context;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PUNLOADED_DLLS_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
-        if (uMsg == WM_DESTROY)
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        if (WindowMessage == WM_DESTROY)
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
             NTSTATUS status;
             HWND lvHandle;
 
-            context->ListViewHandle = lvHandle = GetDlgItem(hwndDlg, IDC_LIST);
+            context->ListViewHandle = lvHandle = GetDlgItem(WindowHandle, IDC_LIST);
+            context->WindowFont = PhCreateTreeWindowFontObject(PhGetWindowDpi(WindowHandle));
 
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetApplicationWindowIcon(WindowHandle);
 
             PhSetListViewStyle(lvHandle, TRUE, TRUE);
             PhSetControlTheme(lvHandle, L"explorer");
+            SetWindowFont(lvHandle, PhGetFontHandle(context->WindowFont), FALSE);
             PhAddListViewColumn(lvHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"No.");
             PhAddListViewColumn(lvHandle, 1, 1, 1, LVCFMT_LEFT, 120, L"Name");
             PhAddListViewColumn(lvHandle, 2, 2, 2, LVCFMT_LEFT, 100, L"Base Address");
@@ -504,38 +492,40 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
             ExtendedListView_SetContext(lvHandle, context);
             PhLoadListViewColumnsFromSetting(SETTING_NAME_UNLOADED_COLUMNS, lvHandle);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, lvHandle, NULL, PH_ANCHOR_ALL);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_REFRESH), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_REFRESH), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
             if (PhValidWindowPlacementFromSetting(SETTING_NAME_UNLOADED_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(SETTING_NAME_UNLOADED_WINDOW_POSITION, SETTING_NAME_UNLOADED_WINDOW_SIZE, hwndDlg);
+                PhLoadWindowPlacementFromSetting(SETTING_NAME_UNLOADED_WINDOW_POSITION, SETTING_NAME_UNLOADED_WINDOW_SIZE, WindowHandle);
             else
-                PhCenterWindow(hwndDlg, GetParent(hwndDlg));
+                PhCenterWindow(WindowHandle, GetParent(WindowHandle));
 
-            if (!NT_SUCCESS(status = EtpRefreshUnloadedDlls(hwndDlg, context)))
+            if (!NT_SUCCESS(status = EtpRefreshUnloadedDlls(WindowHandle, context)))
             {
                 PhShowStatus(context->ParentWindowHandle, L"Unable to retrieve unload event trace information.", status, 0);
-                EndDialog(hwndDlg, IDCANCEL);
+                EndDialog(WindowHandle, IDCANCEL);
                 return FALSE;
             }
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
         }
         break;
     case WM_DESTROY:
         {
             PhSaveListViewColumnsToSetting(SETTING_NAME_UNLOADED_COLUMNS, context->ListViewHandle);
-            PhSaveWindowPlacementToSetting(SETTING_NAME_UNLOADED_WINDOW_POSITION, SETTING_NAME_UNLOADED_WINDOW_SIZE, hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_NAME_UNLOADED_WINDOW_POSITION, SETTING_NAME_UNLOADED_WINDOW_SIZE, WindowHandle);
 
             PhDeleteLayoutManager(&context->LayoutManager);
+
+            if (context->WindowFont)
+                PhDereferenceObject(context->WindowFont);
 
             if (context->CapturedEventTrace)
                 PhFree(context->CapturedEventTrace);
 
-            if (context->QueryHandle)
-                NtClose(context->QueryHandle);
+            PhDereferenceObject(context->ProcessItem);
 
             PhFree(context);
         }
@@ -546,10 +536,10 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
             {
             case IDCANCEL:
             case IDOK:
-                EndDialog(hwndDlg, IDOK);
+                EndDialog(WindowHandle, IDOK);
                 break;
             case IDC_REFRESH:
-                EtpRefreshUnloadedDlls(hwndDlg, context);
+                EtpRefreshUnloadedDlls(WindowHandle, context);
                 break;
             }
         }
@@ -566,6 +556,11 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            PPH_FONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFontObject(LOWORD(wParam)))
+                PhSwapOwnedFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
@@ -586,9 +581,7 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -596,7 +589,7 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
 
                     item = PhShowEMenu(
                         menu,
-                        hwndDlg,
+                        WindowHandle,
                         PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         point.x,
@@ -618,18 +611,19 @@ INT_PTR CALLBACK EtpUnloadedDllsDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
+
+

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *
  */
 
@@ -14,7 +14,9 @@
 #include <procprp.h>
 #include <procprpp.h>
 #include <phconsole.h>
+#include <guisup.h>
 
+#include <appresolver.h>
 #include <emenu.h>
 #include <mapimg.h>
 #include <secedit.h>
@@ -98,15 +100,32 @@ PPH_STRING PhGetProcessItemImageTypeText(
 #ifdef _ARM64_
         if (NT_SUCCESS(PhLoadMappedImageEx(&ProcessItem->FileName->sr, NULL, &mappedImage)))
         {
-            architecture = mappedImage.NtHeaders->FileHeader.Machine;
-            if (architecture == IMAGE_FILE_MACHINE_AMD64 || architecture == IMAGE_FILE_MACHINE_ARM64)
-                chpeVersion = PhGetMappedImageCHPEVersion(&mappedImage);
+            __try
+            {
+                architecture = mappedImage.NtHeaders->FileHeader.Machine;
+                if (architecture == IMAGE_FILE_MACHINE_AMD64 || architecture == IMAGE_FILE_MACHINE_ARM64)
+                    chpeVersion = PhGetMappedImageCHPEVersion(&mappedImage);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                architecture = IMAGE_FILE_MACHINE_UNKNOWN;
+                chpeVersion = 0;
+            }
+
             PhUnloadMappedImage(&mappedImage);
         }
 #else
         if (NT_SUCCESS(PhLoadMappedImageHeaderPageSize(&ProcessItem->FileName->sr, NULL, &mappedImage)))
         {
-            architecture = mappedImage.NtHeaders->FileHeader.Machine;
+            __try
+            {
+                architecture = mappedImage.NtHeaders->FileHeader.Machine;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                architecture = IMAGE_FILE_MACHINE_UNKNOWN;
+            }
+
             PhUnloadMappedImage(&mappedImage);
         }
 #endif
@@ -179,18 +198,13 @@ VOID PhpUpdateProcessMitigationPolicies(
     )
 {
     NTSTATUS status;
-    HANDLE processHandle;
     PH_PROCESS_MITIGATION_POLICY_ALL_INFORMATION information;
 
     PhSetDialogItemText(hwndDlg, IDC_MITIGATION, L"N/A");
 
-    if (NT_SUCCESS(status = PhOpenProcess(
-        &processHandle,
-        PROCESS_QUERY_INFORMATION,
-        ProcessItem->ProcessId
-        )))
+    if (ProcessItem->QueryHandle)
     {
-        if (NT_SUCCESS(status = PhGetProcessMitigationPolicyAllInformation(processHandle, &information)))
+        if (NT_SUCCESS(status = PhGetProcessMitigationPolicyAllInformation(ProcessItem->QueryHandle, &information)))
         {
             PH_STRING_BUILDER sb;
             PROCESS_MITIGATION_POLICY policy;
@@ -253,8 +267,10 @@ VOID PhpUpdateProcessMitigationPolicies(
 
             PhDeleteStringBuilder(&sb);
         }
-
-        NtClose(processHandle);
+    }
+    else
+    {
+        status = STATUS_INVALID_HANDLE;
     }
 
     if (!NT_SUCCESS(status))
@@ -265,9 +281,72 @@ typedef struct _PH_PROCGENERAL_CONTEXT
 {
     HWND WindowHandle;
     HWND StartedLabelHandle;
+    PPH_STRING StartedText;
+    PPH_STRING CurrentDirectory;
     BOOLEAN Enabled;
     HICON ProgramIcon;
 } PH_PROCGENERAL_CONTEXT, *PPH_PROCGENERAL_CONTEXT;
+
+static VOID PhSetStartedText(
+    _Inout_ PPH_PROCGENERAL_CONTEXT Context,
+    _In_ PCWSTR Text
+    )
+{
+    if (Context->StartedText && PhEqualStringZ(Context->StartedText->Buffer, Text, FALSE))
+        return;
+
+    if (PhSetWindowText(Context->StartedLabelHandle, Text))
+        PhMoveReference(&Context->StartedText, PhCreateString(Text));
+}
+
+static VOID PhSetCurrentDirectoryText(
+    _In_ HWND hwndDlg,
+    _Inout_ PPH_PROCGENERAL_CONTEXT Context,
+    _In_ PPH_PROCESS_ITEM ProcessItem
+    )
+{
+    NTSTATUS status;
+    HANDLE processHandle;
+    PPH_STRING currentDirectory = NULL;
+
+    status = PhOpenProcess(
+        &processHandle,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+        ProcessItem->ProcessId
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        // Tell the function to get the WOW64 current directory, because that's the one that actually gets updated for 32-bit. (wj32)
+
+        status = PhGetProcessCurrentDirectory(
+            processHandle,
+            !!ProcessItem->IsWow64Process,
+            &currentDirectory
+            );
+
+        NtClose(processHandle);
+    }
+
+    if (!NT_SUCCESS(status))
+    {
+        currentDirectory = PhGetNtMessage(status);
+        PhMoveReference(&currentDirectory, PhFormatString(L"0x%x: %s",
+            status,
+            PhGetStringOrDefault(currentDirectory, L"N/A")
+            ));
+    }
+
+    if (Context->CurrentDirectory && PhEqualString(Context->CurrentDirectory, currentDirectory, FALSE))
+    {
+        PhDereferenceObject(currentDirectory);
+        return;
+    }
+
+    PhSetDialogItemText(hwndDlg, IDC_CURDIR, PhGetString(currentDirectory));
+
+    PhMoveReference(&Context->CurrentDirectory, currentDirectory);
+}
 
 VOID PphProcessGeneralDlgUpdateIcons(
     _In_ HWND hwndDlg
@@ -288,6 +367,79 @@ VOID PphProcessGeneralDlgUpdateIcons(
     SET_BUTTON_ICON(IDC_OPENFILENAME2, folder);
     SET_BUTTON_ICON(IDC_VIEWCOMMANDLINE, magnifier);
     SET_BUTTON_ICON(IDC_VIEWPARENTPROCESS, magnifier);
+    SET_BUTTON_ICON(IDC_VIEWPARENTCONSOLE, magnifier);
+}
+
+VOID PphProcessGeneralDlgUpdateProcessIcon(
+    _In_ HWND hwndDlg,
+    _In_ PPH_PROCGENERAL_CONTEXT Context,
+    _In_ PPH_PROCESS_ITEM ProcessItem,
+    _In_ LONG DpiValue
+    )
+{
+    HWND iconHandle;
+    HICON oldIcon;
+    HICON newIcon;
+    HICON smallIcon;
+
+    iconHandle = GetDlgItem(hwndDlg, IDC_FILEICON);
+    newIcon = NULL;
+    smallIcon = NULL;
+
+    SetWindowPos(
+        iconHandle,
+        NULL,
+        0,
+        0,
+        PhGetSystemMetrics(SM_CXICON, DpiValue),
+        PhGetSystemMetrics(SM_CYICON, DpiValue),
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+        );
+
+    if (PhEnablePackageIconSupport && ProcessItem->FileName && ProcessItem->PackageFullName)
+    {
+        PhAppResolverGetPackageIcon(
+            ProcessItem->ProcessId,
+            ProcessItem->PackageFullName,
+            &newIcon,
+            &smallIcon,
+            DpiValue
+            );
+    }
+
+    if (!newIcon && ProcessItem->FileName)
+    {
+        PhExtractIconEx(
+            &ProcessItem->FileName->sr,
+            TRUE,
+            0,
+            PhGetSystemMetrics(SM_CXICON, DpiValue),
+            PhGetSystemMetrics(SM_CYICON, DpiValue),
+            PhGetSystemMetrics(SM_CXSMICON, DpiValue),
+            PhGetSystemMetrics(SM_CYSMICON, DpiValue),
+            &newIcon,
+            &smallIcon
+            );
+    }
+
+    if (!newIcon)
+        newIcon = PhGetImageListIcon(ProcessItem->LargeIconIndex, TRUE);
+
+    if (smallIcon)
+        DestroyIcon(smallIcon);
+
+    if (newIcon)
+    {
+        oldIcon = Static_SetIcon(iconHandle, newIcon);
+
+        if (oldIcon)
+            DestroyIcon(oldIcon);
+
+        if (Context->ProgramIcon && Context->ProgramIcon != oldIcon)
+            DestroyIcon(Context->ProgramIcon);
+
+        Context->ProgramIcon = newIcon;
+    }
 }
 
 INT_PTR CALLBACK PhpProcessGeneralDlgProc(
@@ -313,10 +465,22 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
     switch (uMsg)
     {
+    case WM_ERASEBKGND:
+        {
+            HDC hdc = (HDC)wParam;
+            RECT clipRect;
+
+            SetBkMode(hdc, TRANSPARENT);
+
+            if (GetClipBox(hdc, &clipRect) <= NULLREGION)
+                return TRUE;
+
+            FillRect(hdc, &clipRect, PhThemeWindowBackgroundBrush ? PhThemeWindowBackgroundBrush : GetSysColorBrush(COLOR_BTNFACE));
+
+            return TRUE;
+        }
     case WM_INITDIALOG:
         {
-            HANDLE processHandle = NULL;
-            PPH_STRING curDir = NULL;
             PPH_PROCESS_ITEM parentProcess;
             CLIENT_ID clientId;
             PPH_STRING fileNameWin32 = NULL;
@@ -326,12 +490,36 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             context->StartedLabelHandle = GetDlgItem(hwndDlg, IDC_STARTED);
             context->Enabled = TRUE;
 
+            if (PhEnableThemeSupport)
+                PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
             PphProcessGeneralDlgUpdateIcons(hwndDlg);
+
+            HWND fileGroupHandle = GetDlgItem(hwndDlg, IDC_FILE);
+            PhSetWindowStyle(fileGroupHandle, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            SetWindowPos(fileGroupHandle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            PhInitializeThemeWindowGroupBoxEx(fileGroupHandle);
+
+            HWND processGroupHandle = GetDlgItem(hwndDlg, IDC_PROCESS);
+            PhSetWindowStyle(processGroupHandle, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            SetWindowPos(processGroupHandle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            PhInitializeThemeWindowGroupBoxEx(processGroupHandle);
+
+            if (!PhEnableThemeSupport)
+            {
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_FILENAME));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_FILENAMEWIN32));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_CMDLINE));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_CURDIR));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_STARTED));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_PARENTCONSOLE));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_PARENTPROCESS));
+                PhInitializeWindowThemeEditControl(GetDlgItem(hwndDlg, IDC_MITIGATION));
+            }
 
             // File
 
-            context->ProgramIcon = PhGetImageListIcon(processItem->LargeIconIndex, TRUE);
-            Static_SetIcon(GetDlgItem(hwndDlg, IDC_FILEICON), context->ProgramIcon);
+            PphProcessGeneralDlgUpdateProcessIcon(hwndDlg, context, processItem, PhGetWindowDpi(hwndDlg));
 
             if (PH_IS_REAL_PROCESS_ID(processItem->ProcessId))
             {
@@ -344,37 +532,30 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             if (processItem->QueryHandle)
             {
-                if (NT_SUCCESS(PhGetProcessImageFileNameWin32(processItem->QueryHandle, &fileNameWin32)))
-                {
-                    PH_AUTO(fileNameWin32);
-                }
+                PhGetProcessImageFileNameWin32(processItem->QueryHandle, &fileNameWin32);
             }
 
-            if (PhIsNullOrEmptyString(fileNameWin32))
+            if (PhIsNullOrEmptyString(fileNameWin32) && processItem->FileName)
             {
-                fileNameWin32 = processItem->FileName ? PhGetFileName(processItem->FileName) : NULL;
-                PH_AUTO(fileNameWin32);
+                PhMoveReference(&fileNameWin32, PhGetFileName(processItem->FileName));
             }
 
             PhSetDialogItemText(hwndDlg, IDC_VERSION, PhpGetStringOrNa(processItem->VersionInfo.FileVersion));
             PhSetDialogItemText(hwndDlg, IDC_FILENAME, PhpGetStringOrNa(fileNameWin32));
             PhSetDialogItemText(hwndDlg, IDC_FILENAMEWIN32, PhpGetStringOrNa(processItem->FileName));
+            PhClearReference(&fileNameWin32);
+
+            // Inspect
 
             {
                 PPH_STRING inspectExecutables;
 
-                if (PhIsNullOrEmptyString(processItem->FileName))
+                if (PhIsNullOrEmptyString(processItem->FileName) || !PhDoesFileExist(&processItem->FileName->sr))
                 {
                     EnableWindow(GetDlgItem(hwndDlg, IDC_OPENFILENAME), FALSE);
+                    EnableWindow(GetDlgItem(hwndDlg, IDC_OPENFILENAME2), FALSE);
                     EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT), FALSE);
-                }
-                else
-                {
-                    if (!PhDoesFileExist(&processItem->FileName->sr))
-                    {
-                        EnableWindow(GetDlgItem(hwndDlg, IDC_OPENFILENAME), FALSE);
-                        EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT), FALSE);
-                    }
+                    EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT2), FALSE);
                 }
 
                 inspectExecutables = PhaGetStringSetting(SETTING_PROGRAM_INSPECT_EXECUTABLES);
@@ -382,8 +563,11 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 if (PhIsNullOrEmptyString(inspectExecutables))
                 {
                     EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT), FALSE);
+                    EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT2), FALSE);
                 }
             }
+
+            // Verify
 
             if (processItem->VerifyResult == VrTrusted)
             {
@@ -426,27 +610,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             // Current Directory
 
-            if (NT_SUCCESS(PhOpenProcess(
-                &processHandle,
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-                processItem->ProcessId
-                )))
-            {
-                // Tell the function to get the WOW64 current directory, because that's the one that actually gets updated.
-                if (NT_SUCCESS(PhGetProcessCurrentDirectory(
-                    processHandle,
-                    !!processItem->IsWow64Process,
-                    &curDir
-                    )))
-                {
-                    PH_AUTO(curDir);
-                }
-
-                NtClose(processHandle);
-                processHandle = NULL;
-            }
-
-            PhSetDialogItemText(hwndDlg, IDC_CURDIR, PhpGetStringOrNa(curDir));
+            PhSetCurrentDirectoryText(hwndDlg, context, processItem);
 
             // Started
 
@@ -468,7 +632,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                     PhLargeIntegerToLocalSystemTime(&startTimeFields, &startTime);
                     startTimeString = PhaFormatDateTime(&startTimeFields);
 
-                    PhSetWindowText(context->StartedLabelHandle, PhaFormatString(
+                    PhSetStartedText(context, PhaFormatString(
                         L"%s ago (%s)",
                         startTimeRelativeString->Buffer,
                         startTimeString->Buffer
@@ -476,12 +640,12 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 }
                 else
                 {
-                    PhSetWindowText(context->StartedLabelHandle, L"N/A");
+                    PhSetStartedText(context, L"N/A");
                 }
             }
             else
             {
-                PhSetWindowText(context->StartedLabelHandle, L"N/A");
+                PhSetStartedText(context, L"N/A");
             }
 
             // Parent
@@ -524,6 +688,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 if (parentProcess->ProcessId == SYSTEM_IDLE_PROCESS_ID)
                 {
                     PhSetDialogItemText(hwndDlg, IDC_PARENTCONSOLE, L"N/A");
+                    EnableWindow(GetDlgItem(hwndDlg, IDC_VIEWPARENTCONSOLE), FALSE);
                 }
                 else
                 {
@@ -542,6 +707,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             else
             {
                 PhSetDialogItemText(hwndDlg, IDC_PARENTCONSOLE, L"N/A");
+                EnableWindow(GetDlgItem(hwndDlg, IDC_VIEWPARENTCONSOLE), FALSE);
             }
 
             // Mitigation policies
@@ -557,13 +723,11 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             // Image type
 
             PhSetDialogItemText(hwndDlg, IDC_PROCESSTYPETEXT, PH_AUTO_T(PH_STRING, PhGetProcessItemImageTypeText(processItem))->Buffer);
-
-            if (PhEnableThemeSupport)
-            {
-                PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
-            }
-
             PhSetTimer(hwndDlg, PH_WINDOW_TIMER_DEFAULT, 1000, NULL);
+
+            // Focus
+
+            PhSetDialogFocus(hwndDlg, GetDlgItem(hwndDlg, IDC_PERMISSIONS));
         }
         break;
     case WM_DESTROY:
@@ -578,12 +742,15 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
         break;
     case WM_NCDESTROY:
         {
+            PhClearReference(&context->StartedText);
+            PhClearReference(&context->CurrentDirectory);
             PhFree(context);
         }
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
             PphProcessGeneralDlgUpdateIcons(hwndDlg);
+            PphProcessGeneralDlgUpdateProcessIcon(hwndDlg, context, processItem, LOWORD(wParam));
         }
         break;
     case WM_SHOWWINDOW:
@@ -610,6 +777,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_PARENTCONSOLE), dialogItem, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_PARENTPROCESS), dialogItem, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_VIEWPARENTPROCESS), dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
+                PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_VIEWPARENTCONSOLE), dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_MITIGATION), dialogItem, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_VIEWMITIGATION), dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_INTEGRITY), dialogItem, PH_ANCHOR_RIGHT | PH_ANCHOR_TOP);
@@ -715,6 +883,22 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                     PPH_PROCESS_ITEM parentProcessItem;
 
                     if (parentProcessItem = PhReferenceProcessItem(processItem->ParentProcessId))
+                    {
+                        SystemInformer_ShowProcessProperties(parentProcessItem);
+                        PhDereferenceObject(parentProcessItem);
+                    }
+                    else
+                    {
+                        PhShowStatus(hwndDlg, L"The process does not exist.", STATUS_NOT_FOUND, 0);
+                    }
+                }
+                break;
+            case IDC_VIEWPARENTCONSOLE:
+                {
+                    PPH_PROCESS_ITEM parentProcessItem;
+                    HANDLE consoleHostProcessId = (HANDLE)((ULONG_PTR)processItem->ConsoleHostProcessId & ~3);
+
+                    if (parentProcessItem = PhReferenceProcessItem(consoleHostProcessId))
                     {
                         SystemInformer_ShowProcessProperties(parentProcessItem);
                         PhDereferenceObject(parentProcessItem);
@@ -953,6 +1137,9 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             {
             case PH_WINDOW_TIMER_DEFAULT:
                 {
+                    if (context->Enabled)
+                        PhSetCurrentDirectoryText(hwndDlg, context, processItem);
+
                     if (!(context->Enabled && GetFocus() != context->StartedLabelHandle))
                         break;
 
@@ -973,7 +1160,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                             PhLargeIntegerToLocalSystemTime(&startTimeFields, &startTime);
                             startTimeString = PhaFormatDateTime(&startTimeFields);
 
-                            PhSetWindowText(context->StartedLabelHandle, PhaFormatString(
+                            PhSetStartedText(context, PhaFormatString(
                                 L"%s ago (%s)",
                                 PhGetString(startTimeRelativeString),
                                 PhGetString(startTimeString)
@@ -981,18 +1168,24 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                         }
                         else
                         {
-                            PhSetWindowText(context->StartedLabelHandle, L"\u221E");
+                            PhSetStartedText(context, L"\u221E");
                         }
                     }
                     else
                     {
-                        PhSetWindowText(context->StartedLabelHandle, L"N/A");
+                        PhSetStartedText(context, L"N/A");
                     }
                 }
                 break;
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

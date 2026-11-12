@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2016-2024
+ *     dmex    2016-2026
  *
  */
 
@@ -19,7 +19,7 @@
 
 #include <trace.h>
 
-static PPH_PLUGIN PluginInstance;
+PPH_PLUGIN PluginInstance;
 static PH_CALLBACK_REGISTRATION PluginLoadCallbackRegistration;
 static PH_CALLBACK_REGISTRATION PluginUnloadCallbackRegistration;
 static PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
@@ -263,20 +263,18 @@ VOID InitializeDbPath(
     VOID
     )
 {
+    PPH_STRING fileName;
+
     if (SystemInformer_IsPortableMode())
     {
-        PPH_STRING fileName;
-
         fileName = PhGetApplicationDirectoryFileNameZ(L"usernotesdb.xml", TRUE);
-        SetDbPath(fileName);
     }
     else
     {
-        PPH_STRING fileName;
-
-        fileName = PhGetKnownLocationZ(PH_FOLDERID_RoamingAppData, L"\\SystemInformer\\usernotesdb.xml", TRUE);
-        SetDbPath(fileName);
+        fileName = PhGetRoamingAppDataDirectoryZ(L"usernotesdb.xml", TRUE);
     }
+
+    SetDbPath(fileName);
 }
 
 _Function_class_(PH_CALLBACK_FUNCTION)
@@ -371,15 +369,22 @@ PPH_STRING ShowFileDialog(
 
         if (NT_SUCCESS(status))
         {
-            if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+            __try
             {
-                if (!FlagOn(mappedImage.NtHeaders32->FileHeader.Characteristics, IMAGE_FILE_EXECUTABLE_IMAGE) || FlagOn(mappedImage.NtHeaders32->FileHeader.Characteristics, IMAGE_FILE_DLL))
-                    status = STATUS_INVALID_IMAGE_NOT_MZ;
+                if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                {
+                    if (!FlagOn(mappedImage.NtHeaders32->FileHeader.Characteristics, IMAGE_FILE_EXECUTABLE_IMAGE) || FlagOn(mappedImage.NtHeaders32->FileHeader.Characteristics, IMAGE_FILE_DLL))
+                        status = STATUS_INVALID_IMAGE_NOT_MZ;
+                }
+                else if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                {
+                    if (!FlagOn(mappedImage.NtHeaders->FileHeader.Characteristics, IMAGE_FILE_EXECUTABLE_IMAGE) || FlagOn(mappedImage.NtHeaders->FileHeader.Characteristics, IMAGE_FILE_DLL))
+                        status = STATUS_INVALID_IMAGE_NOT_MZ;
+                }
             }
-            else if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                if (!FlagOn(mappedImage.NtHeaders->FileHeader.Characteristics, IMAGE_FILE_EXECUTABLE_IMAGE) || FlagOn(mappedImage.NtHeaders->FileHeader.Characteristics, IMAGE_FILE_DLL))
-                    status = STATUS_INVALID_IMAGE_NOT_MZ;
+                status = GetExceptionCode();
             }
 
             PhUnloadMappedImage(&mappedImage);
@@ -405,8 +410,8 @@ typedef struct _USERNOTES_TASK_IFEO_CONTEXT
 } USERNOTES_TASK_IFEO_CONTEXT, *PUSERNOTES_TASK_IFEO_CONTEXT;
 
 HRESULT CALLBACK TaskDialogBootstrapCallback(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -414,13 +419,13 @@ HRESULT CALLBACK TaskDialogBootstrapCallback(
 {
     PUSERNOTES_TASK_IFEO_CONTEXT context = (PUSERNOTES_TASK_IFEO_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_DIALOG_CONSTRUCTED:
         {
-            context->WindowHandle = hwndDlg;
+            context->WindowHandle = WindowHandle;
 
-            PhSetApplicationWindowIconEx(hwndDlg, PhGetWindowDpi(hwndDlg));
+            PhSetApplicationWindowIconEx(WindowHandle, PhGetWindowDpi(WindowHandle));
         }
         break;
     case TDN_BUTTON_CLICKED:
@@ -466,7 +471,7 @@ HRESULT CALLBACK TaskDialogBootstrapCallback(
                                 config.pszContent = PhGetString(context->StatusMessage);
                             }
 
-                            PhTaskDialogNavigatePage(hwndDlg, &config);
+                            PhTaskDialogNavigatePage(WindowHandle, &config);
                             return S_FALSE;
                         }
                     }
@@ -509,7 +514,7 @@ HRESULT CALLBACK TaskDialogBootstrapCallback(
                                 config.pszContent = PhGetString(context->StatusMessage);
                             }
 
-                            PhTaskDialogNavigatePage(hwndDlg, &config);
+                            PhTaskDialogNavigatePage(WindowHandle, &config);
                             return S_FALSE;
                         }
                     }
@@ -552,7 +557,7 @@ HRESULT CALLBACK TaskDialogBootstrapCallback(
                                 config.pszContent = PhGetString(context->StatusMessage);
                             }
 
-                            PhTaskDialogNavigatePage(hwndDlg, &config);
+                            PhTaskDialogNavigatePage(WindowHandle, &config);
                             return S_FALSE;
                         }
                     }
@@ -605,7 +610,7 @@ VOID ShowProcessPriorityDialog(
     memset(&config, 0, sizeof(TASKDIALOGCONFIG));
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(MenuItem->OwnerWindow));
     config.pszWindowTitle = PhGetString(FileName);
     config.pszMainInstruction = L"Select the default process priority.";
     config.pszContent = L"The process priority will be applied by Windows even when System Informer isn't currently running. "
@@ -688,7 +693,7 @@ VOID ShowProcessIoPriorityDialog(
     memset(&config, 0, sizeof(TASKDIALOGCONFIG));
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(MenuItem->OwnerWindow));
     config.pszWindowTitle = PhGetString(FileName);
     config.pszMainInstruction = L"Select the default process IO priority.";
     config.pszContent = L"The IO priority will be applied by Windows even when System Informer isn't currently running. "
@@ -766,7 +771,7 @@ VOID ShowProcessPagePriorityDialog(
     memset(&config, 0, sizeof(TASKDIALOGCONFIG));
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(MenuItem->OwnerWindow));
     config.pszWindowTitle = PhGetString(FileName);
     config.pszMainInstruction = L"Select the default process page priority.";
     config.pszContent = L"The page priority will be applied by Windows even when System Informer isn't currently running.";
@@ -816,64 +821,12 @@ VOID ShowProcessPagePriorityDialog(
     PhFree(context);
 }
 
-NTSTATUS PhD3DKMTGetProcessSchedulingPriorityClass(
-    _In_ HANDLE ProcessHandle,
-    _Out_ D3DKMT_SCHEDULINGPRIORITYCLASS* SchedulingPriorityClass
-    )
-{
-    static __typeof__(&D3DKMTGetProcessSchedulingPriorityClass) D3DKMTGetProcessSchedulingPriorityClass_I = NULL;
-    static PH_INITONCE initOnce = PH_INITONCE_INIT;
-
-    if (PhBeginInitOnce(&initOnce))
-    {
-        PVOID baseAddress;
-
-        if (baseAddress = PhLoadLibrary(L"gdi32.dll")) // win32u.dll
-        {
-            D3DKMTGetProcessSchedulingPriorityClass_I = PhGetProcedureAddress(baseAddress, "D3DKMTGetProcessSchedulingPriorityClass", 0);
-        }
-
-        PhEndInitOnce(&initOnce);
-    }
-
-    if (!D3DKMTGetProcessSchedulingPriorityClass_I)
-        return FALSE;
-
-    return D3DKMTGetProcessSchedulingPriorityClass_I(ProcessHandle, SchedulingPriorityClass);
-}
-
-NTSTATUS PhD3DKMTSetProcessSchedulingPriorityClass(
-    _In_ HANDLE ProcessHandle,
-    _In_ D3DKMT_SCHEDULINGPRIORITYCLASS SchedulingPriorityClass
-    )
-{
-    static __typeof__(&D3DKMTSetProcessSchedulingPriorityClass) D3DKMTSetProcessSchedulingPriorityClass_I = NULL;
-    static PH_INITONCE initOnce = PH_INITONCE_INIT;
-
-    if (PhBeginInitOnce(&initOnce))
-    {
-        PVOID baseAddress;
-
-        if (baseAddress = PhLoadLibrary(L"gdi32.dll")) // win32u.dll
-        {
-            D3DKMTSetProcessSchedulingPriorityClass_I = PhGetProcedureAddress(baseAddress, "D3DKMTSetProcessSchedulingPriorityClass", 0);
-        }
-
-        PhEndInitOnce(&initOnce);
-    }
-
-    if (!D3DKMTSetProcessSchedulingPriorityClass_I)
-        return FALSE;
-
-    return D3DKMTSetProcessSchedulingPriorityClass_I(ProcessHandle, SchedulingPriorityClass);
-}
-
 VOID ShowProcessD3DKMTPriorityDialog(
     _In_ PPH_PLUGIN_MENU_ITEM MenuItem,
     _In_ PPH_PROCESS_ITEM ProcessItem
     )
 {
-    D3DKMT_SCHEDULINGPRIORITYCLASS priorityClass;
+    D3DKMT_SCHEDULINGPRIORITYCLASS priorityClass = D3DKMT_SCHEDULINGPRIORITYCLASS_NORMAL;
     NTSTATUS status;
     HANDLE processHandle;
 
@@ -911,7 +864,7 @@ VOID ShowProcessD3DKMTPriorityDialog(
         memset(&config, 0, sizeof(TASKDIALOGCONFIG));
         config.cbSize = sizeof(TASKDIALOGCONFIG);
         config.dwFlags = TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION | TDF_CAN_BE_MINIMIZED | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
-        config.hMainIcon = PhGetApplicationIcon(FALSE);
+        config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(MenuItem->OwnerWindow));
         config.pszWindowTitle = L"D3DKMT scheduling priority";
         config.pszMainInstruction = L"Select the graphics scheduling priority.";
         config.pszContent = L"Note: Realtime priority requires the User has the SeIncreaseBasePriorityPrivilege or the process running as Administrator.";
@@ -1227,7 +1180,7 @@ VOID NTAPI MenuItemCallback(
                 else
                 {
                     NTSTATUS status = STATUS_ACCESS_DENIED;
-                    IO_PRIORITY_HINT ioPriority = PHAPP_ID_IOPRIORITY_NORMAL;
+                    IO_PRIORITY_HINT ioPriority = IoPriorityNormal;
 
                     if (processItem->QueryHandle)
                     {
@@ -2408,6 +2361,7 @@ VOID ProcessMenuInitializingCallback(
     _In_ PVOID Context
     )
 {
+    BOOLEAN realProcess;
     BOOLEAN highlightPresent = FALSE;
     PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
     PPH_PROCESS_ITEM processItem;
@@ -2421,8 +2375,10 @@ VOID ProcessMenuInitializingCallback(
         return;
 
     processItem = menuInfo->u.Process.Processes[0];
+    realProcess = !PH_IS_FAKE_PROCESS_ID(processItem->ProcessId) &&
+        processItem->ProcessId != SYSTEM_IDLE_PROCESS_ID &&
+        processItem->ProcessId != SYSTEM_PROCESS_ID;
 
-    if (!PH_IS_FAKE_PROCESS_ID(processItem->ProcessId) && processItem->ProcessId != SYSTEM_IDLE_PROCESS_ID && processItem->ProcessId != SYSTEM_PROCESS_ID)
         AddSavePriorityMenuItemsAndHook(menuInfo, processItem, TRUE);
 
     if (!(miscMenuItem = PhFindEMenuItem(menuInfo->Menu, 0, NULL, PHAPP_ID_PROCESS_MISCELLANEOUS)))
@@ -2740,9 +2696,9 @@ VOID ProcessesUpdatedCallback(
 
                 if (processItem->QueryHandle && NT_SUCCESS(PhGetProcessPriorityBoost(processItem->QueryHandle, &priorityBoostDisabled)))
                 {
-                    if (priorityBoostDisabled != object->Boost)
+                    if (priorityBoostDisabled)
                     {
-                        if (!NT_SUCCESS(PhSetProcessItemPriorityBoost(processItem, object->Boost)))
+                        if (!NT_SUCCESS(PhSetProcessItemPriorityBoost(processItem, FALSE)))
                         {
                             extension->SkipBoostPriority = TRUE;
                         }
@@ -2835,7 +2791,7 @@ VOID ProcessItemCreateCallback(
     extension->ProcessItem = processItem;
 
     PhAcquireQueuedLockExclusive(&ProcessListLock);
-    InsertTailList(&ProcessListHead, &extension->ListEntry);
+    InsertTailListNoFence(&ProcessListHead, &extension->ListEntry);
     PhReleaseQueuedLockExclusive(&ProcessListLock);
 }
 
@@ -2852,7 +2808,7 @@ VOID ProcessItemDeleteCallback(
     PhClearReference(&extension->Affinity);
 
     PhAcquireQueuedLockExclusive(&ProcessListLock);
-    RemoveEntryList(&extension->ListEntry);
+    RemoveEntryListNoFence(&extension->ListEntry);
     PhReleaseQueuedLockExclusive(&ProcessListLock);
 }
 
@@ -2886,7 +2842,7 @@ VOID ServiceItemCreateCallback(
 
     memset(extension, 0, sizeof(SERVICE_EXTENSION));
     PhAcquireQueuedLockExclusive(&ServiceListLock);
-    InsertTailList(&ServiceListHead, &extension->ListEntry);
+    InsertTailListNoFence(&ServiceListHead, &extension->ListEntry);
     PhReleaseQueuedLockExclusive(&ServiceListLock);
 }
 
@@ -2901,9 +2857,113 @@ VOID ServiceItemDeleteCallback(
 
     PhClearReference(&extension->Comment);
     PhAcquireQueuedLockExclusive(&ServiceListLock);
-    RemoveEntryList(&extension->ListEntry);
+    RemoveEntryListNoFence(&extension->ListEntry);
     PhReleaseQueuedLockExclusive(&ServiceListLock);
 }
+
+
+// USERNOTES_INTERFACE
+
+BOOLEAN NTAPI UserNotesGetProcessNotes(
+    _In_ PPH_PROCESS_ITEM ProcessItem,
+    _Out_ PUSERNOTES_PROCESS_NOTES Notes
+    )
+{
+    PDB_OBJECT object;
+    BOOLEAN found = FALSE;
+
+    LockDb();
+
+    // No intent: any saved entry answers, not only one carrying a particular setting. The command
+    // line entry is looked up first, which is the order the plugin itself applies them in.
+    if (object = FindDbObjectForProcess(ProcessItem, 0))
+    {
+        memset(Notes, 0, sizeof(USERNOTES_PROCESS_NOTES));
+
+        Notes->MatchedCommandLine = object->Tag == COMMAND_LINE_TAG;
+        Notes->Collapse = object->Collapse;
+        Notes->Boost = object->Boost;
+        Notes->Efficiency = object->Efficiency;
+        Notes->PriorityClass = object->PriorityClass;
+        Notes->IoPriorityPlusOne = object->IoPriorityPlusOne;
+        Notes->PagePriorityPlusOne = object->PagePriorityPlusOne;
+        Notes->BackColor = object->BackColor;
+        Notes->AffinityMask = object->AffinityMask;
+
+        if (object->Comment && object->Comment->Length != 0)
+            PhSetReference(&Notes->Comment, object->Comment);
+
+        found = TRUE;
+    }
+
+    UnlockDb();
+
+    return found;
+}
+
+BOOLEAN NTAPI UserNotesSetProcessComment(
+    _In_ PPH_PROCESS_ITEM ProcessItem,
+    _In_opt_ PCPH_STRINGREF Comment,
+    _In_ BOOLEAN MatchCommandLine
+    )
+{
+    PDB_OBJECT object;
+    PCPH_STRINGREF key;
+
+    if (MatchCommandLine)
+    {
+        if (!ProcessItem->CommandLine)
+            return FALSE;
+
+        key = &ProcessItem->CommandLine->sr;
+    }
+    else
+    {
+        if (!ProcessItem->ProcessName)
+            return FALSE;
+
+        key = &ProcessItem->ProcessName->sr;
+    }
+
+    LockDb();
+
+    if (Comment && Comment->Length != 0)
+    {
+        PPH_STRING comment = PhCreateString2(Comment);
+
+        CreateDbObject(MatchCommandLine ? COMMAND_LINE_TAG : FILE_TAG, key, comment);
+        PhDereferenceObject(comment);
+    }
+    else if (object = FindDbObject(MatchCommandLine ? COMMAND_LINE_TAG : FILE_TAG, key))
+    {
+        // Emptying the comment does not throw away the priority or colour saved beside it; the
+        // entry only goes when nothing is left in it.
+        PhMoveReference(&object->Comment, PhReferenceEmptyString());
+        DeleteDbObjectForProcessIfUnused(object);
+    }
+    else
+    {
+        UnlockDb();
+        return FALSE;
+    }
+
+    UnlockDb();
+
+    // The comment is only set as far as the caller is concerned once it has reached the file.
+    if (!NT_SUCCESS(SaveDb()))
+        return FALSE;
+
+    InvalidateProcessComments();
+
+    return TRUE;
+}
+
+USERNOTES_INTERFACE PluginInterface =
+{
+    USERNOTES_INTERFACE_VERSION,
+    UserNotesGetProcessNotes,
+    UserNotesSetProcessComment
+};
 
 LOGICAL DllMain(
     _In_ HINSTANCE Instance,
@@ -2927,6 +2987,7 @@ LOGICAL DllMain(
         if (!PluginInstance)
             return FALSE;
 
+        info->Interface = &PluginInterface;
         info->DisplayName = L"User Notes";
         info->Description = L"Allows the user to add comments for processes and services,"
             L" save process priority and affinity, highlight individual processes and show processes collapsed by default.";

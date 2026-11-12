@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -98,7 +98,7 @@ VOID PvInitializeLayoutTree(
 
     //TreeNew_SetTriState(Context->TreeNewHandle, TRUE);
     //TreeNew_SetSort(Context->TreeNewHandle, PV_LAYOUT_TREE_COLUMN_NAME_NAME, NoSortOrder);
-    //TreeNew_SetRowHeight(Context->TreeNewHandle, 22);
+    TreeNew_SetRowHeight(Context->TreeNewHandle, PvpGetTreeNewRowHeight(Context->TreeNewHandle));
 
     settings = PhGetStringSetting(L"ImageLayoutTreeColumns");
     PhCmLoadSettings(Context->TreeNewHandle, &settings->sr);
@@ -1355,6 +1355,12 @@ INT_PTR CALLBACK PvpPeLayoutDlgProc(
             }
         }
         break;
+    case WM_DPICHANGED:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
+        }
+        break;
     case WM_SIZE:
         {
             PhLayoutManagerLayout(&context->LayoutManager);
@@ -1438,7 +1444,7 @@ INT_PTR CALLBACK PvpPeLayoutDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     case WM_KEYDOWN:

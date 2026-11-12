@@ -16,6 +16,7 @@
 typedef struct NETWORK_STACK_CONTEXT
 {
     HWND ListViewHandle;
+    HFONT WindowFont;
     PH_LAYOUT_MANAGER LayoutManager;
     PPH_NETWORK_ITEM NetworkItem;
     PPH_SYMBOL_PROVIDER SymbolProvider;
@@ -150,6 +151,9 @@ INT_PTR CALLBACK PhpNetworkStackDlgProc(
             PhSetListViewStyle(lvHandle, FALSE, TRUE);
             PhSetControlTheme(lvHandle, L"explorer");
 
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+            SetWindowFont(lvHandle, context->WindowFont, FALSE);
+
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
             PhAddLayoutItem(&context->LayoutManager, lvHandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
@@ -193,7 +197,19 @@ INT_PTR CALLBACK PhpNetworkStackDlgProc(
         {
             PhDeleteLayoutManager(&context->LayoutManager);
 
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            if (context->WindowFont)
+                DeleteFont(context->WindowFont);
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
+
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;
     case WM_COMMAND:

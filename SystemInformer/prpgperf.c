@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2019-2023
+ *     dmex    2019-2026
  *
  */
 
@@ -65,11 +65,31 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
             // the drawing issue that arises when using WS_CLIPCHILDREN. However
             // in removing the flicker from the graphs the group boxes will now flicker.
             // It's a good tradeoff since no one stares at the group boxes.
-            PhSetWindowStyle(hwndDlg, WS_CLIPCHILDREN, WS_CLIPCHILDREN);
+            //PhSetWindowStyle(hwndDlg, WS_CLIPCHILDREN, WS_CLIPCHILDREN);
 
             performanceContext->CpuGroupBox = GetDlgItem(hwndDlg, IDC_GROUPCPU);
             performanceContext->PrivateBytesGroupBox = GetDlgItem(hwndDlg, IDC_GROUPPRIVATEBYTES);
             performanceContext->IoGroupBox = GetDlgItem(hwndDlg, IDC_GROUPIO);
+
+            SetWindowPos(performanceContext->CpuGroupBox, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            SetWindowPos(performanceContext->PrivateBytesGroupBox, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+            SetWindowPos(performanceContext->IoGroupBox, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+
+            if (!PhEnableThemeSupport)
+            {
+                PhSetWindowExStyle(performanceContext->CpuGroupBox, WS_EX_TRANSPARENT, 0);
+                PhSetWindowExStyle(performanceContext->PrivateBytesGroupBox, WS_EX_TRANSPARENT, 0);
+                PhSetWindowExStyle(performanceContext->IoGroupBox, WS_EX_TRANSPARENT, 0);
+            }
+
+            // Subclass the group boxes the same as the General tab so the frame and caption are painted. (dmex)
+            PhSetWindowStyle(performanceContext->CpuGroupBox, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            PhSetWindowStyle(performanceContext->PrivateBytesGroupBox, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+            PhSetWindowStyle(performanceContext->IoGroupBox, WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+
+            PhInitializeThemeWindowGroupBoxEx(performanceContext->CpuGroupBox);
+            PhInitializeThemeWindowGroupBoxEx(performanceContext->PrivateBytesGroupBox);
+            PhInitializeThemeWindowGroupBoxEx(performanceContext->IoGroupBox);
 
             PhInitializeGraphState(&performanceContext->CpuGraphState);
             PhInitializeGraphState(&performanceContext->PrivateGraphState);
@@ -77,18 +97,21 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
 
             performanceContext->CpuGraphHandle = GetDlgItem(hwndDlg, IDC_CPU);
             PhSetWindowStyle(performanceContext->CpuGraphHandle, WS_BORDER, WS_BORDER);
+            PhSetWindowFrameChanged(performanceContext->CpuGraphHandle);
             Graph_SetTooltip(performanceContext->CpuGraphHandle, TRUE);
-            BringWindowToTop(performanceContext->CpuGraphHandle);
+            PhBringWindowToTop(performanceContext->CpuGraphHandle);
 
             performanceContext->PrivateGraphHandle = GetDlgItem(hwndDlg, IDC_PRIVATEBYTES);
             PhSetWindowStyle(performanceContext->PrivateGraphHandle, WS_BORDER, WS_BORDER);
+            PhSetWindowFrameChanged(performanceContext->PrivateGraphHandle);
             Graph_SetTooltip(performanceContext->PrivateGraphHandle, TRUE);
-            BringWindowToTop(performanceContext->PrivateGraphHandle);
+            PhBringWindowToTop(performanceContext->PrivateGraphHandle);
 
             performanceContext->IoGraphHandle = GetDlgItem(hwndDlg, IDC_IO);
             PhSetWindowStyle(performanceContext->IoGraphHandle, WS_BORDER, WS_BORDER);
+            PhSetWindowFrameChanged(performanceContext->IoGraphHandle);
             Graph_SetTooltip(performanceContext->IoGraphHandle, TRUE);
-            BringWindowToTop(performanceContext->IoGraphHandle);
+            PhBringWindowToTop(performanceContext->IoGraphHandle);
 
             PhRegisterCallback(
                 PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent),
@@ -482,12 +505,12 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
             LONG width;
             LONG height;
 
-            margin.left = margin.top = margin.right = margin.bottom = PhGetDpi(13, performanceContext->WindowDpi);
+            margin.left = margin.top = margin.right = margin.bottom = PhScaleToDisplay(13, performanceContext->WindowDpi);
 
-            innerMargin.top = PhGetDpi(20, performanceContext->WindowDpi);
-            innerMargin.left = innerMargin.right = innerMargin.bottom = PhGetDpi(10, performanceContext->WindowDpi);
+            innerMargin.top = PhScaleToDisplay(20, performanceContext->WindowDpi);
+            innerMargin.left = innerMargin.right = innerMargin.bottom = PhScaleToDisplay(10, performanceContext->WindowDpi);
 
-            between = PhGetDpi(3, performanceContext->WindowDpi);
+            between = PhScaleToDisplay(3, performanceContext->WindowDpi);
 
             performanceContext->CpuGraphState.Valid = FALSE;
             performanceContext->CpuGraphState.TooltipIndex = ULONG_MAX;
@@ -504,8 +527,7 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
 
             deferHandle = BeginDeferWindowPos(6);
 
-            deferHandle = DeferWindowPos(deferHandle, performanceContext->CpuGroupBox, NULL, margin.left, margin.top,
-                width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            deferHandle = DeferWindowPos(deferHandle, performanceContext->CpuGroupBox, NULL, margin.left, margin.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER);
             deferHandle = DeferWindowPos(
                 deferHandle,
                 performanceContext->CpuGraphHandle,
@@ -517,8 +539,16 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                 SWP_NOACTIVATE | SWP_NOZORDER
                 );
 
-            deferHandle = DeferWindowPos(deferHandle, performanceContext->PrivateBytesGroupBox, NULL, margin.left, margin.top + height + between,
-                width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            deferHandle = DeferWindowPos(
+                deferHandle,
+                performanceContext->PrivateBytesGroupBox,
+                NULL,
+                margin.left,
+                margin.top + height + between,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_NOZORDER
+                );
             deferHandle = DeferWindowPos(
                 deferHandle,
                 performanceContext->PrivateGraphHandle,
@@ -530,8 +560,16 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                 SWP_NOACTIVATE | SWP_NOZORDER
                 );
 
-            deferHandle = DeferWindowPos(deferHandle, performanceContext->IoGroupBox, NULL, margin.left, margin.top + (height + between) * 2,
-                width, height, SWP_NOACTIVATE | SWP_NOZORDER);
+            deferHandle = DeferWindowPos(
+                deferHandle,
+                performanceContext->IoGroupBox,
+                NULL,
+                margin.left,
+                margin.top + (height + between) * 2,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_NOZORDER
+                );
             deferHandle = DeferWindowPos(
                 deferHandle,
                 performanceContext->IoGraphHandle,
@@ -566,6 +604,12 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
             performanceContext->WindowDpi = PhGetWindowDpi(hwndDlg);
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

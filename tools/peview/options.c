@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2022
+ *     dmex    2020-2026
  *
  */
 
@@ -17,6 +17,7 @@ typedef enum _PHP_OPTIONS_INDEX
     PHP_OPTIONS_INDEX_ENABLE_LEGACY_TABS,
     PHP_OPTIONS_INDEX_ENABLE_THEME_BORDER,
     PHP_OPTIONS_INDEX_ENABLE_LASTTAB_SUPPORT,
+    PHP_OPTIONS_INDEX_HIDE_INVALID_EXPORTS,
 } PHP_OPTIONS_GENERAL_INDEX;
 
 typedef struct _PVP_PE_OPTIONS_CONTEXT
@@ -83,11 +84,10 @@ VOID PvAppendCommandLineArgument(
 
     PhAppendStringBuilder2(StringBuilder, L" -");
     PhAppendStringBuilder2(StringBuilder, Name);
-    PhAppendStringBuilder2(StringBuilder, L" \"");
-    temp = PhEscapeCommandLinePart(Value);
+    PhAppendCharStringBuilder(StringBuilder, L' ');
+    temp = PhQuoteCommandLine(Value, TRUE);
     PhAppendStringBuilder(StringBuilder, &temp->sr);
     PhDereferenceObject(temp);
-    PhAppendCharStringBuilder(StringBuilder, L'\"');
 }
 
 BOOLEAN PvShellExecuteRestart(
@@ -140,6 +140,7 @@ VOID PvLoadGeneralPage(
     PhAddListViewItem(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LEGACY_TABS, L"Enable legacy properties window", NULL);
     PhAddListViewItem(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_THEME_BORDER, L"Enable view borders", NULL);
     PhAddListViewItem(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LASTTAB_SUPPORT, L"Remember last selected window", NULL);
+    PhAddListViewItem(Context->ListViewHandle, PHP_OPTIONS_INDEX_HIDE_INVALID_EXPORTS, L"Hide exports with invalid RVA", NULL);
 
     //SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_WARNINGS, L"EnableWarnings");
     //SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_PLUGINS, L"EnablePlugins");
@@ -149,6 +150,7 @@ VOID PvLoadGeneralPage(
     SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LEGACY_TABS, L"EnableLegacyPropertiesDialog");
     SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_THEME_BORDER, L"EnableTreeListBorder");
     SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LASTTAB_SUPPORT, L"MainWindowPageRestoreEnabled");
+    SetLvItemCheckForSetting(Context->ListViewHandle, PHP_OPTIONS_INDEX_HIDE_INVALID_EXPORTS, L"HideInvalidExports");
 }
 
 VOID PvGeneralPageSave(
@@ -177,8 +179,14 @@ VOID PvGeneralPageSave(
     SetSettingForLvItemCheckRestartRequired(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LASTTAB_SUPPORT, L"MainWindowPageRestoreEnabled");
     SetSettingForLvItemCheckRestartRequired(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_LEGACY_TABS, L"EnableLegacyPropertiesDialog");
     SetSettingForLvItemCheckRestartRequired(Context->ListViewHandle, PHP_OPTIONS_INDEX_ENABLE_THEME_BORDER, L"EnableTreeListBorder");
+    SetSettingForLvItemCheck(Context->ListViewHandle, PHP_OPTIONS_INDEX_HIDE_INVALID_EXPORTS, L"HideInvalidExports");
 
     PvUpdateCachedSettings();
+
+    // Refresh the properties window chrome so a theme change is visible without
+    // waiting for the restart.
+    PvReapplyTheme(PvGetPePropertiesWindowHandle());
+
     PvSaveSettings();
 
     if (RestartRequired)
@@ -234,7 +242,7 @@ INT_PTR CALLBACK PvOptionsWndProc(
 
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
-            PhGetStockApplicationIcon(&smallIcon, &largeIcon);
+            PhGetStockApplicationIcon(&smallIcon, &largeIcon, PhGetWindowDpi(hwndDlg));
             SendMessage(hwndDlg, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
             SendMessage(hwndDlg, WM_SETICON, ICON_BIG, (LPARAM)largeIcon);
 
@@ -371,7 +379,7 @@ INT_PTR CALLBACK PvOptionsWndProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

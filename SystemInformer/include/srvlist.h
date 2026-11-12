@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -34,8 +34,9 @@
 #define PHSVTLC_FILENAME 13
 #define PHSVTLC_TIMELINE 14
 #define PHSVTLC_EXITCODE 15
+#define PHSVTLC_USERNAME 16
 
-#define PHSVTLC_MAXIMUM 16
+#define PHSVTLC_MAXIMUM 17
 
 #define PHSN_CONFIG 0x1
 #define PHSN_DESCRIPTION 0x2
@@ -54,6 +55,7 @@ typedef struct _PH_SERVICE_NODE
     // Config
     PPH_STRING BinaryPath;
     PPH_STRING LoadOrderGroup;
+    PPH_STRING UserName;
     // Description
     PPH_STRING Description;
     // Key
@@ -64,6 +66,10 @@ typedef struct _PH_SERVICE_NODE
 // end_phapppub
     PPH_STRING TooltipText;
     ULONG ValidMask;
+    // Grouping (synthetic group-header nodes only)
+    BOOLEAN IsGroupNode;
+    PPH_LIST Children;
+    PPH_STRING GroupText;
     PH_STRINGREF TextCache[PHSVTLC_MAXIMUM];
 // begin_phapppub
 } PH_SERVICE_NODE, *PPH_SERVICE_NODE;
@@ -74,7 +80,7 @@ VOID PhServiceTreeListInitialization(
     );
 
 VOID PhInitializeServiceTreeList(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     );
 
 VOID PhLoadSettingsServiceTreeList(
@@ -83,6 +89,14 @@ VOID PhLoadSettingsServiceTreeList(
 
 VOID PhSaveSettingsServiceTreeList(
     VOID
+    );
+
+ULONG PhGetServiceTreeListGroupMode(
+    VOID
+    );
+
+VOID PhSetServiceTreeListGroupMode(
+    _In_ ULONG GroupMode
     );
 
 // begin_phapppub

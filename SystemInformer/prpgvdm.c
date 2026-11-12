@@ -5,11 +5,10 @@
  *
  * Authors:
  *
- *     dmex    2021-2023
+ *     dmex    2021-2026
  *
  */
 
-#ifdef _M_IX86
 #include <phapp.h>
 #include <phplug.h>
 #include <phsettings.h>
@@ -18,6 +17,8 @@
 #include <settings.h>
 #include <emenu.h>
 #include <mapldr.h>
+
+#if defined(_M_IX86)
 
 #include <vdmdbg.h>
 
@@ -28,6 +29,7 @@ typedef struct _PH_NTVDM_CONTEXT
     PH_CALLBACK_REGISTRATION ProcessesUpdatedRegistration;
     HWND WindowHandle;
     HWND ListViewHandle;
+    HFONT WindowFont;
     BOOLEAN Enabled;
     PPH_LIST VdmHostProcessList;
 } PH_NTVDM_CONTEXT, *PPH_NTVDM_CONTEXT;
@@ -270,8 +272,11 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
             context->Enabled = TRUE;
             context->VdmHostProcessList = PhCreateList(1);
 
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            SetWindowFont(context->ListViewHandle, context->WindowFont, FALSE);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 140, L"Module name");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 180, L"File name");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 80, L"Thread Id");
@@ -289,6 +294,8 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
                 );
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, context->ListViewHandle);
         }
         break;
     case WM_DESTROY:
@@ -303,7 +310,18 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
             PhpClearVdmHostProcessItems(context);
             PhDereferenceObject(context->VdmHostProcessList);
 
+            if (context->WindowFont)
+                DeleteFont(context->WindowFont);
+
             PhFree(context);
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
         }
         break;
     case WM_SHOWWINDOW:
@@ -370,20 +388,13 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
                         point.x,
                         point.y
                         );
-                    PhDestroyEMenu(menu);
 
-                    if (selectedItem && selectedItem->Id != ULONG_MAX)
+                    if (selectedItem && selectedItem->Id != ULONG_MAX && !PhHandleCopyListViewEMenuItem(selectedItem))
                     {
                         PPH_NTVDM_ENTRY entry;
-                        BOOLEAN handled;
-
-                        handled = PhHandleCopyListViewEMenuItem(selectedItem);
 
                         //if (!handled && PhPluginsEnabled)
                         //    handled = PhPluginTriggerEMenuItem(&menuInfo, item);
-
-                        if (handled)
-                            break;
 
                         entry = context->VdmHostProcessList->Items[PtrToUlong(index) - 1];
 
@@ -432,6 +443,8 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
                             break;
                         }
                     }
+
+                    PhDestroyEMenu(menu);
                 }
             }
         }
@@ -441,9 +454,15 @@ INT_PTR CALLBACK PhpProcessVdmHostProcessDlgProc(
             PhpRefreshVdmHostProcess(hwndDlg, context, processItem);
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
-#endif
+#endif // #if defined(_M_IX86)

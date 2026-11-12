@@ -102,10 +102,49 @@ ipch/
 **/compile_commands.json
 **/.cache/
 
-# AI instructions and caches
+# AI / agent tooling (ignored by default)
+#
+# Policy: agent config, memory, and instruction files are NOT committed.
+# They are per-contributor choices, not project artifacts. To commit a
+# file that is genuinely critical to the repo, force-add it explicitly.
+#
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+# GitHub Copilot
 .github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+# Cursor
+.cursor/
+.cursorrules
+.cursorignore
+.cursorindexingignore
+# Cline / Roo Code
 .clinerules
+.cline/
+.roo/
+.roorules
 memory-bank/
+# Windsurf
+.windsurf/
+.windsurfrules
+# Aider
+.aider*
+# Continue
+.continue/
+# Codex / Gemini / generic agent files
+AGENTS.md
+.codex/
+GEMINI.md
+.gemini/
+# OpenCode
+.opencode/
+opencode.json
+opencode.jsonc
+# Context-dump tools
+repomix-output.*
 
 ##########################
 ## Project specific rules
@@ -121,6 +160,8 @@ tools/thirdparty/vcpkg_installed/*
 
 bin-cmake/
 build-*/
+cmake-build-*/
+**/node_modules/
 
 !KSystemInformer/bin-signed/*/ksi.dll
 !KSystemInformer/bin-signed/*/ksi.pdb

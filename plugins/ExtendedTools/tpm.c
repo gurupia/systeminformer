@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2022 Winsider Seminars & Solutions, Inc.  All rights reserved.
  *
  * This file is part of System Informer.
@@ -228,20 +228,20 @@ NTSTATUS EtTpmQueryIndices(
 
     command.Header.SessionTag = _byteswap_ushort(TPM_ST_NO_SESSIONS);
     command.Header.CommandCode = _byteswap_ulong(TPM_CC_GetCapability);
-    command.Header.Size = _byteswap_ulong(sizeof(command));
+    command.Header.Size = _byteswap_ulong(sizeof(TPM_GET_CAPABILITY_CMD_HEADER));
 
     indexCount = RTL_NUMBER_OF(reply.Data.Data.Handles.Handle);
     command.Capability = _byteswap_ulong(TPM_CAP_HANDLES);
     command.Property = _byteswap_ulong(TPM_HR_NV_INDEX);
     command.PropertyCount = _byteswap_ulong(indexCount);
 
-    resultLength = sizeof(reply);
+    resultLength = sizeof(TPM_GET_CAPABILITY_REPLY);
     if (Tbsip_Submit_Command(
         TbsContextHandle,
         TBS_COMMAND_LOCALITY_ZERO,
         TBS_COMMAND_PRIORITY_NORMAL,
         (PCBYTE)&command,
-        sizeof(command),
+        sizeof(TPM_GET_CAPABILITY_CMD_HEADER),
         (PBYTE)&reply,
         &resultLength
         ) != TBS_SUCCESS)
@@ -255,7 +255,19 @@ NTSTATUS EtTpmQueryIndices(
         return EtTpmReturnCodeToStatus(reply.Header.ResponseCode);
     }
 
+    // The returned count is TPM controlled. Require the reply to actually contain
+    // the count, then bound it by both the fixed handle array and the number of
+    // handles the returned bytes can hold. (dmex)
+    if (resultLength < RTL_SIZEOF_THROUGH_FIELD(TPM_GET_CAPABILITY_REPLY, Data.Data.Handles.Count))
+        return STATUS_TPM_20_E_FAILURE;
+
     indexCount = _byteswap_ulong(reply.Data.Data.Handles.Count);
+
+    if (indexCount > RTL_NUMBER_OF(reply.Data.Data.Handles.Handle))
+        return STATUS_TPM_20_E_FAILURE;
+
+    if (indexCount > (resultLength - FIELD_OFFSET(TPM_GET_CAPABILITY_REPLY, Data.Data.Handles.Handle)) / sizeof(TPM_HANDLE))
+        return STATUS_TPM_20_E_FAILURE;
 
     if (!Indices || *IndexCount < indexCount)
     {
@@ -267,6 +279,197 @@ NTSTATUS EtTpmQueryIndices(
     {
         Indices[i].Value = _byteswap_ulong(reply.Data.Data.Handles.Handle[i].Value);
     }
+
+    return STATUS_SUCCESS;
+}
+
+//
+// Reads the specified PCR bank. PcrValues receives TPM_PCR_COUNT contiguous
+// digests of DigestSize bytes; ValidPcrMask receives a bit for each PCR the TPM
+// actually returned. A bank the TPM does not implement yields a zero mask and
+// STATUS_SUCCESS rather than an error.
+//
+_Must_inspect_result_
+NTSTATUS EtTpmPcrRead(
+    _In_ TBS_HCONTEXT TbsContextHandle,
+    _In_ USHORT HashAlgorithm,
+    _Out_writes_bytes_all_(TPM_PCR_COUNT * DigestSize) PVOID PcrValues,
+    _In_ USHORT DigestSize,
+    _Out_ PULONG ValidPcrMask
+    )
+{
+    PUCHAR values = PcrValues;
+    ULONG validMask = 0;
+    ULONG remainingMask;
+
+    *ValidPcrMask = 0;
+
+    if (DigestSize == 0 || DigestSize > TPM_PCR_MAX_DIGEST_SIZE)
+        return STATUS_INVALID_PARAMETER;
+
+    memset(values, 0, TPM_PCR_COUNT * DigestSize);
+
+    remainingMask = (1UL << TPM_PCR_COUNT) - 1;
+
+    // The TPM returns at most TPM_PCR_READ_MAX_DIGESTS digests per command and
+    // silently trims the selection it could not service, so repeat until every
+    // PCR has been read or the TPM stops making progress.
+
+    for (ULONG pass = 0; pass < TPM_PCR_COUNT && remainingMask; pass++)
+    {
+        TPM_PCR_READ_CMD command;
+        UCHAR reply[TPM_PCR_READ_REPLY_MAX_LENGTH];
+        ULONG requestMask;
+        ULONG returnedMask;
+        ULONG digestCount;
+        ULONG resultLength;
+        ULONG offset;
+        ULONG requested;
+        UCHAR selectSize;
+
+        // Select at most TPM_PCR_READ_MAX_DIGESTS of the PCRs still outstanding.
+
+        requestMask = 0;
+        requested = 0;
+
+        for (ULONG i = 0; i < TPM_PCR_COUNT; i++)
+        {
+            if (!BooleanFlagOn(remainingMask, 1UL << i))
+                continue;
+
+            SetFlag(requestMask, 1UL << i);
+
+            if (++requested == TPM_PCR_READ_MAX_DIGESTS)
+                break;
+        }
+
+        memset(&command, 0, sizeof(TPM_PCR_READ_CMD));
+        command.Header.SessionTag = _byteswap_ushort(TPM_ST_NO_SESSIONS);
+        command.Header.CommandCode = _byteswap_ulong(TPM_CC_PCR_Read);
+        command.Header.Size = _byteswap_ulong(sizeof(TPM_PCR_READ_CMD));
+        command.SelectionCount = _byteswap_ulong(1);
+        command.Selection.HashAlg = _byteswap_ushort(HashAlgorithm);
+        command.Selection.SizeOfSelect = TPM_PCR_SELECT_SIZE;
+
+        for (ULONG i = 0; i < TPM_PCR_SELECT_SIZE; i++)
+        {
+            command.Selection.PcrSelect[i] = (UCHAR)((requestMask >> (i * 8)) & 0xff);
+        }
+
+        resultLength = sizeof(reply);
+        if (Tbsip_Submit_Command(
+            TbsContextHandle,
+            TBS_COMMAND_LOCALITY_ZERO,
+            TBS_COMMAND_PRIORITY_NORMAL,
+            (PCBYTE)&command,
+            sizeof(TPM_PCR_READ_CMD),
+            (PBYTE)reply,
+            &resultLength
+            ) != TBS_SUCCESS)
+        {
+            return STATUS_TPM_20_E_FAILURE;
+        }
+
+        if (resultLength < sizeof(TPM_REPLY_HEADER) || resultLength > sizeof(reply))
+            return STATUS_TPM_20_E_FAILURE;
+
+        if (((PTPM_REPLY_HEADER)reply)->ResponseCode != TPM_RC_SUCCESS)
+            return EtTpmReturnCodeToStatus(((PTPM_REPLY_HEADER)reply)->ResponseCode);
+
+        // The remainder of the reply is TPM controlled and variable length, so
+        // every field is bounds checked against the returned length before use.
+
+        offset = sizeof(TPM_REPLY_HEADER);
+        offset += sizeof(ULONG); // PcrUpdateCounter
+
+        if (resultLength < offset + sizeof(ULONG))
+            return STATUS_TPM_20_E_FAILURE;
+
+        // The returned selection list describes which PCRs the digests belong to.
+
+        if (_byteswap_ulong(*(PULONG UNALIGNED)(reply + offset)) != 1)
+            return STATUS_TPM_20_E_FAILURE;
+
+        offset += sizeof(ULONG);
+
+        if (resultLength < offset + sizeof(TPM_ALG) + sizeof(UCHAR))
+            return STATUS_TPM_20_E_FAILURE;
+
+        offset += sizeof(TPM_ALG);
+        selectSize = reply[offset++];
+
+        if (selectSize > TPM_PCR_SELECT_SIZE)
+            return STATUS_TPM_20_E_FAILURE;
+
+        if (resultLength < offset + selectSize)
+            return STATUS_TPM_20_E_FAILURE;
+
+        returnedMask = 0;
+
+        for (ULONG i = 0; i < selectSize; i++)
+        {
+            returnedMask |= (ULONG)reply[offset + i] << (i * 8);
+        }
+
+        offset += selectSize;
+
+        // The TPM may service only part of the request. It must never widen it.
+
+        if (returnedMask & ~requestMask)
+            return STATUS_TPM_20_E_FAILURE;
+
+        if (resultLength < offset + sizeof(ULONG))
+            return STATUS_TPM_20_E_FAILURE;
+
+        digestCount = _byteswap_ulong(*(PULONG UNALIGNED)(reply + offset));
+        offset += sizeof(ULONG);
+
+        if (digestCount > TPM_PCR_READ_MAX_DIGESTS)
+            return STATUS_TPM_20_E_FAILURE;
+
+        // A bank the TPM does not implement returns an empty selection. Stop
+        // without an error so the caller can report the bank as unavailable.
+
+        if (returnedMask == 0 || digestCount == 0)
+            break;
+
+        // The digests arrive in ascending PCR order, one per selected bit.
+
+        for (ULONG i = 0; i < TPM_PCR_COUNT && digestCount != 0; i++)
+        {
+            USHORT size;
+
+            if (!BooleanFlagOn(returnedMask, 1UL << i))
+                continue;
+
+            if (resultLength < offset + sizeof(USHORT))
+                return STATUS_TPM_20_E_FAILURE;
+
+            size = _byteswap_ushort(*(PUSHORT UNALIGNED)(reply + offset));
+            offset += sizeof(USHORT);
+
+            if (size != DigestSize)
+                return STATUS_TPM_20_E_FAILURE;
+
+            if (resultLength < offset + size)
+                return STATUS_TPM_20_E_FAILURE;
+
+            memcpy(values + (i * DigestSize), reply + offset, size);
+            offset += size;
+
+            SetFlag(validMask, 1UL << i);
+            digestCount--;
+        }
+
+        // The TPM returned fewer digests than the bits it selected.
+
+        if (digestCount != 0)
+            return STATUS_TPM_20_E_FAILURE;
+
+        ClearFlag(remainingMask, returnedMask);
+    }
+
+    *ValidPcrMask = validMask;
 
     return STATUS_SUCCESS;
 }
@@ -288,18 +491,18 @@ NTSTATUS EtTpmReadPublic(
 
     command.Header.SessionTag = _byteswap_ushort(TPM_ST_NO_SESSIONS);
     command.Header.CommandCode = _byteswap_ulong(TPM_CC_NV_ReadPublic);
-    command.Header.Size = _byteswap_ulong(sizeof(command));
+    command.Header.Size = _byteswap_ulong(sizeof(TPM_NV_READ_PUBLIC_CMD_HEADER));
 
     command.NvIndex.Value = _byteswap_ulong(Index.Value);
 
-    resultLength = sizeof(reply);
+    resultLength = sizeof(TPM_NV_READ_PUBLIC_REPLY);
 
     if (Tbsip_Submit_Command(
         TbsContextHandle,
         TBS_COMMAND_LOCALITY_ZERO,
         TBS_COMMAND_PRIORITY_NORMAL,
         (PCBYTE)&command,
-        sizeof(command),
+        sizeof(TPM_NV_READ_PUBLIC_CMD_HEADER),
         (PBYTE)&reply,
         &resultLength
         ) != TBS_SUCCESS)
@@ -309,6 +512,10 @@ NTSTATUS EtTpmReadPublic(
 
     if (reply.Header.ResponseCode != TPM_RC_SUCCESS)
         return EtTpmReturnCodeToStatus(reply.Header.ResponseCode);
+
+    // Require the reply to cover the fields read below. (dmex)
+    if (resultLength < RTL_SIZEOF_THROUGH_FIELD(TPM_NV_READ_PUBLIC_REPLY, NvPublic.DataSize))
+        return STATUS_TPM_20_E_FAILURE;
 
     *Attributes = _byteswap_ulong(reply.NvPublic.Attributes);
     *DataSize = _byteswap_ushort(reply.NvPublic.DataSize);
@@ -568,7 +775,7 @@ BOOLEAN EtTpmIsReady(
     if (status == STATUS_SUCCESS)
         return TRUE;
     if (status == STATUS_OBJECT_NAME_NOT_FOUND)
-        return Tbsi_GetDeviceInfo(sizeof(info), &info) == TBS_SUCCESS;
+        return Tbsi_GetDeviceInfo(sizeof(TPM_DEVICE_INFO), &info) == TBS_SUCCESS;
 
     return FALSE;
 }
@@ -626,7 +833,7 @@ NTSTATUS EtEnumerateTpmEntries(
 
     for (ULONG i = 0; i < indexCount; i++)
     {
-        INT lvItemIndex;
+        LONG lvItemIndex;
         USHORT dataSize;
         PPH_STRING string;
         TPMA_NV attributes;
@@ -704,43 +911,43 @@ Exit:
 }
 
 INT_PTR CALLBACK EtTpmDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PTPM_WINDOW_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(TPM_WINDOW_CONTEXT));
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
             TPM_DEVICE_INFO info;
 
-            context->WindowHandle = hwndDlg;
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_TPM_LIST);
+            context->WindowHandle = WindowHandle;
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_TPM_LIST);
             context->ParentWindowHandle = (HWND)lParam;
 
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetApplicationWindowIcon(WindowHandle);
 
-            if (Tbsi_GetDeviceInfo(sizeof(info), &info) == TBS_SUCCESS)
+            if (Tbsi_GetDeviceInfo(sizeof(TPM_DEVICE_INFO), &info) == TBS_SUCCESS)
             {
                 PPH_STRING newText;
-                PPH_STRING windowText = PhGetWindowText(hwndDlg);
+                PPH_STRING windowText = PhGetWindowText(WindowHandle);
 
                 if (info.tpmVersion == TPM_VERSION_12)
                     newText = PhConcatStringRefZ(&windowText->sr, L" 1.2");
@@ -749,7 +956,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
                 else
                     newText = PhReferenceObject(windowText);
 
-                PhSetWindowText(hwndDlg, newText->Buffer);
+                PhSetWindowText(WindowHandle, newText->Buffer);
                 PhDereferenceObject(newText);
                 PhDereferenceObject(windowText);
             }
@@ -771,17 +978,17 @@ INT_PTR CALLBACK EtTpmDlgProc(
 
             PhLoadListViewColumnsFromSetting(SETTING_NAME_TPM_LISTVIEW_COLUMNS, context->ListViewHandle);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_TPM_LIST_REFRESH), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_TPM_LIST_REFRESH), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDOK), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
 
             if (PhValidWindowPlacementFromSetting(SETTING_NAME_TPM_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(SETTING_NAME_TPM_WINDOW_POSITION, SETTING_NAME_TPM_WINDOW_SIZE, hwndDlg);
+                PhLoadWindowPlacementFromSetting(SETTING_NAME_TPM_WINDOW_POSITION, SETTING_NAME_TPM_WINDOW_SIZE, WindowHandle);
             else
-                PhCenterWindow(hwndDlg, context->ParentWindowHandle);
+                PhCenterWindow(WindowHandle, context->ParentWindowHandle);
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 
             EtEnumerateTpmEntries(context);
         }
@@ -789,10 +996,10 @@ INT_PTR CALLBACK EtTpmDlgProc(
     case WM_DESTROY:
         {
             PhSaveListViewColumnsToSetting(SETTING_NAME_TPM_LISTVIEW_COLUMNS, context->ListViewHandle);
-            PhSaveWindowPlacementToSetting(SETTING_NAME_TPM_WINDOW_POSITION, SETTING_NAME_TPM_WINDOW_SIZE, hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_NAME_TPM_WINDOW_POSITION, SETTING_NAME_TPM_WINDOW_SIZE, WindowHandle);
             PhDeleteLayoutManager(&context->LayoutManager);
 
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
             PhFree(context);
         }
         break;
@@ -818,7 +1025,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
                 break;
             case IDCANCEL:
             case IDOK:
-                EndDialog(hwndDlg, IDOK);
+                EndDialog(WindowHandle, IDOK);
                 break;
             }
         }
@@ -841,7 +1048,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
                         {
                             TPM_NV_INDEX index;
                             index.Value = PtrToUlong(entry);
-                            EtShowTpmEditDialog(hwndDlg, index);
+                            EtShowTpmEditDialog(WindowHandle, index);
                         }
                     }
                 }
@@ -865,9 +1072,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"&Edit", NULL, NULL), ULONG_MAX);
@@ -877,7 +1082,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
 
                     item = PhShowEMenu(
                         menu,
-                        hwndDlg,
+                        WindowHandle,
                         PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         point.x,
@@ -893,7 +1098,7 @@ INT_PTR CALLBACK EtTpmDlgProc(
                             case 1:
                                 TPM_NV_INDEX index;
                                 index.Value = PtrToUlong(listviewItems[0]);
-                                EtShowTpmEditDialog(hwndDlg, index);
+                                EtShowTpmEditDialog(WindowHandle, index);
                                 break;
                             case PHAPP_IDC_COPY:
                                 PhCopyListView(context->ListViewHandle);
@@ -904,17 +1109,16 @@ INT_PTR CALLBACK EtTpmDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
@@ -938,3 +1142,5 @@ VOID EtShowTpmDialog(
         ParentWindowHandle
         );
 }
+
+

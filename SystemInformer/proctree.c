@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *     jxy-s   2021
  *
  */
@@ -89,6 +89,8 @@ static LONG GraphContextHeight = 0;
 static HBITMAP GraphOldBitmap = NULL;
 static HBITMAP GraphBitmap = NULL;
 static PVOID GraphBits = NULL;
+static PH_GRAPH_SCROLL_STATE ProcessTreeGraphScroll;
+static UINT_PTR ProcessTreeGraphScrollTimerId = 0;
 
 /**
  * Initializes the process tree list.
@@ -184,6 +186,7 @@ VOID PhInitializeProcessTreeList(
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOREADBYTES, FALSE, L"I/O read bytes", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOWRITEBYTES, FALSE, L"I/O write bytes", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOOTHERBYTES, FALSE, L"I/O other bytes", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOTOTALBYTES, FALSE, L"I/O total bytes", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOREADSDELTA, FALSE, L"I/O reads delta", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOWRITESDELTA, FALSE, L"I/O writes delta", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(hwnd, PHPRTLC_IOOTHERDELTA, FALSE, L"I/O other delta", 70, PH_ALIGN_RIGHT, ULONG_MAX, DT_RIGHT, TRUE);
@@ -233,6 +236,8 @@ VOID PhInitializeProcessTreeList(
     PhAddTreeNewColumn(hwnd, PHPRTLC_START_KEY, FALSE, L"Start key", 120, PH_ALIGN_LEFT, ULONG_MAX, 0);
     PhAddTreeNewColumn(hwnd, PHPRTLC_MITIGATION_POLICIES, FALSE, L"Mitigation policies", 180, PH_ALIGN_LEFT, ULONG_MAX, 0);
     PhAddTreeNewColumn(hwnd, PHPRTLC_SERVICES, FALSE, L"Services", 180, PH_ALIGN_LEFT, ULONG_MAX, 0);
+    PhAddTreeNewColumn(hwnd, PHPRTLC_SHORT_USERNAME, FALSE, L"Short user name", 140, PH_ALIGN_LEFT, ULONG_MAX, 0);
+    PhAddTreeNewColumn(hwnd, PHPRTLC_CURRENTDIRECTORY, FALSE, L"Current directory", 180, PH_ALIGN_LEFT, ULONG_MAX, DT_PATH_ELLIPSIS);
 
     PhCmInitializeManager(&ProcessTreeListCm, hwnd, PHPRTLC_MAXIMUM, PhpProcessTreeNewPostSortFunction);
     PhInitializeTreeNewFilterSupport(&FilterSupport, hwnd, ProcessNodeList);
@@ -423,7 +428,10 @@ FORCEINLINE BOOLEAN PhpValidateParentProcessNode(
     _In_ PPH_PROCESS_NODE Parent
     )
 {
-    if (WindowsVersion >= WINDOWS_10_RS3)
+    // Sequence numbers are only populated when the process extension is available (see
+    // PhReferenceProcessItemForParent). Without it every sequence number is zero and the
+    // comparison would accept any parent, allowing PID reuse to form a cycle in the tree.
+    if (PhEnableProcessExtension)
     {
         return PH_IS_FAKE_PROCESS_ID(Child->ProcessId) ||
             Parent->ProcessItem->ProcessSequenceNumber <= Child->ProcessItem->ProcessSequenceNumber;
@@ -693,6 +701,8 @@ VOID PhpRemoveProcessNode(
     PhClearReference(&ProcessNode->ProcessStartKeyText);
     PhClearReference(&ProcessNode->MitigationPoliciesText);
     PhClearReference(&ProcessNode->ServicesText);
+    PhClearReference(&ProcessNode->ShortUsernameText);
+    PhClearReference(&ProcessNode->CurrentDirectoryText);
 
     PhDeleteGraphBuffers(&ProcessNode->CpuGraphBuffers);
     PhDeleteGraphBuffers(&ProcessNode->PrivateGraphBuffers);
@@ -715,6 +725,73 @@ VOID PhUpdateProcessNode(
 
     PhInvalidateTreeNewNode(&ProcessNode->Node, TN_CACHE_COLOR | TN_CACHE_ICON);
     TreeNew_InvalidateNode(ProcessTreeListHandle, &ProcessNode->Node);
+}
+
+static VOID PhpInvalidateProcessTreeGraphs(
+    VOID
+    )
+{
+    PhInvalidateTreeNewColumn(ProcessTreeListHandle, PHPRTLC_CPUHISTORY);
+    PhInvalidateTreeNewColumn(ProcessTreeListHandle, PHPRTLC_PRIVATEBYTESHISTORY);
+    PhInvalidateTreeNewColumn(ProcessTreeListHandle, PHPRTLC_IOHISTORY);
+}
+
+static VOID CALLBACK PhpProcessTreeGraphScrollTimerProc(
+    _In_ HWND WindowHandle,
+    _In_ UINT Message,
+    _In_ UINT_PTR TimerId,
+    _In_ ULONG Time
+    )
+{
+    FLOAT offset;
+
+    // The last frame is drawn at offset 0.
+    if (!PhGetGraphScrollOffset(&ProcessTreeGraphScroll, 2, &offset))
+    {
+        KillTimer(NULL, ProcessTreeGraphScrollTimerId);
+        ProcessTreeGraphScrollTimerId = 0;
+    }
+
+    PhpInvalidateProcessTreeGraphs();
+}
+
+// Scrolls the history graphs until the next update.
+static VOID PhpStartProcessTreeGraphScroll(
+    VOID
+    )
+{
+    static const ULONG columnIds[] = { PHPRTLC_CPUHISTORY, PHPRTLC_PRIVATEBYTESHISTORY, PHPRTLC_IOHISTORY };
+    PH_TREENEW_COLUMN column;
+    HWND rootWindow;
+    BOOLEAN visible = FALSE;
+    ULONG interval = 0;
+
+    if (IsWindowVisible(ProcessTreeListHandle) && !((rootWindow = GetAncestor(ProcessTreeListHandle, GA_ROOT)) && IsIconic(rootWindow)))
+    {
+        for (ULONG i = 0; i < RTL_NUMBER_OF(columnIds); i++)
+        {
+            if (TreeNew_GetColumn(ProcessTreeListHandle, columnIds[i], &column) && column.Visible)
+            {
+                visible = TRUE;
+                break;
+            }
+        }
+    }
+
+    if (visible)
+        interval = PhStartGraphScroll(&ProcessTreeGraphScroll);
+    else
+        ProcessTreeGraphScroll.StartTime = 0;
+
+    if (interval)
+    {
+        ProcessTreeGraphScrollTimerId = SetTimer(NULL, ProcessTreeGraphScrollTimerId, interval, PhpProcessTreeGraphScrollTimerProc);
+    }
+    else if (ProcessTreeGraphScrollTimerId)
+    {
+        KillTimer(NULL, ProcessTreeGraphScrollTimerId);
+        ProcessTreeGraphScrollTimerId = 0;
+    }
 }
 
 VOID PhTickProcessNodes(
@@ -789,6 +866,9 @@ VOID PhTickProcessNodes(
         else
             InvalidateRect(ProcessTreeListHandle, NULL, FALSE);
     }
+
+    if (ProcessTreeListHandle)
+        PhpStartProcessTreeGraphScroll();
 }
 
 static VOID PhpNeedGraphContext(
@@ -829,7 +909,11 @@ static VOID PhpNeedGraphContext(
         return;
     GraphBitmap = PhCreateDIBSection(hdc, PHBF_DIB, Width, Height, &GraphBits);
     if (!GraphBitmap)
+    {
+        DeleteDC(GraphContext);
+        GraphContext = NULL;
         return;
+    }
     GraphOldBitmap = SelectBitmap(GraphContext, GraphBitmap);
 }
 
@@ -883,6 +967,8 @@ FORCEINLINE VOID PhpAccumulateField(
     case AggregateTypeIntPtr:
         *(PULONG_PTR)Accumulator += *(PULONG_PTR)Value;
         break;
+    default:
+        ASSUME_NO_DEFAULT;
     }
 }
 
@@ -1084,6 +1170,21 @@ static VOID PhpUpdateProcessNodeWindow(
 
         if (ProcessNode->ProcessItem->QueryHandle && !ProcessNode->ProcessItem->IsSubsystemProcess)
         {
+            if (ProcessNode->WindowHandle)
+            {
+                CLIENT_ID clientId;
+
+                // HWNDs are recycled; drop the cached window when it is gone or no longer
+                // belongs to this process so the next query picks up the new main window.
+                if (!IsWindow(ProcessNode->WindowHandle) ||
+                    !NT_SUCCESS(PhGetWindowClientId(ProcessNode->WindowHandle, &clientId)) ||
+                    clientId.UniqueProcess != ProcessNode->ProcessId)
+                {
+                    ProcessNode->WindowHandle = NULL;
+                    ProcessNode->WindowHung = FALSE;
+                }
+            }
+
             if (!ProcessNode->WindowHandle)
             {
                 ProcessNode->WindowHandle = PhGetProcessMainWindow(
@@ -1265,26 +1366,50 @@ static VOID PhpUpdateProcessNodeImage(
             if (NT_SUCCESS(PhLoadMappedImageHeaderPageSize(&ProcessNode->ProcessItem->FileName->sr, NULL, &mappedImage)))
 #endif
             {
-                ProcessNode->ImageMachine = mappedImage.NtHeaders->FileHeader.Machine;
-                ProcessNode->ImageTimeDateStamp = mappedImage.NtHeaders->FileHeader.TimeDateStamp;
-                ProcessNode->ImageCharacteristics = mappedImage.NtHeaders->FileHeader.Characteristics;
-
-                if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
-                {
-                    ProcessNode->ImageSubsystem = ((PIMAGE_OPTIONAL_HEADER32)&mappedImage.NtHeaders->OptionalHeader)->Subsystem;
-                    ProcessNode->ImageDllCharacteristics = ((PIMAGE_OPTIONAL_HEADER32)&mappedImage.NtHeaders->OptionalHeader)->DllCharacteristics;
-                }
-                else if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-                {
-                    ProcessNode->ImageSubsystem = ((PIMAGE_OPTIONAL_HEADER64)&mappedImage.NtHeaders->OptionalHeader)->Subsystem;
-                    ProcessNode->ImageDllCharacteristics = ((PIMAGE_OPTIONAL_HEADER64)&mappedImage.NtHeaders->OptionalHeader)->DllCharacteristics;
-                }
-
+                USHORT imageMachine;
+                ULONG imageTimeDateStamp;
+                USHORT imageCharacteristics;
+                USHORT imageSubsystem = IMAGE_SUBSYSTEM_UNKNOWN;
+                USHORT imageDllCharacteristics = 0;
 #ifdef _ARM64_
-                if (ProcessNode->ImageMachine == IMAGE_FILE_MACHINE_AMD64 || ProcessNode->ImageMachine == IMAGE_FILE_MACHINE_ARM64)
-                    ProcessNode->ImageCHPEVersion = PhGetMappedImageCHPEVersion(&mappedImage);
+                ULONG imageCHPEVersion = 0;
 #endif
+                __try
+                {
+                    imageMachine = mappedImage.NtHeaders->FileHeader.Machine;
+                    imageTimeDateStamp = mappedImage.NtHeaders->FileHeader.TimeDateStamp;
+                    imageCharacteristics = mappedImage.NtHeaders->FileHeader.Characteristics;
+    
+                    if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                    {
+                        imageSubsystem = ((PIMAGE_OPTIONAL_HEADER32)&mappedImage.NtHeaders->OptionalHeader)->Subsystem;
+                        imageDllCharacteristics = ((PIMAGE_OPTIONAL_HEADER32)&mappedImage.NtHeaders->OptionalHeader)->DllCharacteristics;
+                    }
+                    else if (mappedImage.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                    {
+                        imageSubsystem = ((PIMAGE_OPTIONAL_HEADER64)&mappedImage.NtHeaders->OptionalHeader)->Subsystem;
+                        imageDllCharacteristics = ((PIMAGE_OPTIONAL_HEADER64)&mappedImage.NtHeaders->OptionalHeader)->DllCharacteristics;
+                    }            
+#ifdef _ARM64_
+                    if (imageMachine == IMAGE_FILE_MACHINE_AMD64 || imageMachine == IMAGE_FILE_MACHINE_ARM64)
+                    {
+                        imageCHPEVersion = PhGetMappedImageCHPEVersion(&mappedImage);
+                    }
+#endif
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    NOTHING;
+                }
 
+                ProcessNode->ImageMachine = imageMachine;
+                ProcessNode->ImageTimeDateStamp = imageTimeDateStamp;
+                ProcessNode->ImageCharacteristics = imageCharacteristics;
+                ProcessNode->ImageSubsystem = imageSubsystem;
+                ProcessNode->ImageDllCharacteristics = imageDllCharacteristics;
+#ifdef _ARM64_
+                ProcessNode->ImageCHPEVersion = imageCHPEVersion;
+#endif
                 PhUnloadMappedImage(&mappedImage);
             }
         }
@@ -1904,6 +2029,65 @@ static VOID PhpUpdateProcessNodeServices(
     }
 }
 
+static VOID PhpUpdateProcessNodeShortUsername(
+    _Inout_ PPH_PROCESS_NODE ProcessNode
+)
+{
+    if (!FlagOn(ProcessNode->ValidMask, PHPN_SHORTUSERNAME))
+    {
+        PhClearReference(&ProcessNode->ShortUsernameText);
+
+        if (ProcessNode->ProcessItem->UserName)
+        {
+            wchar_t* backslash = wcsrchr(ProcessNode->ProcessItem->UserName->Buffer, L'\\');
+            if (backslash)
+                ProcessNode->ShortUsernameText = PhCreateString(backslash + 1);
+            else
+                ProcessNode->ShortUsernameText = PhCreateString(ProcessNode->ProcessItem->UserName->Buffer);
+        }
+
+        SetFlag(ProcessNode->ValidMask, PHPN_SHORTUSERNAME);
+    }
+}
+
+static VOID PhpUpdateProcessNodeCurrentDirectory(
+    _Inout_ PPH_PROCESS_NODE ProcessNode
+    )
+{
+    if (!FlagOn(ProcessNode->ValidMask, PHPN_CURRENTDIRECTORY))
+    {
+        HANDLE processHandle;
+
+        PhClearReference(&ProcessNode->CurrentDirectoryText);
+
+        if (PH_IS_REAL_PROCESS_ID(ProcessNode->ProcessId) && !ProcessNode->ProcessItem->IsSubsystemProcess)
+        {
+            if (NT_SUCCESS(PhOpenProcess(
+                &processHandle,
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                ProcessNode->ProcessId
+                )))
+            {
+                PPH_STRING currentDirectory;
+
+                // Query the WOW64 current directory, because that's the one that actually gets updated. (prpggen.c)
+                if (NT_SUCCESS(PhGetProcessCurrentDirectory(
+                    processHandle,
+                    !!ProcessNode->ProcessItem->IsWow64Process,
+                    &currentDirectory
+                    )))
+                {
+                    ProcessNode->CurrentDirectoryText = currentDirectory;
+                }
+
+                NtClose(processHandle);
+            }
+        }
+
+        SetFlag(ProcessNode->ValidMask, PHPN_CURRENTDIRECTORY);
+    }
+}
+
 #define SORT_FUNCTION(Column) PhpProcessTreeNewCompare##Column
 #define BEGIN_SORT_FUNCTION(Column) static int __cdecl PhpProcessTreeNewCompare##Column( \
     _In_ const void *_elem1, \
@@ -1917,10 +2101,7 @@ static VOID PhpUpdateProcessNodeServices(
     int sortResult = 0;
 
 #define END_SORT_FUNCTION \
-    if (sortResult == 0) \
-        sortResult = intptrcmp((LONG_PTR)processItem1->ProcessId, (LONG_PTR)processItem2->ProcessId); \
-    \
-    return PhModifySort(sortResult, ProcessTreeListSortOrder); \
+    return PhpProcessTreeNewPostSortFunction(sortResult, node1, node2, ProcessTreeListSortOrder); \
 }
 
 _Function_class_(PH_CM_POST_SORT_FUNCTION)
@@ -1932,7 +2113,19 @@ LONG PhpProcessTreeNewPostSortFunction(
     )
 {
     if (Result == 0)
-        Result = intptrcmp((LONG_PTR)((PPH_PROCESS_NODE)Node1)->ProcessItem->ProcessId, (LONG_PTR)((PPH_PROCESS_NODE)Node2)->ProcessItem->ProcessId);
+    {
+        PPH_PROCESS_NODE node1 = Node1;
+        PPH_PROCESS_NODE node2 = Node2;
+
+        if (node1->ProcessItem->ProcessSequenceNumber && node2->ProcessItem->ProcessSequenceNumber)
+            Result = uint64cmp(node1->ProcessItem->ProcessSequenceNumber, node2->ProcessItem->ProcessSequenceNumber);
+
+        if (Result == 0 && node1->Node.Index != node2->Node.Index)
+            Result = uintcmp(node1->Node.Index, node2->Node.Index);
+
+        if (Result == 0)
+            Result = intptrcmp((LONG_PTR)node1->ProcessItem->ProcessId, (LONG_PTR)node2->ProcessItem->ProcessId);
+    }
 
     return PhModifySort(Result, SortOrder);
 }
@@ -1962,6 +2155,9 @@ BEGIN_SORT_FUNCTION(Cpu)
 
     PhpAggregateFieldIfNeeded(node1, AggregateTypeFloat, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, CpuUsage), &number1);
     PhpAggregateFieldIfNeeded(node2, AggregateTypeFloat, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, CpuUsage), &number2);
+
+    number1 = PhNormalizeCpuSortValue(number1 * 100);
+    number2 = PhNormalizeCpuSortValue(number2 * 100);
 
     sortResult = singlecmp(number1, number2);
 }
@@ -2505,6 +2701,22 @@ BEGIN_SORT_FUNCTION(IoOtherBytes)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(IoTotalBytes)
+{
+    ULONG64 number1 = 0;
+    ULONG64 number2 = 0;
+
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadDelta.Value), &number1);
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Value), &number1);
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeInt64, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Value), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadDelta.Value), &number2);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Value), &number2);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeInt64, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Value), &number2);
+
+    sortResult = uint64cmp(number1, number2);
+}
+END_SORT_FUNCTION
+
 BEGIN_SORT_FUNCTION(IoReadsDelta)
 {
     ULONG64 number1 = 0;
@@ -2594,7 +2806,7 @@ BEGIN_SORT_FUNCTION(MinimumWorkingSet)
     PhpUpdateProcessNodeQuotaLimits(node2);
 
     PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number1);
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeIntPtr, AggregateProcessNode, node2, FIELD_OFFSET(PH_PROCESS_NODE, MinimumWorkingSetSize), &number2);
 
     sortResult = uintptrcmp(number1, number2);
 }
@@ -2609,7 +2821,7 @@ BEGIN_SORT_FUNCTION(MaximumWorkingSet)
     PhpUpdateProcessNodeQuotaLimits(node2);
 
     PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number1);
-    PhpAggregateFieldIfNeeded(node1, AggregateTypeIntPtr, AggregateProcessNode, node1, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeIntPtr, AggregateProcessNode, node2, FIELD_OFFSET(PH_PROCESS_NODE, MaximumWorkingSetSize), &number2);
 
     sortResult = uintptrcmp(number1, number2);
 }
@@ -2785,7 +2997,16 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuCore)
 {
-    sortResult = singlecmp(processItem1->CpuUsage, processItem2->CpuUsage);
+    FLOAT number1 = 0;
+    FLOAT number2 = 0;
+
+    PhpAggregateFieldIfNeeded(node1, AggregateTypeFloat, AggregateProcessItem, processItem1, FIELD_OFFSET(PH_PROCESS_ITEM, CpuUsage), &number1);
+    PhpAggregateFieldIfNeeded(node2, AggregateTypeFloat, AggregateProcessItem, processItem2, FIELD_OFFSET(PH_PROCESS_ITEM, CpuUsage), &number2);
+
+    number1 = PhNormalizeCpuSortValue(number1 * 100 * processItem1->AffinityPopulationCount);
+    number2 = PhNormalizeCpuSortValue(number2 * 100 * processItem2->AffinityPopulationCount);
+
+    sortResult = singlecmp(number1, number2);
 }
 END_SORT_FUNCTION
 
@@ -2885,19 +3106,28 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuAverage)
 {
-    sortResult = singlecmp(processItem1->CpuAverageUsage, processItem2->CpuAverageUsage);
+    FLOAT number1 = PhNormalizeCpuSortValue(processItem1->CpuAverageUsage * 100);
+    FLOAT number2 = PhNormalizeCpuSortValue(processItem2->CpuAverageUsage * 100);
+
+    sortResult = singlecmp(number1, number2);
 }
 END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuKernel)
 {
-    sortResult = singlecmp(processItem1->CpuKernelUsage, processItem2->CpuKernelUsage);
+    FLOAT number1 = PhNormalizeCpuSortValue(processItem1->CpuKernelUsage * 100);
+    FLOAT number2 = PhNormalizeCpuSortValue(processItem2->CpuKernelUsage * 100);
+
+    sortResult = singlecmp(number1, number2);
 }
 END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuUser)
 {
-    sortResult = singlecmp(processItem1->CpuUserUsage, processItem2->CpuUserUsage);
+    FLOAT number1 = PhNormalizeCpuSortValue(processItem1->CpuUserUsage * 100);
+    FLOAT number2 = PhNormalizeCpuSortValue(processItem2->CpuUserUsage * 100);
+
+    sortResult = singlecmp(number1, number2);
 }
 END_SORT_FUNCTION
 
@@ -2964,6 +3194,32 @@ BEGIN_SORT_FUNCTION(Services)
     sortResult = PhCompareStringWithNullSortOrder(
         node1->ServicesText,
         node2->ServicesText,
+        ProcessTreeListSortOrder,
+        TRUE
+        );
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(ShortUserName)
+{
+    PhpUpdateProcessNodeShortUsername(node1);
+    PhpUpdateProcessNodeShortUsername(node2);
+    sortResult = PhCompareStringWithNullSortOrder(
+        node1->ShortUsernameText,
+        node2->ShortUsernameText,
+        ProcessTreeListSortOrder,
+        TRUE
+    );
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(CurrentDirectory)
+{
+    PhpUpdateProcessNodeCurrentDirectory(node1);
+    PhpUpdateProcessNodeCurrentDirectory(node2);
+    sortResult = PhCompareStringWithNullSortOrder(
+        node1->CurrentDirectoryText,
+        node2->CurrentDirectoryText,
         ProcessTreeListSortOrder,
         TRUE
         );
@@ -3048,7 +3304,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
 
             if (sortList)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     SORT_FUNCTION(Pid),
@@ -3157,8 +3413,11 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     SORT_FUNCTION(StartKey),
                     SORT_FUNCTION(MitigationPolicies),
                     SORT_FUNCTION(Services),
+                    SORT_FUNCTION(ShortUserName),
+                    SORT_FUNCTION(IoTotalBytes),
+                    SORT_FUNCTION(CurrentDirectory),
                 };
-                int (__cdecl *sortFunction)(const void *, const void *);
+                _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHPRTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -3262,7 +3521,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                         PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Delta), &number);
                         PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Delta), &number);
                         number *= 1000;
-                        number /= PhCsUpdateInterval;
+                        number /= PhProcessProviderElapsedMilliseconds;
                     }
 
                     if (number != 0)
@@ -3508,7 +3767,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                         PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadDelta.Delta), &number);
                         PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Delta), &number);
                         number *= 1000;
-                        number /= PhCsUpdateInterval;
+                        number /= PhProcessProviderElapsedMilliseconds;
                     }
 
                     if (number != 0)
@@ -3530,7 +3789,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     {
                         PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Delta), &number);
                         number *= 1000;
-                        number /= PhCsUpdateInterval;
+                        number /= PhProcessProviderElapsedMilliseconds;
                     }
 
                     if (number != 0)
@@ -3958,6 +4217,21 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     {
                         PhMoveReference(&node->IoGroupText[5], PhFormatSize(value, ULONG_MAX));
                         getCellText->Text = node->IoGroupText[5]->sr;
+                    }
+                }
+                break;
+            case PHPRTLC_IOTOTALBYTES:
+                {
+                    ULONG64 value = 0;
+
+                    PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadDelta.Value), &value);
+                    PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Value), &value);
+                    PhpAggregateFieldIfNeeded(node, AggregateTypeInt64, AggregateProcessItem, processItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Value), &value);
+
+                    if (value != 0)
+                    {
+                        PhMoveReference(&node->IoGroupText[9], PhFormatSize(value, ULONG_MAX));
+                        getCellText->Text = node->IoGroupText[9]->sr;
                     }
                 }
                 break;
@@ -4692,6 +4966,22 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     }
                 }
                 break;
+            case PHPRTLC_SHORT_USERNAME:
+                {
+                    PhpUpdateProcessNodeShortUsername(node);
+
+                    if (node->ShortUsernameText)
+                    {
+                        getCellText->Text = PhGetStringRef(node->ShortUsernameText);
+                    }
+                }
+                break;
+            case PHPRTLC_CURRENTDIRECTORY:
+                {
+                    PhpUpdateProcessNodeCurrentDirectory(node);
+                    getCellText->Text = PhGetStringRef(node->CurrentDirectoryText);
+                }
+                break;
             default:
                 return FALSE;
             }
@@ -4853,9 +5143,9 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             case PHPRTLC_PRIVATEBYTESHISTORY:
             case PHPRTLC_IOHISTORY:
                 memset(&drawInfo, 0, sizeof(PH_GRAPH_DRAW_INFO));
-                drawInfo.Width = rect.right - rect.left - 1; // leave a small gap
-                drawInfo.Height = rect.bottom - rect.top - 1; // leave a small gap
                 drawInfo.Step = 2;
+                drawInfo.Width = rect.right - rect.left - 1 + drawInfo.Step; // leave a small gap; one more sample scrolls in from the left
+                drawInfo.Height = rect.bottom - rect.top - 1; // leave a small gap
                 drawInfo.BackColor = RGB(0x00, 0x00, 0x00);
                 break;
             }
@@ -4941,10 +5231,22 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                         FLOAT total;
                         FLOAT max;
 
-                        for (ULONG i = 0; i < drawInfo.LineDataCount; i++)
+                        if (PhCsEnableAvxSupport)
                         {
-                            node->PrivateGraphBuffers.Data1[i] =
-                                (FLOAT)PhGetItemCircularBuffer_SIZE_T(&processItem->PrivateBytesHistory, i);
+                            PhCopyConvertCircularBufferSizeT(&processItem->PrivateBytesHistory, node->PrivateGraphBuffers.Data1, drawInfo.LineDataCount);
+#ifdef DEBUG
+                            for (ULONG i = 0; i < drawInfo.LineDataCount; i++)
+                            {
+                                assert(node->PrivateGraphBuffers.Data1[i] == (FLOAT)PhGetItemCircularBuffer_SIZE_T(&processItem->PrivateBytesHistory, i));
+                            }
+#endif
+                        }
+                        else
+                        {
+                            for (ULONG i = 0; i < drawInfo.LineDataCount; i++)
+                            {
+                                node->PrivateGraphBuffers.Data1[i] = (FLOAT)PhGetItemCircularBuffer_SIZE_T(&processItem->PrivateBytesHistory, i);
+                            }
                         }
 
                         // This makes it easier for the user to see what processes are hogging memory.
@@ -5038,11 +5340,15 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             case PHPRTLC_CPUHISTORY:
             case PHPRTLC_PRIVATEBYTESHISTORY:
             case PHPRTLC_IOHISTORY:
+                drawInfo.Width -= drawInfo.Step;
                 PhpNeedGraphContext(customDraw->Dc, drawInfo.Width, drawInfo.Height);
 
                 if (GraphBits)
                 {
-                    PhDrawGraphDirect(GraphContext, GraphBits, &drawInfo);
+                    FLOAT offset;
+
+                    PhGetGraphScrollOffset(&ProcessTreeGraphScroll, drawInfo.Step, &offset);
+                    PhDrawGraphDirectEx(GraphContext, GraphBits, &drawInfo, offset);
                     BitBlt(
                         customDraw->Dc,
                         rect.left,
@@ -5235,6 +5541,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             case PHPRTLC_IOREADBYTES:
             case PHPRTLC_IOWRITEBYTES:
             case PHPRTLC_IOOTHERBYTES:
+            case PHPRTLC_IOTOTALBYTES:
             case PHPRTLC_IOREADSDELTA:
             case PHPRTLC_IOWRITESDELTA:
             case PHPRTLC_IOOTHERDELTA:
@@ -5252,6 +5559,8 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             default:
                 return FALSE;
             }
+
+            getHeaderText->Flags = TN_CACHE;
 
             // NOTE: Windows Task Manager doesn't loop subitems when summing the totals but instead just returns the system totals.
             // We should do the same for some columns like CPU when/if the below loop/aggregate fields becomes a performance issue. (dmex)
@@ -5396,6 +5705,11 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                 case PHPRTLC_IOOTHERBYTES:
                     PhpAggregateFieldTotal(node, AggregateTypeInt64, node->ProcessItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Value), &number);
                     break;
+                case PHPRTLC_IOTOTALBYTES:
+                    PhpAggregateFieldTotal(node, AggregateTypeInt64, node->ProcessItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadDelta.Value), &number);
+                    PhpAggregateFieldTotal(node, AggregateTypeInt64, node->ProcessItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoWriteDelta.Value), &number);
+                    PhpAggregateFieldTotal(node, AggregateTypeInt64, node->ProcessItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoOtherDelta.Value), &number);
+                    break;
                 case PHPRTLC_IOREADSDELTA:
                     PhpAggregateFieldTotal(node, AggregateTypeInt64, node->ProcessItem, FIELD_OFFSET(PH_PROCESS_ITEM, IoReadCountDelta.Delta), &number);
                     break;
@@ -5473,7 +5787,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                         break;
 
                     number *= 1000;
-                    number /= PhCsUpdateInterval;
+                    number /= PhProcessProviderElapsedMilliseconds;
                     PhInitFormatSize(&format[0], number);
                     PhInitFormatS(&format[1], L"/s");
 
@@ -5494,6 +5808,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             case PHPRTLC_IOREADBYTES:
             case PHPRTLC_IOWRITEBYTES:
             case PHPRTLC_IOOTHERBYTES:
+            case PHPRTLC_IOTOTALBYTES:
             case PHPRTLC_PAGEDPOOL:
             case PHPRTLC_PEAKPAGEDPOOL:
             case PHPRTLC_NONPAGEDPOOL:
@@ -5681,6 +5996,7 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             PPH_PROCESS_NODE targetNode = (PPH_PROCESS_NODE)reorderEvent->Target;
             BOOLEAN targetIsDescendant = FALSE;
             ULONG oldIndex, newIndex;
+            PPH_PROCESS_NODE originalParent;
 
             if (sourceNode && targetNode)
             {
@@ -5695,6 +6011,9 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
                     current = current->Parent;
                 }
             }
+
+            // Save original parent before unlinking, so we can restore on invalid move.
+            originalParent = sourceNode->Parent;
 
             // Remove sourceNode from its current parent or root list (dmex)
             if (sourceNode->Parent)
@@ -5761,9 +6080,18 @@ BOOLEAN NTAPI PhpProcessTreeNewCallback(
             }
             else
             {
-                // Invalid move (would create a cycle) - restore original placement at end of root list. (dmex)
-                PhInsertItemList(ProcessNodeRootList, ProcessNodeRootList->Count, sourceNode);
-                sourceNode->Parent = NULL;
+                // Invalid move (would create a cycle) - restore to original position. (dmex)
+                if (originalParent)
+                {
+                    ULONG restoreIndex = (oldIndex != ULONG_MAX) ? oldIndex : originalParent->Children->Count;
+                    PhInsertItemList(originalParent->Children, restoreIndex, sourceNode);
+                }
+                else
+                {
+                    ULONG restoreIndex = (oldIndex != ULONG_MAX) ? oldIndex : ProcessNodeRootList->Count;
+                    PhInsertItemList(ProcessNodeRootList, restoreIndex, sourceNode);
+                }
+                sourceNode->Parent = originalParent;
             }
 
             TreeNew_NodesStructured(hwnd);
@@ -5928,13 +6256,11 @@ static VOID PhpAddAndPropagateProcessItems(
     _In_ PPH_PROCESS_NODE ProcessNode
     )
 {
-    for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
+    if (ProcessNode->Children)
     {
-        PPH_PROCESS_NODE child = ProcessNode->Children->Items[i];
-
-        if (child->Children)
+        for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
         {
-            PhpAddAndPropagateProcessItems(ProcessesArray, child);
+            PhpAddAndPropagateProcessItems(ProcessesArray, ProcessNode->Children->Items[i]);
         }
     }
 

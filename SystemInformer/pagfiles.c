@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -21,6 +21,7 @@ typedef struct _PHP_PAGEFILE_PROPERTIES_CONTEXT
 {
     HWND WindowHandle;
     HWND ListViewHandle;
+    HFONT WindowFont;
     PH_LAYOUT_MANAGER LayoutManager;
 } PHP_PAGEFILE_PROPERTIES_CONTEXT, *PPHP_PAGEFILE_PROPERTIES_CONTEXT;
 
@@ -197,6 +198,8 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+            SetWindowFont(context->ListViewHandle, context->WindowFont, FALSE);
             PhSetExtendedListView(context->ListViewHandle);
 
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
@@ -254,6 +257,10 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
             PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhDeleteLayoutManager(&context->LayoutManager);
+
+            if (context->WindowFont)
+                DeleteFont(context->WindowFont);
+
             PhFree(context);
         }
         break;
@@ -303,6 +310,11 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
@@ -319,7 +331,7 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
                 POINT point;
                 PPH_EMENU menu;
                 PPH_EMENU item;
-                PVOID* listviewItems;
+                PVOID* listviewItems = NULL;
                 ULONG numberOfItems;
 
                 point.x = GET_X_LPARAM(lParam);
@@ -328,9 +340,7 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -366,9 +376,8 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
+                    PhFree(listviewItems);
                 }
-
-                PhFree(listviewItems);
             }
         }
         break;
@@ -382,3 +391,4 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
 
     return FALSE;
 }
+

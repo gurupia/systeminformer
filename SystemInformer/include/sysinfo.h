@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2015-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_SYSINFO_H
 #define PH_SYSINFO_H
+
+EXTERN_C_START
 
 // begin_phapppub
 typedef enum _PH_SYSINFO_VIEW_TYPE
@@ -46,14 +48,14 @@ typedef struct _PH_SYSINFO_PARAMETERS
     COLORREF GraphBackColor;
     COLORREF PanelForeColor;
 
-    ULONG MinimumGraphHeight;
-    ULONG SectionViewGraphHeight;
+    LONG MinimumGraphHeight;
+    LONG SectionViewGraphHeight;
     LONG PanelWidth;
     LONG WindowDpi;
 // end_phapppub
 
-    ULONG PanelPadding;
-    ULONG WindowPadding;
+    LONG PanelPadding;
+    LONG WindowPadding;
     ULONG GraphPadding;
     ULONG SmallGraphWidth;
     ULONG SmallGraphPadding;
@@ -153,11 +155,34 @@ typedef struct _PH_SYSINFO_SECTION
 
     WNDPROC GraphWindowProc;
     WNDPROC PanelWindowProc;
+
+    PH_GRAPH_TEXT_BOX_STATE PanelTextBoxState;
 // begin_phapppub
 } PH_SYSINFO_SECTION, *PPH_SYSINFO_SECTION;
 // end_phapppub
 
 VOID PhSiNotifyChangeSettings(
+    VOID
+    );
+
+// GraphColorMode values.
+#define PH_GRAPH_MODE_SMOOTH 0 // smooth renderer, palette follows the theme
+#define PH_GRAPH_MODE_LEGACY 1 // stored by older versions; resolved when settings are cached
+#define PH_GRAPH_MODE_CLASSIC 2 // classic renderer, palette follows the theme
+#define PH_GRAPH_MODE_CLASSIC_OLD_COLORS 3 // classic renderer, black background and green grid
+#define PH_GRAPH_MODE_SMOOTH_OLD_COLORS 4 // smooth renderer, black background and green grid
+
+#define PH_GRAPH_MODE_IS_SMOOTH(Mode) ((Mode) == PH_GRAPH_MODE_SMOOTH || (Mode) == PH_GRAPH_MODE_SMOOTH_OLD_COLORS)
+#define PH_GRAPH_MODE_IS_OLD_COLORS(Mode) ((Mode) == PH_GRAPH_MODE_CLASSIC_OLD_COLORS || (Mode) == PH_GRAPH_MODE_SMOOTH_OLD_COLORS)
+typedef enum _PH_SI_GRAPH_PALETTE
+{
+    PhSiGraphPaletteLight,
+    PhSiGraphPaletteDark,
+    PhSiGraphPaletteOldSchool // black background and green grid
+} PH_SI_GRAPH_PALETTE;
+
+// Graph palette for the graph mode and the active theme.
+PH_SI_GRAPH_PALETTE PhSiGetGraphPalette(
     VOID
     );
 
@@ -213,5 +238,7 @@ PhShowSystemInformationDialog(
     _In_opt_ PCWSTR SectionName
     );
 // end_phapppub
+
+EXTERN_C_END
 
 #endif

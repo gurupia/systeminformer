@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -36,8 +36,11 @@
 #include <appsup.h>
 #include <searchbox.h>
 
+EXTERN_C_START
+
 // main
 
+// begin_phapppub
 typedef struct _PH_STARTUP_PARAMETERS
 {
     union
@@ -70,6 +73,8 @@ typedef struct _PH_STARTUP_PARAMETERS
     POINT Point;
 
     ULONG SelectPid;
+    HANDLE DebugConsoleInputHandle;
+    HANDLE DebugConsoleOutputHandle;
     ULONG PriorityClass;
 
     PPH_LIST PluginParameters;
@@ -77,6 +82,7 @@ typedef struct _PH_STARTUP_PARAMETERS
     PPH_STRING SysInfo;
     PH_RELEASE_CHANNEL UpdateChannel;
 } PH_STARTUP_PARAMETERS, *PPH_STARTUP_PARAMETERS;
+// end_phapppub
 
 extern BOOLEAN PhPluginsEnabled;
 extern BOOLEAN PhPortableEnabled;
@@ -91,8 +97,58 @@ extern RTL_ATOM PhTreeWindowAtom;
 extern RTL_ATOM PhGraphWindowAtom;
 extern RTL_ATOM PhHexEditWindowAtom;
 extern RTL_ATOM PhColorBoxWindowAtom;
+extern RTL_ATOM PhTabNewWindowAtom;
 
 // begin_phapppub
+FORCEINLINE
+PPH_LIST
+PhGetPluginParameters(
+    _In_ PCPH_STRINGREF PluginName,
+    _In_ PPH_STARTUP_PARAMETERS PhStartupParameters
+    )
+{
+    PPH_LIST parameters = NULL;
+
+    // Find relevant startup parameters for this plugin.
+    if (PhStartupParameters->PluginParameters)
+    {
+        for (ULONG i = 0; i < PhStartupParameters->PluginParameters->Count; i++)
+        {
+            PPH_STRING string = (PPH_STRING)PhStartupParameters->PluginParameters->Items[i];
+            PH_STRINGREF pluginName;
+            PH_STRINGREF parameter;
+
+            if (
+                PhSplitStringRefAtChar(&string->sr, L':', &pluginName, &parameter) &&
+                PhEqualStringRef(&pluginName, PluginName, FALSE) &&
+                !PhIsNullOrEmptyStringRef(&parameter)
+                )
+            {
+                if (!parameters)
+                    parameters = PhCreateList(3);
+
+                if (parameters)
+                    PhAddItemList(parameters, PhCreateString2(&parameter));
+            }
+        }
+    }
+
+    return parameters;
+}
+
+FORCEINLINE
+VOID
+PhDestroyPluginParameters(
+    _In_ PPH_LIST Parameters
+    )
+{
+    if (Parameters)
+    {
+        PhDereferenceObjects(Parameters->Items, Parameters->Count);
+        PhDereferenceObject(Parameters);
+    }
+}
+
 PHAPPAPI
 VOID
 NTAPI
@@ -107,10 +163,12 @@ PhUnregisterDialog(
     _In_ HWND DialogWindowHandle
     );
 
-typedef BOOLEAN (NTAPI *PPH_MESSAGE_LOOP_FILTER)(
+typedef _Function_class_(PH_MESSAGE_LOOP_FILTER)
+BOOLEAN NTAPI PH_MESSAGE_LOOP_FILTER(
     _In_ PMSG Message,
     _In_ PVOID Context
     );
+typedef PH_MESSAGE_LOOP_FILTER* PPH_MESSAGE_LOOP_FILTER;
 
 typedef struct _PH_MESSAGE_LOOP_FILTER_ENTRY
 {
@@ -183,6 +241,8 @@ VOID PhUnloadPlugins(
 
 typedef struct _PH_LOG_ENTRY *PPH_LOG_ENTRY; // phapppub
 
+struct _PH_PROCESS_RECORD;
+
 typedef struct _PH_LOG_ENTRY
 {
     UCHAR Type;
@@ -198,6 +258,7 @@ typedef struct _PH_LOG_ENTRY
             HANDLE ParentProcessId;
             PPH_STRING ParentName;
             NTSTATUS ExitStatus;
+            struct _PH_PROCESS_RECORD *Record; // referenced; released in PhpFreeLogEntry
         } Process;
         struct
         {
@@ -211,6 +272,7 @@ typedef struct _PH_LOG_ENTRY
         } Device;
         PPH_STRING Message;
     };
+    ULONG BufferLength;
     UCHAR Buffer[1];
 } PH_LOG_ENTRY, *PPH_LOG_ENTRY;
 
@@ -230,7 +292,8 @@ VOID PhLogProcessEntry(
     _In_ PPH_STRING Name,
     _In_opt_ HANDLE ParentProcessId,
     _In_opt_ PPH_STRING ParentName,
-    _In_opt_ ULONG Status
+    _In_opt_ ULONG Status,
+    _In_opt_ struct _PH_PROCESS_RECORD *Record
     );
 
 VOID PhLogServiceEntry(
@@ -252,6 +315,16 @@ NTAPI
 PhLogMessageEntry(
     _In_ UCHAR Type,
     _In_ PPH_STRING Message
+    );
+
+PHAPPAPI
+VOID
+NTAPI
+PhLogMessageEntryEx(
+    _In_ UCHAR Type,
+    _In_ PPH_STRING Message,
+    _In_reads_bytes_opt_(BufferLength) PVOID Buffer,
+    _In_ ULONG BufferLength
     );
 
 PHAPPAPI
@@ -384,7 +457,7 @@ NTSTATUS
 NTAPI
 PhSetProcessItemPriorityBoost(
     _In_ PPH_PROCESS_ITEM ProcessItem,
-    _In_ BOOLEAN PriorityBoost
+    _In_ BOOLEAN DisablePriorityBoost
     );
 
 PHAPPAPI
@@ -503,6 +576,51 @@ VOID PhShowZombieProcessesDialog(
     VOID
     );
 
+// begin_phapppub
+typedef enum _PH_ZOMBIE_PROCESS_METHOD
+{
+    BruteForceScanMethod,
+    CsrHandlesScanMethod,
+    ProcessHandleScanMethod,
+    RegistryScanMethod,
+    EtwGuidScanMethod,
+    NtdllScanMethod,
+} PH_ZOMBIE_PROCESS_METHOD;
+
+typedef enum _PH_ZOMBIE_PROCESS_TYPE
+{
+    UnknownProcess,
+    NormalProcess,
+    ZombieProcess,
+    TerminatedProcess
+} PH_ZOMBIE_PROCESS_TYPE;
+
+typedef struct _PH_ZOMBIE_PROCESS_ENTRY
+{
+    HANDLE ProcessId;
+    PPH_STRING FileName;
+    PH_ZOMBIE_PROCESS_TYPE Type;
+    ULONG HandleCount;
+    BOOLEAN HasHandleCount;
+} PH_ZOMBIE_PROCESS_ENTRY, *PPH_ZOMBIE_PROCESS_ENTRY;
+
+typedef _Function_class_(PH_ENUM_ZOMBIE_PROCESSES_CALLBACK)
+BOOLEAN NTAPI PH_ENUM_ZOMBIE_PROCESSES_CALLBACK(
+    _In_ PPH_ZOMBIE_PROCESS_ENTRY Process,
+    _In_opt_ PVOID Context
+    );
+typedef PH_ENUM_ZOMBIE_PROCESSES_CALLBACK* PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK;
+
+PHAPPAPI
+NTSTATUS
+NTAPI
+PhEnumZombieProcesses(
+    _In_ PH_ZOMBIE_PROCESS_METHOD Method,
+    _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    );
+// end_phapppub
+
 // hndlprp
 
 VOID PhShowHandleProperties(
@@ -543,6 +661,26 @@ HPROPSHEETPAGE PhCreateJobPage(
     _In_opt_ DLGPROC HookProc
     );
 
+// begin_phapppub
+typedef struct _PH_PROCESS_PROPPAGECONTEXT
+{
+    PPH_PROCESS_PROPCONTEXT PropContext;
+    PVOID Context;
+    PROPSHEETPAGE PropSheetPage;
+    PPH_TYPE_DELETE_PROCEDURE ContextDeleteProcedure;
+    ULONG Flags;
+
+    BOOLEAN LayoutInitialized;
+} PH_PROCESS_PROPPAGECONTEXT, *PPH_PROCESS_PROPPAGECONTEXT;
+// end_phapppub
+
+PPH_PROCESS_PROPPAGECONTEXT PhCreateJobProcessPropPageContext(
+    _In_ PPH_OPEN_OBJECT OpenObject,
+    _In_ PPH_CLOSE_OBJECT CloseObject,
+    _In_opt_ PVOID Context,
+    _In_opt_ DLGPROC HookProc
+    );
+
 // kdump
 
 typedef union _PH_LIVE_DUMP_OPTIONS
@@ -569,11 +707,22 @@ VOID PhShowLiveDumpDialog(
     _In_ HWND ParentWindowHandle
     );
 
+// informerwnd
+
+VOID PhShowInformerWindow(
+    _In_opt_ HWND ParentWindowHandle
+    );
+
 // ksyscall
 
-PPH_STRING PhGetSystemCallNumberName(
+// begin_phapppub
+PHAPPAPI
+PPH_STRING
+NTAPI
+PhGetSystemCallNumberName(
     _In_ USHORT SystemCallNumber
     );
+// end_phapppub
 
 // logwnd
 
@@ -640,6 +789,42 @@ VOID PhShowImagePageModifiedDialog(
     _In_ PPH_PROCESS_ITEM ProcessItem
     );
 
+// memcfg
+
+typedef enum _PH_CFG_TARGET_STATUS
+{
+    PhCfgTargetUnavailable,
+    PhCfgTargetDisabled,
+    PhCfgTargetInvalid,
+    PhCfgTargetValid
+} PH_CFG_TARGET_STATUS;
+
+typedef struct _PH_CFG_TARGET_CONTEXT
+{
+    ULONG_PTR BitmapBase;
+    ULONG64 BitmapSize;
+    ULONG_PTR Wow64BitmapBase;
+    ULONG64 Wow64BitmapSize;
+    BOOLEAN Enabled;
+} PH_CFG_TARGET_CONTEXT, *PPH_CFG_TARGET_CONTEXT;
+
+NTSTATUS PhInitializeProcessCfgTargetContext(
+    _In_ HANDLE ProcessHandle,
+    _Out_ PPH_CFG_TARGET_CONTEXT Context
+    );
+
+PH_CFG_TARGET_STATUS PhQueryProcessCfgTarget(
+    _In_ HANDLE ProcessHandle,
+    _In_ PPH_CFG_TARGET_CONTEXT Context,
+    _In_ PVOID Address,
+    _In_ BOOLEAN Wow64
+    );
+
+VOID PhShowProcessCfgBitmapDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ PPH_PROCESS_ITEM ProcessItem
+    );
+
 // mtgndlg
 
 VOID PhShowProcessMitigationPolicyDialog(
@@ -686,12 +871,37 @@ HPROPSHEETPAGE PhCreateMappingsPage(
 // options
 
 VOID PhShowOptionsDialog(
-    _In_ HWND ParentWindowHandle
+    _In_ HWND ParentWindowHandle,
+    _In_opt_ PCWSTR SectionName
     );
 
 // pagfiles
 
 VOID PhShowPagefilesDialog(
+    _In_ HWND ParentWindowHandle
+    );
+
+// envdlg
+
+BOOLEAN PhShowEnvironmentVariableEditDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_opt_ PCWSTR InitialName,
+    _In_opt_ PCWSTR InitialValue,
+    _In_ BOOLEAN NameReadOnly,
+    _In_ BOOLEAN ReadOnly,
+    _Out_ PPH_STRING *Name,
+    _Out_ PPH_STRING *Value
+    );
+
+BOOLEAN PhShowEnvironmentVariableSplitDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ PPH_STRING Name,
+    _In_ PPH_STRING Value,
+    _In_ BOOLEAN ReadOnly,
+    _Out_ PPH_STRING *NewValue
+    );
+
+VOID PhShowEnvironmentVariablesDialog(
     _In_ HWND ParentWindowHandle
     );
 
@@ -734,6 +944,7 @@ typedef struct _PH_RUNAS_SERVICE_PARAMETERS
     BOOLEAN CreateSuspendedProcess;
     HWND WindowHandle;
     BOOLEAN CreateUIAccessProcess;
+    BOOLEAN NoProfile;
 } PH_RUNAS_SERVICE_PARAMETERS, *PPH_RUNAS_SERVICE_PARAMETERS;
 
 VOID PhShowRunAsDialog(
@@ -789,7 +1000,8 @@ PhExecuteRunAsCommand3(
     _In_opt_ PCWSTR DesktopName,
     _In_ BOOLEAN UseLinkedToken,
     _In_ BOOLEAN CreateSuspendedProcess,
-    _In_ BOOLEAN CreateUIAccessProcess
+    _In_ BOOLEAN CreateUIAccessProcess,
+    _In_ BOOLEAN NoProfile
     );
 
 NTSTATUS PhRunAsServiceStart(
@@ -817,6 +1029,19 @@ PhCreateSearchControl(
     _In_ HWND ParentWindowHandle,
     _In_ HWND SearchWindowHandle,
     _In_opt_ PCWSTR BannerText,
+    _In_ PPH_SEARCHCONTROL_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    );
+
+PHAPPAPI
+VOID
+NTAPI
+PhCreateSearchControl2(
+    _In_ HWND ParentWindowHandle,
+    _In_ HWND SearchWindowHandle,
+    _In_opt_ PCWSTR BannerText,
+    _In_ PCWSTR RegexSetting,
+    _In_ PCWSTR CaseSetting,
     _In_ PPH_SEARCHCONTROL_CALLBACK Callback,
     _In_opt_ PVOID Context
     );
@@ -871,6 +1096,112 @@ VOID PhShowServiceProperties(
     _In_ PPH_SERVICE_ITEM ServiceItem
     );
 
+// begin_phapppub
+
+// Service property sheet (new tabnew-based host). Plugins add pages during the
+// GeneralCallbackServicePropertiesInitializing callback via PhAddServicePropPage.
+
+// Opaque to callers; the full definition is private to srvprp.c.
+typedef struct _PH_SERVICE_PROPCONTEXT PH_SERVICE_PROPCONTEXT, *PPH_SERVICE_PROPCONTEXT;
+
+typedef struct _PH_SERVICE_PROPPAGECONTEXT
+{
+    PVOID Context;                 // caller/page-specific context (WM_INITDIALOG lParam is this struct)
+    PVOID Instance;
+    PCWSTR Template;
+    DLGPROC DialogProc;
+    PCWSTR Id;
+    PCWSTR Name;
+    BOOLEAN LayoutInitialized;
+} PH_SERVICE_PROPPAGECONTEXT, *PPH_SERVICE_PROPPAGECONTEXT;
+
+PHAPPAPI
+PPH_SERVICE_PROPPAGECONTEXT
+NTAPI
+PhCreateServicePropPageContext(
+    _In_ PCWSTR Id,
+    _In_ PCWSTR Name,
+    _In_ LPCWSTR Template,
+    _In_ DLGPROC DlgProc,
+    _In_opt_ PVOID Context
+    );
+
+PHAPPAPI
+PPH_SERVICE_PROPPAGECONTEXT
+NTAPI
+PhCreateServicePropPageContextEx(
+    _In_opt_ PVOID InstanceHandle,
+    _In_ PCWSTR Id,
+    _In_ PCWSTR Name,
+    _In_ LPCWSTR Template,
+    _In_ DLGPROC DlgProc,
+    _In_opt_ PVOID Context
+    );
+
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhAddServicePropPage(
+    _Inout_ PPH_SERVICE_PROPCONTEXT PropContext,
+    _In_ _Assume_refs_(1) PPH_SERVICE_PROPPAGECONTEXT PropPageContext
+    );
+
+#define PH_SERVICE_PROP_PAGE_TAB_CONTROL_PARENT ((PPH_LAYOUT_ITEM)0x1)
+
+PHAPPAPI
+PPH_LAYOUT_ITEM
+NTAPI
+PhAddServicePropPageLayoutItem(
+    _In_ HWND WindowHandle,
+    _In_ HWND Handle,
+    _In_ PPH_LAYOUT_ITEM ParentItem,
+    _In_ ULONG Anchor
+    );
+
+PHAPPAPI
+VOID
+NTAPI
+PhDoServicePropPageLayout(
+    _In_ HWND WindowHandle
+    );
+
+#define PH_SERVICE_PROP_PAGE_CONTEXT_SLOT 0xfff
+
+_Success_(return)
+FORCEINLINE
+BOOLEAN
+NTAPI
+PhServicePropPageDlgProcHeader(
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
+    _In_ LPARAM lParam,
+    _Out_ PPH_SERVICE_PROPPAGECONTEXT *PropPageContext
+    )
+{
+    PPH_SERVICE_PROPPAGECONTEXT propPageContext;
+
+    if (WindowMessage == WM_INITDIALOG)
+    {
+        propPageContext = (PPH_SERVICE_PROPPAGECONTEXT)lParam;
+        PhSetWindowContext(WindowHandle, PH_SERVICE_PROP_PAGE_CONTEXT_SLOT, propPageContext);
+    }
+    else
+    {
+        propPageContext = (PPH_SERVICE_PROPPAGECONTEXT)PhGetWindowContext(WindowHandle, PH_SERVICE_PROP_PAGE_CONTEXT_SLOT);
+
+        if (!propPageContext)
+            return FALSE;
+
+        if (WindowMessage == WM_NCDESTROY)
+            PhRemoveWindowContext(WindowHandle, PH_SERVICE_PROP_PAGE_CONTEXT_SLOT);
+    }
+
+    *PropPageContext = propPageContext;
+
+    return TRUE;
+}
+// end_phapppub
+
 // thrdstk
 
 VOID PhShowThreadStackDialog(
@@ -878,6 +1209,59 @@ VOID PhShowThreadStackDialog(
     _In_ HANDLE ProcessId,
     _In_ HANDLE ThreadId,
     _In_ PPH_THREAD_PROVIDER ThreadProvider
+    );
+
+// thrdctx
+
+VOID PhShowThreadContextDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ HANDLE ProcessId,
+    _In_ HANDLE ThreadId
+    );
+
+typedef struct _PH_THREAD_FRAME_CONTEXT
+{
+    ULONG Index;
+    USHORT Machine;
+    PVOID ContextRecord;
+} PH_THREAD_FRAME_CONTEXT, *PPH_THREAD_FRAME_CONTEXT;
+
+VOID PhShowThreadFrameContextDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ HANDLE ProcessId,
+    _In_ HANDLE ThreadId,
+    _In_ USHORT Machine,
+    _In_ PVOID FrameContext,
+    _In_opt_ PCWSTR FrameTitle,
+    _In_reads_(PriorFrameCount) PPH_THREAD_FRAME_CONTEXT PriorFrames,
+    _In_ ULONG PriorFrameCount
+    );
+
+VOID PhShowThreadShadowStack(
+    _In_ HWND ParentWindowHandle,
+    _In_ HANDLE ProcessId,
+    _In_ HANDLE ThreadId,
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider
+    );
+
+// thrdshstk
+
+VOID PhShowThreadShadowStackDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ HANDLE ProcessId,
+    _In_ HANDLE ThreadId,
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
+    _In_ ULONG64 ShadowStackPointer,
+    _In_ ULONG64 CetUMsr,
+    _In_reads_opt_(Count) PULONG64 Entries,
+    _In_ ULONG Count
+    );
+
+VOID PhShowSymbolsDialog(
+    _In_ HWND ParentWindowHandle,
+    _In_ HANDLE ProcessId,
+    _In_ PVOID Address,
+    _In_ PCWSTR TypeName
     );
 
 // thrdstks
@@ -926,5 +1310,15 @@ HPROPSHEETPAGE PhCreateTokenPage(
     _In_opt_ PVOID Context,
     _In_opt_ DLGPROC HookProc
     );
+
+PPH_PROCESS_PROPPAGECONTEXT PhCreateTokenProcessPropPageContext(
+    _In_ PPH_OPEN_OBJECT OpenObject,
+    _In_ PPH_CLOSE_OBJECT CloseObject,
+    _In_ HANDLE ProcessId,
+    _In_opt_ PVOID Context,
+    _In_opt_ DLGPROC HookProc
+    );
+
+EXTERN_C_END
 
 #endif

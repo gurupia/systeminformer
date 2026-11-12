@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -25,6 +25,14 @@ typedef struct _PH_CM_SORT_CONTEXT
     PH_SORT_ORDER SortOrder;
 } PH_CM_SORT_CONTEXT, *PPH_CM_SORT_CONTEXT;
 
+/**
+ * Initializes a column manager instance.
+ *
+ * \param Manager Receives the initialized column manager structure.
+ * \param Handle A handle to the TreeNew control window.
+ * \param MinId The minimum column ID reserved for plugin columns.
+ * \param PostSortFunction An optional post-sort comparison callback function.
+ */
 VOID PhCmInitializeManager(
     _Out_ PPH_CM_MANAGER Manager,
     _In_ HWND Handle,
@@ -40,6 +48,11 @@ VOID PhCmInitializeManager(
     Manager->NotifyList = NULL;
 }
 
+/**
+ * Deletes a column manager instance and frees associated resources.
+ *
+ * \param Manager A pointer to the column manager to delete.
+ */
 VOID PhCmDeleteManager(
     _In_ PPH_CM_MANAGER Manager
     )
@@ -61,6 +74,17 @@ VOID PhCmDeleteManager(
         PhDereferenceObject(Manager->NotifyList);
 }
 
+/**
+ * Creates and registers a plugin column with the column manager and TreeNew control.
+ *
+ * \param Manager A pointer to the column manager.
+ * \param Column A pointer to the TreeNew column definition.
+ * \param Plugin A pointer to the plugin owning the column.
+ * \param SubId The plugin-specific column sub-identifier.
+ * \param Context An optional user-defined context pointer.
+ * \param SortFunction An optional sort callback function.
+ * \return PPH_CM_COLUMN A pointer to the created column structure.
+ */
 PPH_CM_COLUMN PhCmCreateColumn(
     _Inout_ PPH_CM_MANAGER Manager,
     _In_ PPH_TREENEW_COLUMN Column,
@@ -92,11 +116,20 @@ PPH_CM_COLUMN PhCmCreateColumn(
     tnColumn.Alignment = Column->Alignment;
     tnColumn.DisplayIndex = Column->Visible ? Column->DisplayIndex : ULONG_MAX;
     tnColumn.TextFlags = Column->TextFlags;
+    tnColumn.HeaderTextCache = Column->HeaderTextCache;
     TreeNew_AddColumn(Manager->Handle, &tnColumn);
 
     return column;
 }
 
+/**
+ * Finds a registered plugin column by plugin name and sub-identifier.
+ *
+ * \param Manager A pointer to the column manager.
+ * \param PluginName The name of the owning plugin.
+ * \param SubId The plugin-specific column sub-identifier.
+ * \return PPH_CM_COLUMN A pointer to the column structure, or NULL if not found.
+ */
 PPH_CM_COLUMN PhCmFindColumn(
     _In_ PPH_CM_MANAGER Manager,
     _In_ PCPH_STRINGREF PluginName,
@@ -121,6 +154,12 @@ PPH_CM_COLUMN PhCmFindColumn(
     return NULL;
 }
 
+/**
+ * Registers a plugin to receive notifications for all TreeNew messages.
+ *
+ * \param Manager A pointer to the column manager.
+ * \param Plugin A pointer to the plugin to receive notifications.
+ */
 VOID PhCmSetNotifyPlugin(
     _In_ PPH_CM_MANAGER Manager,
     _In_ PPH_PLUGIN Plugin
@@ -139,8 +178,18 @@ VOID PhCmSetNotifyPlugin(
     PhAddItemList(Manager->NotifyList, Plugin);
 }
 
+/**
+ * Forwards a TreeNew control message to the appropriate plugin column callback.
+ *
+ * \param WindowHandle A handle to the TreeNew control window.
+ * \param Message The TreeNew message code.
+ * \param Parameter1 The first message parameter.
+ * \param Parameter2 The second message parameter.
+ * \param Manager A pointer to the column manager.
+ * \return BOOLEAN TRUE if the message was handled by a plugin, FALSE otherwise.
+ */
 BOOLEAN PhCmForwardMessage(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -166,7 +215,7 @@ BOOLEAN PhCmForwardMessage(
             if (getCellText->Id < Manager->MinId)
                 return FALSE;
 
-            if (!TreeNew_GetColumn(hwnd, getCellText->Id, &tnColumn))
+            if (!TreeNew_GetColumn(WindowHandle, getCellText->Id, &tnColumn))
                 return FALSE;
 
             column = tnColumn.Context;
@@ -227,7 +276,7 @@ BOOLEAN PhCmForwardMessage(
                 {
                     plugin = Manager->NotifyList->Items[i];
 
-                    pluginMessage.TreeNewHandle = hwnd;
+                    pluginMessage.TreeNewHandle = WindowHandle;
                     pluginMessage.Message = Message;
                     pluginMessage.Parameter1 = Parameter1;
                     pluginMessage.Parameter2 = Parameter2;
@@ -241,7 +290,7 @@ BOOLEAN PhCmForwardMessage(
         return FALSE;
     }
 
-    pluginMessage.TreeNewHandle = hwnd;
+    pluginMessage.TreeNewHandle = WindowHandle;
     pluginMessage.Message = Message;
     pluginMessage.Parameter1 = Parameter1;
     pluginMessage.Parameter2 = Parameter2;
@@ -251,6 +300,14 @@ BOOLEAN PhCmForwardMessage(
     return TRUE;
 }
 
+/**
+ * Comparison function wrapper for sorting TreeNew nodes with plugin and post-sort callbacks.
+ *
+ * \param context A pointer to the PH_CM_SORT_CONTEXT structure.
+ * \param elem1 A pointer to the first node element.
+ * \param elem2 A pointer to the second node element.
+ * \return int Negative if elem1 < elem2, zero if equal, positive if elem1 > elem2.
+ */
 static int __cdecl PhCmpSortFunction(
     _In_ void *context,
     _In_ const void *elem1,
@@ -267,6 +324,16 @@ static int __cdecl PhCmpSortFunction(
     return sortContext->PostSortFunction(result, node1, node2, sortContext->SortOrder);
 }
 
+/**
+ * Sorts an array of TreeNew nodes using the sort function registered for a plugin column.
+ *
+ * \param Nodes An array of pointers to TreeNew nodes to sort.
+ * \param NumberOfNodes The number of nodes in the array.
+ * \param SortColumn The ID of the column being sorted.
+ * \param SortOrder The sort order direction.
+ * \param Manager A pointer to the column manager.
+ * \return BOOLEAN TRUE if sorting was handled or bypassed, FALSE if SortColumn is not a plugin column.
+ */
 BOOLEAN PhCmForwardSort(
     _In_ PPH_TREENEW_NODE *Nodes,
     _In_ ULONG NumberOfNodes,
@@ -293,7 +360,7 @@ BOOLEAN PhCmForwardSort(
     if (!column->SortFunction)
         return TRUE;
 
-    sortContext.SortFunction = column->SortFunction;
+    sortContext.SortFunction = (PPH_PLUGIN_TREENEW_SORT_FUNCTION)column->SortFunction;
     sortContext.SubId = column->SubId;
     sortContext.Context = column->Context;
     sortContext.PostSortFunction = Manager->PostSortFunction;
@@ -303,6 +370,13 @@ BOOLEAN PhCmForwardSort(
     return TRUE;
 }
 
+/**
+ * Loads and applies column settings to a TreeNew control.
+ *
+ * \param TreeNewHandle A handle to the TreeNew control window.
+ * \param Settings A string reference containing serialized column settings.
+ * \return BOOLEAN TRUE if settings were loaded successfully, FALSE otherwise.
+ */
 BOOLEAN PhCmLoadSettings(
     _In_ HWND TreeNewHandle,
     _In_ PCPH_STRINGREF Settings
@@ -311,6 +385,16 @@ BOOLEAN PhCmLoadSettings(
     return PhCmLoadSettingsEx(TreeNewHandle, NULL, 0, Settings, NULL);
 }
 
+/**
+ * Loads and applies column and sort settings to a TreeNew control with optional plugin column support.
+ *
+ * \param TreeNewHandle A handle to the TreeNew control window.
+ * \param Manager An optional pointer to the column manager for plugin columns.
+ * \param Flags Option flags, such as PH_CM_COLUMN_WIDTHS_ONLY.
+ * \param Settings A string reference containing serialized column settings.
+ * \param SortSettings An optional string reference containing serialized sort settings.
+ * \return BOOLEAN TRUE if settings were loaded successfully, FALSE otherwise.
+ */
 BOOLEAN PhCmLoadSettingsEx(
     _In_ HWND TreeNewHandle,
     _In_opt_ PPH_CM_MANAGER Manager,
@@ -575,6 +659,12 @@ CleanupExit:
     return result;
 }
 
+/**
+ * Serializes column settings for a TreeNew control into a string.
+ *
+ * \param TreeNewHandle A handle to the TreeNew control window.
+ * \return PPH_STRING A string containing the serialized column settings.
+ */
 PPH_STRING PhCmSaveSettings(
     _In_ HWND TreeNewHandle
     )
@@ -582,6 +672,15 @@ PPH_STRING PhCmSaveSettings(
     return PhCmSaveSettingsEx(TreeNewHandle, NULL, 0, NULL);
 }
 
+/**
+ * Serializes column and sort settings for a TreeNew control with optional plugin column support.
+ *
+ * \param TreeNewHandle A handle to the TreeNew control window.
+ * \param Manager An optional pointer to the column manager for plugin columns.
+ * \param Flags Option flags, such as PH_CM_COLUMN_WIDTHS_ONLY.
+ * \param SortSettings Optional receives the serialized sort settings string.
+ * \return PPH_STRING A string containing the serialized column settings.
+ */
 PPH_STRING PhCmSaveSettingsEx(
     _In_ HWND TreeNewHandle,
     _In_opt_ PPH_CM_MANAGER Manager,

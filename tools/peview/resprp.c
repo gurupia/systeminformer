@@ -5,91 +5,15 @@
  *
  * Authors:
  *
- *     dmex    2017-2022
+ *     dmex    2017-2026
  *
  */
 
 #include <peview.h>
-#include "colmgr.h"
+#include <pvresources.h>
 
 static PH_STRINGREF EmptyResourcesText = PH_STRINGREF_INIT(L"There are no resources to display.");
 static PH_STRINGREF LoadingResourcesText = PH_STRINGREF_INIT(L"Loading resources from image...");
-
-typedef enum _PV_RESOURCES_TREE_COLUMN_ITEM
-{
-    PV_RESOURCES_TREE_COLUMN_ITEM_INDEX,
-    PV_RESOURCES_TREE_COLUMN_ITEM_TYPE,
-    PV_RESOURCES_TREE_COLUMN_ITEM_NAME,
-    PV_RESOURCES_TREE_COLUMN_ITEM_RVA_START,
-    PV_RESOURCES_TREE_COLUMN_ITEM_RVA_END,
-    PV_RESOURCES_TREE_COLUMN_ITEM_RVA_SIZE,
-    PV_RESOURCES_TREE_COLUMN_ITEM_LCID,
-    PV_RESOURCES_TREE_COLUMN_ITEM_HASH,
-    PV_RESOURCES_TREE_COLUMN_ITEM_ENTROPY,
-    PV_RESOURCES_TREE_COLUMN_ITEM_MAXIMUM
-} PV_RESOURCES_TREE_COLUMN_ITEM;
-
-typedef enum _PV_RESOURCES_TREE_NODE_TYPE
-{
-    PV_RESOURCES_TREE_NODE_TYPE_IMAGE,
-    PV_RESOURCES_TREE_NODE_TYPE_MUI,
-    PV_RESOURCES_TREE_NODE_TYPE_MAXIMUM
-} PV_RESOURCES_TREE_NODE_TYPE;
-
-typedef struct _PV_RESOURCE_NODE
-{
-    PH_TREENEW_NODE Node;
-
-    struct _PV_RESOURCE_NODE* Parent;
-    PPH_LIST Children;
-    BOOLEAN HasChildren;
-
-    ULONG64 UniqueId;
-    PV_RESOURCES_TREE_NODE_TYPE NodeType;
-
-    PVOID RvaStart;
-    PVOID RvaEnd;
-    ULONG RvaSize;
-    FLOAT ResourcesEntropy;
-    PPH_STRING UniqueIdString;
-    PPH_STRING TypeString;
-    PPH_STRING NameString;
-    PPH_STRING RvaStartString;
-    PPH_STRING RvaEndString;
-    PPH_STRING RvaSizeString;
-    PPH_STRING LcidString;
-    PPH_STRING HashString;
-    PPH_STRING EntropyString;
-
-    PH_STRINGREF TextCache[PV_RESOURCES_TREE_COLUMN_ITEM_MAXIMUM];
-} PV_RESOURCE_NODE, *PPV_RESOURCE_NODE;
-
-typedef struct _PV_RESOURCES_CONTEXT
-{
-    HWND DialogHandle;
-    HWND SearchHandle;
-    HWND TreeNewHandle;
-    HWND ParentWindowHandle;
-
-    ULONG_PTR SearchMatchHandle;
-    PPH_STRING TreeText;
-
-    PH_LAYOUT_MANAGER LayoutManager;
-    PPV_PROPPAGECONTEXT PropSheetContext;
-
-    ULONG SearchResultsAddIndex;
-    PPH_LIST SearchResults;
-    PH_QUEUED_LOCK SearchResultsLock;
-
-    PH_CM_MANAGER Cm;
-    ULONG TreeNewSortColumn;
-    PH_SORT_ORDER TreeNewSortOrder;
-    PH_TN_FILTER_SUPPORT FilterSupport;
-    PPH_HASHTABLE NodeHashtable;
-    PPH_LIST NodeList;
-
-    PH_MAPPED_IMAGE MuiMappedImage;
-} PV_RESOURCES_CONTEXT, *PPV_RESOURCES_CONTEXT;
 
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN PvResourcesNodeHashtableCompareFunction(
@@ -293,7 +217,9 @@ VOID PvpPeResourceSaveToFile(
             {
                 IO_STATUS_BLOCK isb;
 
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 __try
                 {
@@ -356,7 +282,7 @@ VOID PvpPeEnumMappedImageResources(
             resourceNode->RvaStart = UlongToPtr(entry.Offset);
             PhPrintPointer(value, resourceNode->RvaStart);
             resourceNode->RvaStartString = PhCreateString(value);
-            resourceNode->RvaEnd = PTR_ADD_OFFSET(entry.Offset, entry.Size);
+            resourceNode->RvaEnd = (PVOID)(ULONG_PTR)UInt32Add32To64(entry.Offset, entry.Size);
             PhPrintPointer(value, resourceNode->RvaEnd);
             resourceNode->RvaEndString = PhCreateString(value);
             resourceNode->RvaSize = entry.Size;
@@ -424,7 +350,9 @@ VOID PvpPeEnumMappedImageResources(
 
             if (entry.Size)
             {
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 if (resourceData)
                 {
@@ -436,7 +364,9 @@ VOID PvpPeEnumMappedImageResources(
 
             if (entry.Size)
             {
-                PVOID resourceData = PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, NULL);
+                PVOID resourceData;
+                if (!NT_SUCCESS(PhMappedImageRvaToVa(&PvMappedImage, entry.Offset, &resourceData)))
+                    resourceData = NULL;
 
                 if (resourceData)
                 {
@@ -527,9 +457,11 @@ NTSTATUS PvpPeResourcesEnumerateThread(
     PvpPeEnumAlternateMappedImageResources(Context, PvFileName);
 
     PostMessage(Context->DialogHandle, WM_PV_SEARCH_FINISHED, 0, 0);
+    PhReleaseRundownProtection(&Context->WorkerRundown);
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PvpPeResourcesSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -562,6 +494,7 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
     if (uMsg == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(PV_RESOURCES_CONTEXT));
+        PhInitializeRundownProtection(&context->WorkerRundown);
         PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
 
         if (lParam)
@@ -606,13 +539,19 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
             PhAddLayoutItem(&context->LayoutManager, context->SearchHandle, NULL, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
             PhAddLayoutItem(&context->LayoutManager, context->TreeNewHandle, NULL, PH_ANCHOR_ALL);
 
-            PhCreateThread2(PvpPeResourcesEnumerateThread, context);
+            PhAcquireRundownProtection(&context->WorkerRundown);
+
+            if (!NT_SUCCESS(PhCreateThread2(PvpPeResourcesEnumerateThread, context)))
+                PhReleaseRundownProtection(&context->WorkerRundown);
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
         }
         break;
     case WM_DESTROY:
         {
+            // The worker only posts, so waiting here cannot deadlock.
+            PhWaitForRundownProtection(&context->WorkerRundown);
+
             //if (context->MuiMappedImage.ViewBase)
             //    PhUnloadMappedImage(&context->MuiMappedImage);
 
@@ -631,6 +570,12 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
 
                 context->PropSheetContext->LayoutInitialized = TRUE;
             }
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;
     case WM_SIZE:
@@ -673,6 +618,7 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
             if (numberOfNodes != 0)
             {
                 menu = PhCreateEMenu();
+                PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 2, L"Display resource...", NULL, NULL), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuItem(0, 1, L"Save resource...", NULL, NULL), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                 PhInsertEMenuItem(menu, PhCreateEMenuItem(0, USHRT_MAX, L"Copy", NULL, NULL), ULONG_MAX);
@@ -695,6 +641,13 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
                         {
                         case 1:
                             PvpPeResourceSaveToFile(context, hwndDlg, sectionNodes[0]);
+                            break;
+                        case 2:
+                            PvShowResourceViewerDialog(
+                                hwndDlg,
+                                sectionNodes[0]->NodeType == PV_RESOURCES_TREE_NODE_TYPE_MUI ? &context->MuiMappedImage : &PvMappedImage,
+                                PtrToUlong(sectionNodes[0]->RvaStart)
+                                );
                             break;
                         case USHRT_MAX:
                             {
@@ -721,7 +674,7 @@ INT_PTR CALLBACK PvPeResourcesDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     case WM_KEYDOWN:
@@ -983,7 +936,7 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Index),
                     SORT_FUNCTION(Type),
@@ -995,7 +948,7 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
                     SORT_FUNCTION(Hash),
                     SORT_FUNCTION(Entropy),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PV_RESOURCES_TREE_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1091,7 +1044,20 @@ BOOLEAN NTAPI PvResourcesTreeNewCallback(
         return TRUE;
     case TreeNewLeftDoubleClick:
         {
-           // SendMessage(context->ParentWindowHandle, WM_COMMAND, WM_ACTION, (LPARAM)context);
+            PPV_RESOURCE_NODE* sectionNodes = NULL;
+            ULONG numberOfNodes = 0;
+
+            if (PvGetSelectedResourcesNodes(context, &sectionNodes, &numberOfNodes) && numberOfNodes != 0)
+            {
+                PvShowResourceViewerDialog(
+                    context->ParentWindowHandle,
+                    sectionNodes[0]->NodeType == PV_RESOURCES_TREE_NODE_TYPE_MUI ? &context->MuiMappedImage : &PvMappedImage,
+                    PtrToUlong(sectionNodes[0]->RvaStart)
+                    );
+            }
+
+            if (sectionNodes)
+                PhFree(sectionNodes);
         }
         return TRUE;
     case TreeNewContextMenu:
@@ -1209,7 +1175,7 @@ VOID PvInitializeResourcesTree(
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_RESOURCES_TREE_COLUMN_ITEM_HASH, TRUE, L"Hash", 100, PH_ALIGN_LEFT, PV_RESOURCES_TREE_COLUMN_ITEM_HASH, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_RESOURCES_TREE_COLUMN_ITEM_ENTROPY, TRUE, L"Entropy", 100, PH_ALIGN_LEFT, PV_RESOURCES_TREE_COLUMN_ITEM_ENTROPY, 0, 0);
 
-    //TreeNew_SetRowHeight(TreeNewHandle, 22);
+    TreeNew_SetRowHeight(TreeNewHandle, PvpGetTreeNewRowHeight(TreeNewHandle));
 
     TreeNew_SetRedraw(TreeNewHandle, TRUE);
     TreeNew_SetSort(TreeNewHandle, PV_RESOURCES_TREE_COLUMN_ITEM_INDEX, AscendingSortOrder);

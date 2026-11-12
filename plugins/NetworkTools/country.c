@@ -28,6 +28,7 @@ typedef struct _GEODB_IPADDR_CACHE_ENTRY
     PH_IP_ADDRESS RemoteAddress;
     PPH_STRING CountryName;
     ULONG CountryCode;
+    LONG CountryIconIndex;
 } GEODB_IPADDR_CACHE_ENTRY, *PGEODB_IPADDR_CACHE_ENTRY;
 
 typedef struct _GEODB_GEONAME_CACHE_TABLE
@@ -174,24 +175,52 @@ CONST GEODB_GEONAME_CACHE_TABLE GeoCountryResourceTable[] =
 
 GEODB_IMAGE_CACHE_TABLE GeoCountryImageTable[RTL_NUMBER_OF(GeoCountryResourceTable)];
 
-BOOLEAN NetToolsInitializeCountryImageList(
+_Success_(return)
+BOOLEAN NetToolsLookupCountryResource(
+    _In_ ULONG GeoNameID,
+    _Out_ LONG *ResourceID
+    )
+{
+    for (ULONG i = 0; i < RTL_NUMBER_OF(GeoCountryResourceTable); i++)
+    {
+        if (GeoCountryResourceTable[i].GeoNameID == GeoNameID)
+        {
+            *ResourceID = GeoCountryResourceTable[i].ResourceID;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+HIMAGELIST NetToolsGetCountryImageList(
     _In_ HWND WindowHandle
     )
 {
-    LONG windowDpi;
+    if (GeoImageList)
+        return GeoImageList;
 
+    if (!WindowHandle)
+        return NULL;
+
+    NetToolsInitializeCountryImageList(WindowHandle, (ULONG)PhGetWindowDpi(WindowHandle));
+
+    return GeoImageList;
+}
+
+BOOLEAN NetToolsInitializeCountryImageList(
+    _In_ HWND WindowHandle,
+    _In_ LONG WindowDpi
+    )
+{
     if (!WindowHandle)
         return FALSE;
 
-    windowDpi = PhGetWindowDpi(WindowHandle);
-    GeoCountryImageSize.cx = PhScaleToDisplay(16, windowDpi);
-    GeoCountryImageSize.cy = PhScaleToDisplay(11, windowDpi);
-
     if (GeoImageList)
-    {
-        PhImageListDestroy(GeoImageList);
-        GeoImageList = NULL;
-    }
+        return TRUE;
+
+    GeoCountryImageSize.cx = PhScaleToDisplay(16, WindowDpi);
+    GeoCountryImageSize.cy = PhScaleToDisplay(11, WindowDpi);
 
     GeoImageList = PhImageListCreate(
         GeoCountryImageSize.cx,
@@ -201,7 +230,7 @@ BOOLEAN NetToolsInitializeCountryImageList(
         1
         );
 
-    return TRUE;
+    return GeoImageList != NULL;
 }
 
 BOOLEAN NetToolsGeoLiteInitialized(
@@ -237,14 +266,22 @@ BOOLEAN NetToolsGeoLiteInitialized(
                 PhTimeToSecondsSince1970(&systemTime, &secondsSince1970);
 
                 // Check if the Geoip database is older than 6 months (182 days = approx. 6 months).
-                if ((secondsSince1970 - GeoDbInstance.metadata.build_epoch) > (182 * 24 * 60 * 60))
+                // Guard against unsigned underflow when build_epoch is in the future (clock skew). (audit)
+                if (secondsSince1970 > GeoDbInstance.metadata.build_epoch &&
+                    (secondsSince1970 - GeoDbInstance.metadata.build_epoch) > (182 * 24 * 60 * 60))
                 {
                     GeoDbExpired = TRUE;
                 }
 
                 memset(GeoCountryImageTable, INT_ERROR, sizeof(GeoCountryImageTable));
 
-                NetToolsInitializeCountryImageList(NetworkTreeNewHandle);
+                if (NetworkTreeNewHandle)
+                {
+                    NetToolsInitializeCountryImageList(
+                        NetworkTreeNewHandle,
+                        (ULONG)PhGetWindowDpi(NetworkTreeNewHandle)
+                        );
+                }
 
                 GeoDbInitialized = TRUE;
             }
@@ -286,6 +323,8 @@ BOOLEAN GeoDbGetCityData(
     MMDB_entry_data_s mmdb_entry;
     DOUBLE cityLatitude = 0.0;
     DOUBLE cityLongitude = 0.0;
+    BOOLEAN hasLatitude = FALSE;
+    BOOLEAN hasLongitude = FALSE;
     PPH_STRING cityName = NULL;
 
     if (MMDB_get_value(GeoDbEntry, &mmdb_entry, "location", "latitude", NULL) == MMDB_SUCCESS)
@@ -293,6 +332,7 @@ BOOLEAN GeoDbGetCityData(
         if (mmdb_entry.has_data && mmdb_entry.type == MMDB_DATA_TYPE_DOUBLE)
         {
             cityLatitude = mmdb_entry.double_value;
+            hasLatitude = TRUE;
         }
     }
 
@@ -301,6 +341,7 @@ BOOLEAN GeoDbGetCityData(
         if (mmdb_entry.has_data && mmdb_entry.type == MMDB_DATA_TYPE_DOUBLE)
         {
             cityLongitude = mmdb_entry.double_value;
+            hasLongitude = TRUE;
         }
     }
 
@@ -312,7 +353,7 @@ BOOLEAN GeoDbGetCityData(
         }
     }
 
-    if (cityLatitude && cityLongitude && cityName)
+    if (hasLatitude && hasLongitude && cityName)
     {
         *CityLatitude = cityLatitude;
         *CityLongitude = cityLongitude;
@@ -320,6 +361,7 @@ BOOLEAN GeoDbGetCityData(
         return TRUE;
     }
 
+    PhClearReference(&cityName);
     return FALSE;
 }
 
@@ -613,14 +655,16 @@ ULONG NetworkToolsGeoDbCacheHashtableHashFunction(
 }
 
 _Success_(return)
-BOOLEAN LookupCountryCode(
+BOOLEAN LookupCountryCodeEx(
     _In_ PH_IP_ADDRESS RemoteAddress,
-    _Out_ ULONG* CountryCode,
-    _Out_ PPH_STRING* CountryName
+    _Out_opt_ PULONG CountryCode,
+    _Out_opt_ PPH_STRING* CountryName,
+    _Out_opt_ PLONG CountryIconIndex
     )
 {
     ULONG countryCode = 0;
     PPH_STRING countryName = NULL;
+    LONG countryIconIndex = INT_ERROR;
     GEODB_IPADDR_CACHE_ENTRY newEntry;
 
     PhAcquireQueuedLockShared(&NetworkToolsGeoDbCacheHashtableLock);
@@ -635,12 +679,25 @@ BOOLEAN LookupCountryCode(
 
         if (entry)
         {
-            if (CountryCode)
-                *CountryCode = entry->CountryCode;
+            countryCode = entry->CountryCode;
+            countryIconIndex = entry->CountryIconIndex;
+
             if (CountryName)
                 PhSetReference(CountryName, entry->CountryName);
 
             PhReleaseQueuedLockShared(&NetworkToolsGeoDbCacheHashtableLock);
+
+            if (CountryCode)
+                *CountryCode = countryCode;
+
+            if (CountryIconIndex)
+            {
+                // The image list didn't exist when the entry was cached. (dmex)
+                if (countryIconIndex == INT_ERROR && countryCode)
+                    countryIconIndex = LookupCountryIcon(countryCode);
+
+                *CountryIconIndex = countryIconIndex;
+            }
 
             return TRUE;
         }
@@ -655,6 +712,10 @@ BOOLEAN LookupCountryCode(
         // We flush every few hours so the cache doesn't waste memory or become state. (dmex)
     }
 
+    // Resolve the icon index once and cache it so lookups don't rescan the resource table. (dmex)
+    if (CountryIconIndex && countryCode)
+        countryIconIndex = LookupCountryIcon(countryCode);
+
     PhAcquireQueuedLockExclusive(&NetworkToolsGeoDbCacheHashtableLock);
 
     if (!NetworkToolsGeoDbCacheHashtable)
@@ -668,18 +729,34 @@ BOOLEAN LookupCountryCode(
     }
 
     newEntry.CountryCode = countryCode;
+    newEntry.CountryIconIndex = countryIconIndex;
     PhSetReference(&newEntry.CountryName, countryName);
     memcpy_s(&newEntry.RemoteAddress, sizeof(newEntry.RemoteAddress), &RemoteAddress, sizeof(PH_IP_ADDRESS));
-    PhAddEntryHashtable(NetworkToolsGeoDbCacheHashtable, &newEntry);
+    if (!PhAddEntryHashtable(NetworkToolsGeoDbCacheHashtable, &newEntry))
+        PhClearReference(&newEntry.CountryName);
 
     if (CountryCode)
         *CountryCode = countryCode;
     if (CountryName)
         *CountryName = countryName;
+    else
+        PhClearReference(&countryName);
+    if (CountryIconIndex)
+        *CountryIconIndex = countryIconIndex;
 
     PhReleaseQueuedLockExclusive(&NetworkToolsGeoDbCacheHashtableLock);
 
     return TRUE;
+}
+
+_Success_(return)
+BOOLEAN LookupCountryCode(
+    _In_ PH_IP_ADDRESS RemoteAddress,
+    _Out_ ULONG* CountryCode,
+    _Out_ PPH_STRING* CountryName
+    )
+{
+    return LookupCountryCodeEx(RemoteAddress, CountryCode, CountryName, NULL);
 }
 
 VOID NetworkToolsGeoDbFlushCache(

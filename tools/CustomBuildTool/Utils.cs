@@ -11,12 +11,30 @@
 
 namespace CustomBuildTool
 {
-    public static unsafe class Utils
+    /// <summary>
+    /// Provides utility methods for file operations, environment management, argument parsing, and build tool
+    /// integration. This class includes helpers for interacting with build systems, locating toolchain executables,
+    /// reading and writing files, and manipulating environment variables.
+    /// </summary>
+    /// <remarks>The methods in this class are designed to support build automation and scripting scenarios,
+    /// including locating Visual Studio, MSBuild, Git, and CMake executables, parsing command-line arguments, and
+    /// handling Windows SDK paths. Many methods assume Windows environments and may rely on environment variables or
+    /// registry keys. Thread safety is not guaranteed for all static members; use caution when accessing shared
+    /// resources concurrently.</remarks>
+    public static unsafe partial class Utils
     {
         private static readonly Dictionary<string, string> EnvironmentBlock = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public static readonly Encoding UTF8NoBOM = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
         private static string GitFilePath;
         private static string VsWhereFilePath;
+
+        /// <summary>
+        /// Generates a random integer from 1 through 7, inclusive.
+        /// </summary>
+        public static int GetRandomNumberOneToSeven()
+        {
+            return RandomNumberGenerator.GetInt32(1, 8);
+        }
 
         /// <summary>
         /// Splits a string into key-value pairs.
@@ -50,19 +68,19 @@ namespace CustomBuildTool
         /// <summary>
         /// Splits a string into key-value pairs.
         /// </summary>
-        public static Dictionary<string, string> ParseArguments(string[] args)
+        public static Dictionary<string, string> ParseArguments(string[] Args)
         {
             // 2. Track the current key (string) if it starts with "-".
             // 3. For each string in args:
             //    a. If it starts with "-", set as current key, add to dict if not present.
-            //    b. Else, if current key is set, append value to its list.
+            //    b. Else, if the current key is set, append a value to its list.
             //    c. If no current key, ignore or add to a special key (optional).
             // 4. Return the dictionary.
 
             var kvp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var key = string.Empty;
 
-            foreach (string s in args)
+            foreach (string s in Args)
             {
                 if (s.StartsWith('-'))
                 {
@@ -95,7 +113,7 @@ namespace CustomBuildTool
                 return;
             }
 
-            var args = File.ReadAllLines(FileName);
+            var args = File.ReadLines(FileName);
             var key = string.Empty;
 
             foreach (string s in args)
@@ -117,13 +135,22 @@ namespace CustomBuildTool
             }
         }
 
+        /// <summary>
+        /// Parses command-line arguments from a JSON file and returns them as a dictionary with normalized keys.
+        /// </summary>
+        /// <remarks>Keys in the resulting dictionary are prefixed with a hyphen if not already present.
+        /// Parsing errors are handled gracefully, and no exception is thrown; instead, an empty dictionary is
+        /// returned.</remarks>
+        /// <param name="filePath">The path to the JSON file containing argument key-value pairs. The file must exist and be readable.</param>
+        /// <returns>A dictionary containing the parsed arguments, with keys normalized to start with a hyphen ('-'). The
+        /// dictionary is case-insensitive. If the file cannot be parsed, an empty dictionary is returned.</returns>
         public static Dictionary<string, string> ParseArgumentsFromFile(string filePath)
         {
             var kvp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
-                string jsonContent = File.ReadAllText(filePath);
+                using var jsonContent = File.OpenRead(filePath);
                 var args = JsonSerializer.Deserialize(jsonContent, DictionarySerializerContext.Default.DictionaryStringString);
 
                 foreach (var s in args)
@@ -131,7 +158,9 @@ namespace CustomBuildTool
                     string key = s.Key;
 
                     if (!key.StartsWith('-'))
+                    {
                         key = "-" + key;
+                    }
 
                     kvp[key] = s.Value;
                 }
@@ -159,14 +188,23 @@ namespace CustomBuildTool
             return dict;
         }
 
-        public static int ExecuteMsbuildCommand(string Command, BuildFlags Flags, out string OutputString, bool RedirectOutput = true)
+        /// <summary>
+        /// Executes an MSBuild command using the specified build flags and returns the process exit code.
+        /// </summary>
+        /// <remarks>If the MSBuild executable cannot be located based on the provided flags and system
+        /// architecture, the method returns 3 and sets <paramref name="OutputString"/> to an error message. Otherwise,
+        /// the output from the MSBuild process is captured in <paramref name="OutputString"/> if <paramref
+        /// name="RedirectOutput"/> is <see langword="true"/>.</remarks>
+        /// <param name="Arguments">The MSBuild command-line arguments to execute.</param>
+        /// <param name="Flags">The build flags that determine which MSBuild executable to use and how the command is executed.</param>
+        /// <param name="OutputString">When the method returns, contains the output produced by the MSBuild process. If the MSBuild executable
+        /// cannot be found, it contains an error message.</param>
+        /// <param name="RedirectOutput">Indicates whether the output from the MSBuild process should be redirected and captured. The default is <see
+        /// langword="true"/>.</param>
+        /// <returns>The exit code returned by the MSBuild process. Returns 3 if the MSBuild executable cannot be found.</returns>
+        public static int ExecuteMsbuildCommand(string Arguments, BuildFlags Flags, out string OutputString, bool RedirectOutput = true)
         {
-            string file = null;
-
-            if (string.IsNullOrWhiteSpace(file))
-            {
-                file = GetMsbuildFilePath(Flags, RuntimeInformation.ProcessArchitecture);
-            }
+            string file = GetMsbuildFilePath(Flags, RuntimeInformation.ProcessArchitecture);
 
             if (string.IsNullOrWhiteSpace(file))
             {
@@ -174,10 +212,55 @@ namespace CustomBuildTool
                 return 3; // file not found.
             }
 
-            return Win32.CreateProcess(file, Command, out OutputString, false, RedirectOutput);
+            return Win32.CreateProcess(file, Arguments, out OutputString, false, RedirectOutput);
         }
 
-        public static string ExecuteVsWhereCommand(string Command)
+        private static string MsbuildMultiThreadedSwitch;
+
+        /// <summary>
+        /// Returns the MSBuild multithreaded switch ("-mt ") when the resolved MSBuild supports it (version 18 or later),
+        /// otherwise an empty string. Older MSBuild versions fail with MSB1001 (Unknown switch) when passed -mt.
+        /// </summary>
+        /// <param name="Flags">The build flags used to resolve the MSBuild executable.</param>
+        /// <returns>"-mt " or an empty string.</returns>
+        public static string GetMsbuildMultiThreadedSwitch(BuildFlags Flags)
+        {
+            if (MsbuildMultiThreadedSwitch != null)
+                return MsbuildMultiThreadedSwitch;
+
+            string result = string.Empty;
+
+            try
+            {
+                string file = GetMsbuildFilePath(Flags, RuntimeInformation.ProcessArchitecture);
+
+                if (!string.IsNullOrWhiteSpace(file) && File.Exists(file))
+                {
+                    var version = System.Diagnostics.FileVersionInfo.GetVersionInfo(file);
+
+                    if (version.FileMajorPart >= 18)
+                        result = "-mt ";
+                }
+            }
+            catch (Exception)
+            {
+                result = string.Empty;
+            }
+
+            MsbuildMultiThreadedSwitch = result;
+            return result;
+        }
+
+        /// <summary>
+        /// Executes a command using the vswhere utility and returns the trimmed output as a string.
+        /// </summary>
+        /// <remarks>The method locates the vswhere executable and runs the specified command. If the
+        /// vswhere file path is invalid, the method returns null and displays an error message. The output is trimmed
+        /// to remove leading and trailing whitespace.</remarks>
+        /// <param name="Arguments">The command-line arguments to pass to the vswhere executable. Cannot be null or empty.</param>
+        /// <returns>A string containing the trimmed output from the vswhere command. Returns null if the vswhere executable
+        /// cannot be found.</returns>
+        public static string ExecuteVsWhereCommand(IEnumerable<string> Arguments)
         {
             string file = GetVswhereFilePath();
 
@@ -187,11 +270,19 @@ namespace CustomBuildTool
                 return null;
             }
 
-            Win32.CreateProcess(file, Command, out var outputString, false);
+            Win32.CreateProcess(file, Arguments, out var outputString, false);
 
             return outputString.Trim();
         }
 
+        /// <summary>
+        /// Attempts to set the current working directory to the nearest parent directory containing the specified file.
+        /// </summary>
+        /// <remarks>If the specified file is found in a parent directory, the current working directory
+        /// is changed to that directory. If the file is not found or an error occurs, the current directory remains
+        /// unchanged and the method returns false.</remarks>
+        /// <param name="FileName">The name of the file to search for in parent directories. Cannot be null or empty.</param>
+        /// <returns>true if the current directory contains the specified file after the operation; otherwise, false.</returns>
         public static bool SetCurrentDirectoryParent(string FileName)
         {
             try
@@ -218,11 +309,23 @@ namespace CustomBuildTool
             return File.Exists(FileName);
         }
 
+        /// <summary>
+        /// Combines the working folder path with the specified file name to generate the full output directory path.
+        /// </summary>
+        /// <param name="FileName">The name of the file to append to the working folder path. Cannot be null or empty.</param>
+        /// <returns>A string containing the full path to the output directory for the specified file.</returns>
         public static string GetOutputDirectoryPath(string FileName)
         {
             return Path.Join([Build.BuildWorkingFolder, FileName]);
         }
 
+        /// <summary>
+        /// Creates the output directory specified by the build configuration if it does not already exist and is not a
+        /// file.
+        /// </summary>
+        /// <remarks>If the output folder path is null, empty, or whitespace, or if it points to an
+        /// existing file, the method does nothing. Any errors encountered during directory creation are reported to the
+        /// console.</remarks>
         public static void CreateOutputDirectory()
         {
             if (string.IsNullOrWhiteSpace(Build.BuildOutputFolder))
@@ -240,6 +343,12 @@ namespace CustomBuildTool
             }
         }
 
+        /// <summary>
+        /// Gets the full path to the vswhere.exe utility if it exists on the system.
+        /// </summary>
+        /// <remarks>Searches common installation directories and the system PATH for
+        /// vswhere.exe.</remarks>
+        /// <returns>The full file path to vswhere.exe, or an empty string if not found.</returns>
         public static string GetVswhereFilePath()
         {
             if (string.IsNullOrWhiteSpace(VsWhereFilePath))
@@ -276,6 +385,18 @@ namespace CustomBuildTool
             return VsWhereFilePath;
         }
 
+        /// <summary>
+        /// Locates the file path to the MSBuild executable for the specified build flags and target architecture.
+        /// </summary>
+        /// <remarks>The method searches for MSBuild in environment variables, system paths, and Visual
+        /// Studio installation directories. If multiple locations are available, the search order prioritizes
+        /// environment variables, then system paths, followed by Visual Studio instances. The returned path may vary
+        /// depending on the installed Visual Studio versions and system configuration.</remarks>
+        /// <param name="Flags">The build flags that influence how MSBuild is located and which version is selected.</param>
+        /// <param name="Architecture">The target processor architecture for which the MSBuild executable should be found. Must be a valid
+        /// architecture supported by MSBuild.</param>
+        /// <returns>A string containing the full file path to the MSBuild executable matching the specified architecture and
+        /// build flags, or null if no suitable executable is found.</returns>
         private static string GetMsbuildFilePath(BuildFlags Flags, Architecture Architecture)
         {
             // ESDK Begin
@@ -293,7 +414,7 @@ namespace CustomBuildTool
                     return file;
                 }
             }
-            //ESDK End
+            // ESDK End
 
             var MsBuildPath = new Dictionary<string, Architecture>(3, StringComparer.OrdinalIgnoreCase)
             {
@@ -324,8 +445,17 @@ namespace CustomBuildTool
 
             {
                 string vswhereResult = ExecuteVsWhereCommand(
-                    "-latest -prerelease -products * -requiresAny -requires Microsoft.Component.MSBuild -property installationPath"
-                    );
+                [
+                    "-latest",
+                    "-prerelease",
+                    "-products",
+                    "*",
+                    "-requiresAny",
+                    "-requires",
+                    "Microsoft.Component.MSBuild",
+                    "-property",
+                    "installationPath"
+                ]);
 
                 if (!string.IsNullOrWhiteSpace(vswhereResult))
                 {
@@ -346,8 +476,17 @@ namespace CustomBuildTool
 
             {
                 string vswhereResult = ExecuteVsWhereCommand(
-                    "-latest -prerelease -products * -requiresAny -requires Microsoft.Component.MSBuild -find \"MSBuild\\**\\Bin\\MSBuild.exe"
-                    );
+                [
+                    "-latest",
+                    "-prerelease",
+                    "-products",
+                    "*",
+                    "-requiresAny",
+                    "-requires",
+                    "Microsoft.Component.MSBuild",
+                    "-find",
+                    "MSBuild\\**\\Bin\\MSBuild.exe"
+                ]);
 
                 if (!string.IsNullOrWhiteSpace(vswhereResult))
                 {
@@ -369,6 +508,13 @@ namespace CustomBuildTool
             return null;
         }
 
+        /// <summary>
+        /// Retrieves the full file path to the Git executable on the local machine.
+        /// </summary>
+        /// <remarks>This method searches common installation directories for the Git executable and
+        /// caches the result for later calls. If Git is not installed in the standard locations, it attempts to
+        /// locate the executable using the system search path.</remarks>
+        /// <returns>A string containing the absolute path to the Git executable if found; otherwise, an empty string.</returns>
         public static string GetGitFilePath()
         {
             if (string.IsNullOrWhiteSpace(GitFilePath))
@@ -405,6 +551,16 @@ namespace CustomBuildTool
             return GitFilePath;
         }
 
+        /// <summary>
+        /// Constructs a command-line argument string for specifying the Git directory and working tree based on the
+        /// provided directory path.
+        /// </summary>
+        /// <remarks>The returned string can be used with Git commands to explicitly set the repository
+        /// location and working tree. If the directory does not contain a .git folder, the method returns
+        /// null.</remarks>
+        /// <param name="DirectoryPath">The file system path to the directory containing the Git repository. Must not be null, empty, or whitespace.</param>
+        /// <returns>A string containing the Git command-line arguments for the specified directory, or null if the directory
+        /// path is invalid or does not contain a .git folder.</returns>
         private static string GetGitWorkPath(string DirectoryPath)
         {
             if (string.IsNullOrWhiteSpace(DirectoryPath))
@@ -416,11 +572,19 @@ namespace CustomBuildTool
             return $"--git-dir=\"{DirectoryPath}\\.git\" --work-tree=\"{DirectoryPath}\" ";
         }
 
-        public static string ExecuteGitCommand(string WorkingFolder, string Command)
+        /// <summary>
+        /// Executes a Git command in the specified working folder and returns the command output as a string.
+        /// </summary>
+        /// <remarks>If the working folder is not a valid Git directory or the Git executable cannot be
+        /// found, the method returns null and prints an error message to the console. The output string is trimmed
+        /// before being returned.</remarks>
+        /// <param name="WorkingFolder">The path to the folder where the Git command will be executed. Must be a valid Git working directory.</param>
+        /// <param name="Arguments">The Git command to execute. This should be a valid command supported by the Git executable.</param>
+        /// <returns>A string containing the trimmed output of the executed Git command. Returns null if the working folder or
+        /// Git executable path is invalid.</returns>
+        public static string ExecuteGitCommand(string WorkingFolder, IEnumerable<string> Arguments)
         {
-            string currentGitDirectory = GetGitWorkPath(WorkingFolder);
-
-            if (string.IsNullOrWhiteSpace(currentGitDirectory))
+            if (string.IsNullOrWhiteSpace(WorkingFolder) || !Directory.Exists(WorkingFolder))
             {
                 Program.PrintColorMessage("[ExecuteGitCommand] WorkingFolder is invalid.", ConsoleColor.Red);
                 return null;
@@ -434,27 +598,60 @@ namespace CustomBuildTool
                 return null;
             }
 
-            Win32.CreateProcess(currentGitPath, $"{currentGitDirectory} {Command}", out var outputString, false);
+            List<string> arguments =
+            [
+                "-C",
+                WorkingFolder
+            ];
+
+            arguments.AddRange(Arguments);
+
+            Win32.CreateProcess(currentGitPath, arguments, out var outputString, false);
 
             return outputString.Trim();
         }
 
-        public static List<string> EnumerateDirectory(string FilePath, string[] Extensions, string[] Exclude = null)
+        /// <summary>
+        /// Lists all files in the specified directory and its subdirectories that match the given file extensions,
+        /// optionally excluding specified file names.
+        /// </summary>
+        /// <remarks>The search includes all subdirectories and ignores special directories such as "."
+        /// and "..". File extension and exclusion comparisons are performed in a case-insensitive manner.</remarks>
+        /// <param name="FilePath">The path to the directory to search. Must be a valid directory path.</param>
+        /// <param name="Extensions">An array of file extensions to include in the results. Extensions should include the leading dot (e.g.,
+        /// ".txt").</param>
+        /// <param name="Exclude">An optional array of file names to exclude from the results. Comparison is case-insensitive.</param>
+        /// <returns>A list of file paths that match the specified extensions and are not excluded. The list will be empty if no
+        /// files are found.</returns>
+        public static IEnumerable<string> EnumerateDirectory(string FilePath, string[] Extensions, string[] Exclude = null)
         {
-            var list = Directory.EnumerateFiles(FilePath, "*", new EnumerationOptions
+            var files = Directory.EnumerateFiles(FilePath, "*", new EnumerationOptions
             {
                 RecurseSubdirectories = true,
+                AttributesToSkip = FileAttributes.ReparsePoint,
                 ReturnSpecialDirectories = false
-            }).Where(s => Extensions.Any(ext => string.Equals(ext, Path.GetExtension(s), StringComparison.OrdinalIgnoreCase))).ToList();
+            });
 
-            if (Exclude != null)
+            foreach (var s in files)
             {
-                list.RemoveAll(s => Exclude.Any(f => f.Equals(Path.GetFileName(s), StringComparison.OrdinalIgnoreCase)));
+                if (Extensions.Any(ext => string.Equals(ext, Path.GetExtension(s), StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (Exclude == null || !Exclude.Any(f => f.Equals(Path.GetFileName(s), StringComparison.OrdinalIgnoreCase)))
+                    {
+                        yield return s;
+                    }
+                }
             }
-
-            return list;
         }
 
+        /// <summary>
+        /// Retrieves the file system path to the Windows SDK binaries directory, if available.
+        /// </summary>
+        /// <remarks>This method searches for the Windows SDK path using environment variables and
+        /// registry keys. The returned path can be used to locate SDK tools and binaries. If multiple SDK versions are
+        /// installed, the method returns the path to the highest available version.</remarks>
+        /// <returns>A string containing the path to the Windows SDK binaries directory. Returns null if the SDK path cannot be
+        /// determined.</returns>
         public static string GetWindowsSdkPath()
         {
             // ESDK Begin
@@ -467,7 +664,7 @@ namespace CustomBuildTool
                 if (Directory.Exists(path))
                     return path;
             }
-            //ESDK End
+            // ESDK End
 
             List<KeyValuePair<Version, string>> versionList = new List<KeyValuePair<Version, string>>();
             string kitsRoot = Win32.GetKeyValue(true, "Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", "%ProgramFiles(x86)%\\Windows Kits\\10\\");
@@ -503,14 +700,21 @@ namespace CustomBuildTool
             return null;
         }
 
+        /// <summary>
+        /// Retrieves the version number of the installed Windows SDK, if available.
+        /// </summary>
+        /// <remarks>The method first checks the 'WindowsSDKVersion' environment variable. If not set, it
+        /// searches the Windows Kits installation directory for available SDK versions and returns the highest version
+        /// found. The returned value does not include a trailing backslash.</remarks>
+        /// <returns>A string containing the Windows SDK version number, or null if no SDK version is found.</returns>
         public static string GetWindowsSdkVersion()
         {
             // ESDK Begin
-            if (Win32.GetEnvironmentVariable("WindowsSDKVersion", out string windowsSdkVersion)) 
+            if (Win32.GetEnvironmentVariable("WindowsSDKVersion", out string windowsSdkVersion))
             {
                 return windowsSdkVersion.TrimEnd('\\');
             }
-            //ESDK End
+            // ESDK End
 
             List<KeyValuePair<Version, string>> versionList = new List<KeyValuePair<Version, string>>();
             string kitsRoot = Win32.GetKeyValue(true, "Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", "%ProgramFiles(x86)%\\Windows Kits\\10\\");
@@ -547,6 +751,13 @@ namespace CustomBuildTool
             return null;
         }
 
+        /// <summary>
+        /// Retrieves the path to the Windows SDK include directory for the current system.
+        /// </summary>
+        /// <remarks>The method searches for the Windows SDK include path using environment variables and
+        /// registry keys. If multiple SDK versions are installed, it returns the path for the highest available
+        /// version. The returned path can be used to locate header files required for Windows development.</remarks>
+        /// <returns>A string containing the full path to the Windows SDK include directory if found; otherwise, null.</returns>
         public static string GetWindowsSdkIncludePath()
         {
             // ESDK Begin
@@ -559,7 +770,7 @@ namespace CustomBuildTool
                 if (Directory.Exists(path))
                     return path;
             }
-            //ESDK End
+            // ESDK End
 
             List<KeyValuePair<Version, string>> versionList = new List<KeyValuePair<Version, string>>();
             string kitsRoot = Win32.GetKeyValue(true, "Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", "%ProgramFiles(x86)%\\Windows Kits\\10\\");
@@ -595,6 +806,16 @@ namespace CustomBuildTool
             return null;
         }
 
+        /// <summary>
+        /// Retrieves the Visual Studio product version associated with the specified build flags and architecture.
+        /// </summary>
+        /// <remarks>Returns an empty string if the MSBuild path cannot be resolved or if the Visual
+        /// Studio installation is not found. This method does not throw exceptions; errors are logged and an empty
+        /// string is returned.</remarks>
+        /// <param name="Flags">The build flags that determine the MSBuild configuration and location.</param>
+        /// <param name="Architecture">The target architecture for which to locate the Visual Studio version.</param>
+        /// <returns>A string containing the Visual Studio product version, or an empty string if the version cannot be
+        /// determined.</returns>
         public static string GetVisualStudioVersion(BuildFlags Flags, Architecture Architecture)
         {
             string msbuild = GetMsbuildFilePath(Flags, Architecture);
@@ -630,6 +851,13 @@ namespace CustomBuildTool
             return string.Empty;
         }
 
+        /// <summary>
+        /// Retrieves the full path to the MakeAppx.exe tool from the Windows SDK installation.
+        /// </summary>
+        /// <remarks>This method searches for MakeAppx.exe in standard Windows SDK locations. If the tool
+        /// is not installed or cannot be found, the method returns null. Use this method to locate MakeAppx.exe for
+        /// packaging Windows applications.</remarks>
+        /// <returns>The full path to MakeAppx.exe if found; otherwise, null.</returns>
         public static string GetMakeAppxPath()
         {
             string windowsSdkPath = Utils.GetWindowsSdkPath();
@@ -658,9 +886,50 @@ namespace CustomBuildTool
             return makeAppxPath;
         }
 
+        /// <summary>
+        /// Retrieves the full path to the Message Compiler (mc.exe) tool from the Windows SDK installation.
+        /// </summary>
+        /// <remarks>mc.exe ships with the Windows SDK (not the WDK), so it can be used to compile message
+        /// files for the usermode build without requiring the WDK build customizations.</remarks>
+        /// <returns>The full path to mc.exe if found; otherwise, null.</returns>
+        public static string GetMessageCompilerPath()
+        {
+            string windowsSdkPath = Utils.GetWindowsSdkPath();
+
+            if (string.IsNullOrWhiteSpace(windowsSdkPath))
+                return null;
+
+            string messageCompilerPath = Path.Join([windowsSdkPath, "\\x64\\mc.exe"]);
+
+            if (!File.Exists(messageCompilerPath))
+            {
+                string sdkRootPath = Win32.GetKeyValue(true, "Software\\Microsoft\\Windows Kits\\Installed Roots", "WdkBinRootVersioned", null);
+
+                if (string.IsNullOrWhiteSpace(sdkRootPath))
+                    return null;
+
+                messageCompilerPath = Utils.ExpandFullPath(Path.Join([sdkRootPath, "\\x64\\mc.exe"]));
+
+                if (!File.Exists(messageCompilerPath))
+                    return null;
+            }
+
+            return messageCompilerPath;
+        }
+
+        /// <summary>
+        /// Locates the full file path to the CMake executable (cmake.exe) available on the system.
+        /// </summary>
+        /// <remarks>The method first searches for cmake.exe in the system PATH. If not found, it attempts
+        /// to locate a bundled version with Visual Studio. Returns null if CMake is not installed or cannot be located
+        /// by either method.</remarks>
+        /// <returns>The full path to the CMake executable if found; otherwise, null.</returns>
         public static string GetCMakeFilePath()
         {
+            //
             // Try searching in the PATH first
+            //
+
             string file = Win32.SearchPath("cmake.exe");
 
             if (File.Exists(file))
@@ -668,7 +937,10 @@ namespace CustomBuildTool
                 return file;
             }
 
+            //
             // Try bundled with Visual Studio
+            //
+
             VisualStudioInstance instance = BuildVisualStudio.GetVisualStudioInstance();
 
             if (instance != null)
@@ -692,8 +964,19 @@ namespace CustomBuildTool
             return null;
         }
 
-        public static int ExecuteCMakeCommand(string Command)
+        /// <summary>
+        /// Executes a CMake command in a Visual Studio environment, initializing the required build tools before
+        /// running the command.
+        /// </summary>
+        /// <remarks>This method sets up the Visual Studio build environment by invoking VsDevCmd.bat for the
+        /// appropriate architecture before executing the CMake command. The exit code can be used to determine
+        /// success or failure of the operation.</remarks>
+        /// <param name="Arguments">The CMake command line arguments to execute. Must specify the desired build configuration and architecture.</param>
+        /// <returns>The exit code returned by the CMake process. Returns <see cref="int.MaxValue"/> if required tools are not
+        /// found or initialization fails.</returns>
+        public static int ExecuteCMakeCommand(IEnumerable<string> Arguments)
         {
+            string[] arguments = Arguments?.ToArray() ?? [];
             string cmakeFile = GetCMakeFilePath();
 
             if (string.IsNullOrWhiteSpace(cmakeFile))
@@ -703,28 +986,110 @@ namespace CustomBuildTool
             }
 
             var instance = BuildVisualStudio.GetVisualStudioInstance();
-            string vcvarsall = Path.Join([instance.Path, "VC\\Auxiliary\\Build\\vcvarsall.bat"]);
-
-            if (!File.Exists(vcvarsall))
+            if (instance == null)
             {
-                Program.PrintColorMessage("[ExecuteCMakeCommand] vcvarsall.bat not found.", ConsoleColor.Red);
+                Program.PrintColorMessage("[ExecuteCMakeCommand] instance not found.", ConsoleColor.Red);
                 return int.MaxValue;
             }
 
-            string arch = "amd64"; // Default
-            if (Command.Contains("msvc-x86", StringComparison.OrdinalIgnoreCase) || Command.Contains("Win32", StringComparison.OrdinalIgnoreCase))
-                arch = "amd64_x86";
-            else if (Command.Contains("msvc-arm64", StringComparison.OrdinalIgnoreCase) || Command.Contains("ARM64", StringComparison.OrdinalIgnoreCase))
-                arch = "amd64_arm64";
+            string vsDevCmd = Path.Join([instance.Path, "Common7\\Tools\\VsDevCmd.bat"]);
+            string hostArch = GetVsDevCmdHostArch(instance.Path);
+            string arch = null;
 
-            // We need to run vcvarsall.bat and then cmake in the same session.
-            // Using cmd /c "call vcvarsall.bat arch && cmake ..."
-            string fullCommand = $"/c \"call \"{vcvarsall}\" {arch} && \"{cmakeFile}\" {Command}\"";
+            if (!File.Exists(vsDevCmd))
+            {
+                Program.PrintColorMessage("[ExecuteCMakeCommand] VsDevCmd.bat not found.", ConsoleColor.Red);
+                return int.MaxValue;
+            }
 
-            return Win32.CreateProcess("cmd.exe", fullCommand, out _, false, false);
+            foreach (string argument in arguments)
+            {
+                if (argument.Contains("msvc-x86", StringComparison.OrdinalIgnoreCase) || argument.Contains("Win32", StringComparison.OrdinalIgnoreCase))
+                {
+                    arch = "x86";
+                    break;
+                }
+
+                if (argument.Contains("msvc-arm64", StringComparison.OrdinalIgnoreCase) || argument.Contains("ARM64", StringComparison.OrdinalIgnoreCase))
+                {
+                    arch = "arm64";
+                    break;
+                }
+            }
+
+            arch ??= "amd64";
+
+            string command = string.Concat(
+                "\"\"",
+                vsDevCmd,
+                "\"",
+                " -arch=",
+                arch,
+                " -host_arch=",
+                hostArch,
+                " && ",
+                QuoteCmdArgument(cmakeFile),
+                " ",
+                string.Join(" ", arguments.Select(QuoteCmdArgument)),
+                "\""
+                );
+
+            return Win32.CreateProcess(
+                "cmd.exe",
+                $"/d /s /c {command}",
+                out _,
+                false,
+                false
+                );
         }
 
-        public static string ExecuteMsixCommand(string Command)
+        /// <summary>
+        /// Determines the VsDevCmd host architecture to use for the current machine.
+        /// </summary>
+        /// <remarks>ARM64 machines use the ARM64-hosted toolset when Visual Studio has it installed
+        /// (VC\Tools\MSVC\&lt;version&gt;\bin\Hostarm64). Otherwise the x64-hosted toolset is used, which
+        /// runs under emulation on ARM64. The OS architecture is checked rather than the process architecture
+        /// so an emulated build tool still selects the native toolset.</remarks>
+        /// <param name="InstallPath">The Visual Studio installation path.</param>
+        /// <returns>The VsDevCmd -host_arch value: "arm64" or "amd64".</returns>
+        private static string GetVsDevCmdHostArch(string InstallPath)
+        {
+            if (RuntimeInformation.OSArchitecture is not Architecture.Arm64)
+                return "amd64";
+
+            string msvcRoot = Path.Join([InstallPath, "VC\\Tools\\MSVC"]);
+
+            if (Directory.Exists(msvcRoot))
+            {
+                foreach (string toolsetPath in Directory.EnumerateDirectories(msvcRoot))
+                {
+                    if (Directory.Exists(Path.Join([toolsetPath, "bin\\Hostarm64"])))
+                        return "arm64";
+                }
+            }
+
+            return "amd64";
+        }
+
+        /// <summary>
+        /// Encloses the specified argument in double quotes for use on a cmd.exe command line.
+        /// </summary>
+        /// <param name="Argument">The argument to quote.</param>
+        /// <returns>The quoted argument.</returns>
+        private static string QuoteCmdArgument(string Argument)
+        {
+            return $"\"{Argument}\"";
+        }
+
+        /// <summary>
+        /// Executes an MSIX packaging command using the MakeAppx tool and returns the output as a string.
+        /// </summary>
+        /// <remarks>The returned output is trimmed and consecutive blank lines are reduced to a single
+        /// blank line. This method does not throw exceptions for invalid tool paths; instead, it returns null and
+        /// prints an error message.</remarks>
+        /// <param name="Arguments">The command-line arguments to pass to the MakeAppx tool. Cannot be null or empty.</param>
+        /// <returns>A string containing the output from the MakeAppx tool. Returns null if the tool path is invalid.</returns>
+        public static string ExecuteMsixCommand(IEnumerable<string> Arguments)
         {
             string file = GetMakeAppxPath();
 
@@ -734,7 +1099,7 @@ namespace CustomBuildTool
                 return null;
             }
 
-            Win32.CreateProcess(file, Command, out var outputString, false);
+            Win32.CreateProcess(file, Arguments, out var outputString, false);
 
             return outputString.Replace("\r\n\r\n", "\r\n", StringComparison.OrdinalIgnoreCase).Trim();
         }
@@ -757,6 +1122,14 @@ namespace CustomBuildTool
         //    return signToolPath;
         //}
 
+        /// <summary>
+        /// Retrieves the full file path to the SymStore executable (symstore.exe) from the Windows SDK installation, if
+        /// available.
+        /// </summary>
+        /// <remarks>This method searches for symstore.exe in the Windows SDK directory, using environment
+        /// variables and registry keys. The returned path can be used to invoke SymStore for symbol storage operations.
+        /// If the SDK is not installed or symstore.exe is not present, the method returns null.</remarks>
+        /// <returns>The full path to symstore.exe if found; otherwise, null.</returns>
         public static string GetSymStorePath()
         {
             // Required for the ESDK
@@ -782,6 +1155,61 @@ namespace CustomBuildTool
             return symStorePath;
         }
 
+        /// <summary>
+        /// Retrieves the full file path to the COSE signing tool (CoseSignTool.exe) from the Windows SDK/WDK
+        /// installation, if available.
+        /// </summary>
+        /// <remarks>CoseSignTool.exe ships under the versioned Tools directory of the Windows Kit
+        /// (<c>{KitsRoot10}\Tools\{version}\x64\CoseSignTool.exe</c>). The method honors the ESDK environment
+        /// variables when set, otherwise it selects the highest installed Tools version that contains the tool.
+        /// Returns null if the tool is not found.</remarks>
+        /// <returns>The full path to CoseSignTool.exe if found; otherwise, null.</returns>
+        public static string GetCoseSignToolPath()
+        {
+            // Required for the ESDK
+            if (
+                Win32.GetEnvironmentVariable("WindowsSdkDir", out string windowsSdkDir) &&
+                Win32.GetEnvironmentVariable("WindowsSDKVersion", out string windowsSdkVersion)
+                )
+            {
+                string path = Path.Join([windowsSdkDir, "Tools", windowsSdkVersion.TrimEnd('\\'), "x64", "CoseSignTool.exe"]);
+                if (File.Exists(path))
+                    return path;
+            }
+
+            string kitsRoot = Win32.GetKeyValue(true, "Software\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", "%ProgramFiles(x86)%\\Windows Kits\\10\\");
+            if (string.IsNullOrWhiteSpace(kitsRoot))
+                return null;
+
+            string toolsPath = Utils.ExpandFullPath(Path.Join([kitsRoot, "Tools"]));
+            if (string.IsNullOrWhiteSpace(toolsPath) || !Directory.Exists(toolsPath))
+                return null;
+
+            List<KeyValuePair<Version, string>> versionList = new List<KeyValuePair<Version, string>>();
+
+            foreach (string directory in Directory.EnumerateDirectories(toolsPath))
+            {
+                if (Version.TryParse(Path.GetFileName(directory), out var version))
+                {
+                    string candidate = Path.Join([directory, "x64", "CoseSignTool.exe"]);
+
+                    if (File.Exists(candidate))
+                        versionList.Add(new KeyValuePair<Version, string>(version, candidate));
+                }
+            }
+
+            if (versionList.Count == 0)
+                return null;
+
+            versionList.Sort((first, second) => first.Key.CompareTo(second.Key));
+
+            return versionList[^1].Value;
+        }
+
+        /// <summary>
+        /// Determines whether the symstore.exe file exists and is valid.
+        /// </summary>
+        /// <returns>true if the symstore.exe file exists and is valid; otherwise, false.</returns>
         public static bool SymStoreExists()
         {
             string file = GetSymStorePath();
@@ -801,7 +1229,12 @@ namespace CustomBuildTool
             return true;
         }
 
-        public static int ExecuteSymStoreCommand(string Command)
+        /// <summary>
+        /// Executes a command using symstore.exe and returns the process exit code.
+        /// </summary>
+        /// <param name="Arguments">The command-line arguments to pass to symstore.exe.</param>
+        /// <returns>The exit code of the process, or int.MaxValue if symstore.exe is invalid or not found.</returns>
+        public static int ExecuteSymStoreCommand(IEnumerable<string> Arguments)
         {
             string file = GetSymStorePath();
 
@@ -817,12 +1250,20 @@ namespace CustomBuildTool
                 return int.MaxValue;
             }
 
-            return Win32.CreateProcess(file, Command, out _, false, false);
+            return Win32.CreateProcess(file, Arguments, out _, false, false);
         }
 
+        /// <summary>
+        /// Retrieves the full path to the Visual Studio 'devenv.com' executable for the latest installed instance.
+        /// </summary>
+        /// <remarks>This method searches for the latest Visual Studio installation and returns the path
+        /// to its 'devenv.com' executable. If no suitable installation is found, the method returns null. The result
+        /// can be used to launch Visual Studio from the command line.</remarks>
+        /// <returns>A string containing the path to 'devenv.com' if found; otherwise, null.</returns>
         public static string GetDevEnvPath()
         {
             var instance = BuildVisualStudio.GetVisualStudioInstance();
+            if (instance != null)
             {
                 string file = Path.Join([instance.Path, "Common7\\IDE\\devenv.com"]);
 
@@ -839,12 +1280,17 @@ namespace CustomBuildTool
 
             int errorcode = Win32.CreateProcess(
                 vswhere,
-                "-latest " +
-                "-prerelease " +
-                "-products * " +
-                "-requiresAny " +
-                "-requires Microsoft.Component.MSBuild " +
-                "-property installationPath ",
+                [
+                    "-latest",
+                    "-prerelease",
+                    "-products",
+                    "*",
+                    "-requiresAny",
+                    "-requires",
+                    "Microsoft.Component.MSBuild",
+                    "-property",
+                    "installationPath"
+                ],
                 out string vswhereResult
                 );
 
@@ -863,7 +1309,13 @@ namespace CustomBuildTool
             return null;
         }
 
-        public static int ExecuteDevEnvCommand(string Command)
+        /// <summary>
+        /// Executes a command using the Visual Studio Developer Environment (devenv.exe) and returns the process exit
+        /// code.
+        /// </summary>
+        /// <param name="Arguments">The command-line arguments to pass to devenv.exe.</param>
+        /// <returns>The exit code of the process, or Int32.MaxValue if the devenv.exe path is invalid.</returns>
+        public static int ExecuteDevEnvCommand(string Arguments)
         {
             string currentDevEnvPath = GetDevEnvPath();
 
@@ -873,7 +1325,7 @@ namespace CustomBuildTool
                 return int.MaxValue;
             }
 
-            return Win32.CreateProcess(currentDevEnvPath, Command, out _, false, false);
+            return Win32.CreateProcess(currentDevEnvPath, Arguments, out _, false, false);
         }
 
         //public static string GetMsbuildFilePath()
@@ -928,6 +1380,11 @@ namespace CustomBuildTool
         //    return null;
         //}
 
+        /// <summary>
+        /// Reads all text from the specified file using UTF-8 encoding without a byte order mark (BOM).
+        /// </summary>
+        /// <param name="FileName">The path to the file to read.</param>
+        /// <returns>A string containing all text from the file.</returns>
         public static string ReadAllText(string FileName)
         {
             FileStreamOptions options = new FileStreamOptions
@@ -945,6 +1402,30 @@ namespace CustomBuildTool
             }
         }
 
+        /// <summary>
+        /// Reads the first non-empty line of a file, trimmed, without reading the rest of the file.
+        /// </summary>
+        /// <param name="FileName">The path to the file to read.</param>
+        /// <returns>The trimmed first non-empty line, or an empty string if the file has none.</returns>
+        public static string ReadFirstLine(string FileName)
+        {
+            foreach (string line in File.ReadLines(FileName))
+            {
+                string value = line.Trim();
+
+                if (value.Length != 0)
+                    return value;
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Creates a new file, writes the specified string to the file using UTF-8 encoding without a BOM, and then
+        /// closes the file. Overwrites the file if it already exists.
+        /// </summary>
+        /// <param name="FileName">The path to the file to write.</param>
+        /// <param name="Content">The string to write to the file.</param>
         public static void WriteAllText(string FileName, string Content)
         {
             FileStreamOptions options = new FileStreamOptions
@@ -962,6 +1443,174 @@ namespace CustomBuildTool
             }
         }
 
+        /// <summary>
+        /// Writes generated text to a temporary file and replaces the destination file only when the content differs.
+        /// </summary>
+        /// <remarks>The destination file is left untouched when the generated content matches the existing content.
+        /// The temporary file is always deleted before the method returns.</remarks>
+        /// <param name="FileName">The path of the destination file.</param>
+        /// <param name="Write">A callback that writes the generated content to the supplied <see cref="TextWriter"/>.</param>
+        /// <param name="BeforeReplace">An optional callback invoked immediately before the destination file is replaced.</param>
+        /// <param name="ShouldReplace">An optional predicate evaluated after generation; returning false skips the replacement.</param>
+        /// <param name="Comparison">The comparison used to determine whether the content has changed.</param>
+        /// <returns>True if the destination file was created or replaced; otherwise, false.</returns>
+        public static bool WriteTextIfChanged(string FileName, Action<TextWriter> Write, Action BeforeReplace = null, Func<bool> ShouldReplace = null, StringComparison Comparison = StringComparison.OrdinalIgnoreCase)
+        {
+            string temporaryFile = FileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
+
+            try
+            {
+                using (var writer = new StreamWriter(temporaryFile, false, UTF8NoBOM))
+                    Write(writer);
+
+                if (ShouldReplace != null && !ShouldReplace())
+                    return false;
+
+                if (File.Exists(FileName))
+                {
+                    using var previous = new StreamReader(FileName, UTF8NoBOM, true);
+                    using var generated = new StreamReader(temporaryFile, UTF8NoBOM, true);
+                    char[] left = new char[4096];
+                    char[] right = new char[4096];
+
+                    while (true)
+                    {
+                        int leftCount = previous.ReadBlock(left);
+                        int rightCount = generated.ReadBlock(right);
+                        if (leftCount != rightCount)
+                            break;
+                        if (leftCount == 0)
+                            return false;
+                        if (!left.AsSpan(0, leftCount).Equals(right.AsSpan(0, rightCount), Comparison))
+                            break;
+                    }
+                }
+
+                BeforeReplace?.Invoke();
+                File.Move(temporaryFile, FileName, true);
+                return true;
+            }
+            finally
+            {
+                if (File.Exists(temporaryFile))
+                    File.Delete(temporaryFile);
+            }
+        }
+
+        /// <summary>
+        /// Copies a text file to a destination, applying case-insensitive find and replace operations to each line.
+        /// </summary>
+        /// <remarks>Line endings are preserved and the destination is only rewritten when its content changes.</remarks>
+        /// <param name="SourceFile">The path of the source file.</param>
+        /// <param name="DestinationFile">The path of the destination file.</param>
+        /// <param name="Replacements">The find and replace pairs to apply to each line.</param>
+        public static void ReplaceTextFile(string SourceFile, string DestinationFile, params (string Find, string Replace)[] Replacements)
+        {
+            WriteTextIfChanged(DestinationFile, writer =>
+            {
+                foreach (string sourceLine in ReadLinesWithEndings(SourceFile))
+                {
+                    string line = sourceLine;
+                    foreach (var replacement in Replacements)
+                        line = line.Replace(replacement.Find, replacement.Replace, StringComparison.OrdinalIgnoreCase);
+                    writer.Write(line);
+                }
+            }, Comparison: StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Enumerates the lines of a text file, preserving the original line ending characters.
+        /// </summary>
+        /// <param name="FileName">The path of the file to read.</param>
+        /// <returns>An enumerable sequence of lines, each including its trailing line ending if present.</returns>
+        public static IEnumerable<string> ReadLinesWithEndings(string FileName)
+        {
+            using var reader = new StreamReader(FileName, UTF8NoBOM, true);
+            var line = new StringBuilder();
+            int value;
+            while ((value = reader.Read()) != -1)
+            {
+                line.Append((char)value);
+                if (value == '\n')
+                {
+                    yield return line.ToString();
+                    line.Clear();
+                }
+            }
+            if (line.Length != 0)
+                yield return line.ToString();
+        }
+
+        /// <summary>
+        /// A <see cref="TextWriter"/> wrapper that suppresses trailing whitespace by buffering it until non-whitespace content is written.
+        /// </summary>
+        /// <param name="output">The underlying writer that receives the trimmed output.</param>
+        public sealed class TrimmingTextWriter(TextWriter output) : TextWriter
+        {
+            private readonly StringBuilder pending = new();
+
+            public override Encoding Encoding => output.Encoding;
+            public bool HasContent { get; private set; }
+
+            /// <summary>
+            /// Writes a character, deferring whitespace until non-whitespace content follows.
+            /// </summary>
+            /// <param name="value">The character to write.</param>
+            public override void Write(char value)
+            {
+                if (char.IsWhiteSpace(value))
+                    this.pending.Append(value);
+                else
+                {
+                    if (this.pending.Length != 0)
+                    {
+                        output.Write(this.pending.ToString());
+                        this.pending.Clear();
+                    }
+                    output.Write(value);
+                    HasContent = true;
+                }
+            }
+
+            /// <summary>
+            /// Writes a string, deferring trailing whitespace until non-whitespace content follows.
+            /// </summary>
+            /// <param name="value">The string to write.</param>
+            public override void Write(string value)
+            {
+                Write(value.AsSpan());
+            }
+
+            /// <summary>
+            /// Writes a span of characters, deferring trailing whitespace until non-whitespace content follows.
+            /// </summary>
+            /// <param name="value">The characters to write.</param>
+            public override void Write(ReadOnlySpan<char> value)
+            {
+                int lastContent = value.Length - 1;
+                while (lastContent >= 0 && char.IsWhiteSpace(value[lastContent]))
+                    lastContent--;
+
+                if (lastContent >= 0)
+                {
+                    if (this.pending.Length != 0)
+                    {
+                        output.Write(this.pending.ToString());
+                        this.pending.Clear();
+                    }
+                    output.Write(value[..(lastContent + 1)]);
+                    HasContent = true;
+                }
+                if (lastContent + 1 < value.Length)
+                    this.pending.Append(value[(lastContent + 1)..]);
+            }
+        }
+
+        /// <summary>
+        /// Reads the contents of the specified file into a byte array.
+        /// </summary>
+        /// <param name="FileName">The path to the file to read.</param>
+        /// <returns>A byte array containing the contents of the file.</returns>
         public static byte[] ReadAllBytes(string FileName)
         {
             FileStreamOptions options = new FileStreamOptions
@@ -977,16 +1626,22 @@ namespace CustomBuildTool
 
             byte[] buffer = new byte[length];
 
-            using (MemoryStream stream = new MemoryStream(buffer, true))
-            using (FileStream sr = new FileStream(FileName, options))
+            using (FileStream filestream = new FileStream(FileName, options))
             {
-                sr.CopyTo(stream);
+                filestream.ReadExactly(buffer);
             }
 
             return buffer;
         }
 
-        public static void WriteAllBytes(string FileName, byte[] Buffer)
+        /// <summary>
+        /// Writes a byte array to a file, creating or overwriting the file as needed.
+        /// </summary>
+        /// <remarks>If the file already exists, it is overwritten. The file is created if it does not
+        /// exist.</remarks>
+        /// <param name="FileName">The path to the file to write.</param>
+        /// <param name="Buffer">The byte array to write to the file.</param>
+        public static void WriteAllBytes(string FileName, ReadOnlySpan<byte> Buffer)
         {
             FileStreamOptions options = new FileStreamOptions
             {
@@ -994,17 +1649,21 @@ namespace CustomBuildTool
                 Access = FileAccess.Write,
                 Share = FileShare.Write | FileShare.Delete,
                 Options = FileOptions.SequentialScan,
-                PreallocationSize = Buffer.LongLength,
+                PreallocationSize = Buffer.Length,
                 BufferSize = 0x1000,
             };
 
-            using (MemoryStream stream = new MemoryStream(Buffer, true))
             using (FileStream filestream = new FileStream(FileName, options))
             {
-                stream.CopyTo(filestream);
+                filestream.Write(Buffer);
             }
         }
 
+        /// <summary>
+        /// Indicates whether a read-only character span is empty or consists only of white-space characters.
+        /// </summary>
+        /// <param name="value">The read-only character span to evaluate.</param>
+        /// <returns>true if the span is empty or contains only white-space characters; otherwise, false.</returns>
         public static bool IsSpanNullOrWhiteSpace(ReadOnlySpan<char> value)
         {
             if (value.IsEmpty)
@@ -1015,6 +1674,11 @@ namespace CustomBuildTool
             return false;
         }
 
+        /// <summary>
+        /// Returns the absolute path after expanding any environment variables in the specified path string.
+        /// </summary>
+        /// <param name="Name">A path string that may contain environment variables.</param>
+        /// <returns>The fully qualified path with environment variables expanded.</returns>
         public static string ExpandFullPath(string Name)
         {
             string value = Environment.ExpandEnvironmentVariables(Name);
@@ -1024,6 +1688,12 @@ namespace CustomBuildTool
             return value;
         }
 
+        /// <summary>
+        /// Retrieves the system environment variables as a dictionary of key-value pairs.
+        /// </summary>
+        /// <remarks>The environment block is cached after the first retrieval. Subsequent calls return
+        /// the cached dictionary.</remarks>
+        /// <returns>A dictionary containing the system environment variables.</returns>
         public static Dictionary<string, string> GetSystemEnvironmentBlock()
         {
             if (EnvironmentBlock.Count == 0)
@@ -1032,17 +1702,27 @@ namespace CustomBuildTool
                 {
                     char* offset = (char*)block;
 
-                    while (offset != null)
+                    while (*offset != '\0')
                     {
                         string variable = new string(offset);
 
                         if (string.IsNullOrWhiteSpace(variable))
                             break;
 
-                        string[] parts = variable.Split('=', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                        EnvironmentBlock.Add(parts[0], parts.Length <= 1 ? string.Empty : parts[1]);
+                        ReadOnlySpan<char> varSpan = variable.AsSpan();
+                        int eqIndex = varSpan.IndexOf('=');
 
-                        //offset = new IntPtr(offset.ToInt64() + (variable.Length + 1) * sizeof(char));
+                        if (eqIndex != -1)
+                        {
+                            string key = varSpan[..eqIndex].Trim().ToString();
+                            string val = varSpan[(eqIndex + 1)..].Trim().ToString();
+                            EnvironmentBlock.Add(key, val);
+                        }
+                        else
+                        {
+                            EnvironmentBlock.Add(variable.Trim(), string.Empty);
+                        }
+
                         offset += variable.Length + 1;
                     }
 
@@ -1053,11 +1733,23 @@ namespace CustomBuildTool
             return EnvironmentBlock;
         }
 
+        /// <summary>
+        /// Generates a build log file name based on the solution name, build configuration, and platform.
+        /// </summary>
+        /// <param name="Solution">The path to the solution file.</param>
+        /// <param name="Platform">The target platform for the build.</param>
+        /// <param name="Flags">The build flags indicating the configuration.</param>
+        /// <returns>A string representing the build log file name.</returns>
         public static string GetBuildLogPath(string Solution, string Platform, BuildFlags Flags)
         {
             return $"{Path.GetFileNameWithoutExtension(Solution)}{(Flags.HasFlag(BuildFlags.BuildDebug) ? "Debug" : "Release")}{Platform}";
         }
 
+        /// <summary>
+        /// Converts a FILETIME structure to an equivalent DateTime value.
+        /// </summary>
+        /// <param name="FileTime">The FILETIME structure to convert.</param>
+        /// <returns>A DateTime value that represents the same point in time as the specified FILETIME.</returns>
         public static DateTime FileTimeToDateTime(this System.Runtime.InteropServices.ComTypes.FILETIME FileTime)
         {
             long fileTime = ((long)FileTime.dwHighDateTime << 32) + FileTime.dwLowDateTime;
@@ -1065,64 +1757,17 @@ namespace CustomBuildTool
             return DateTime.FromFileTime(fileTime);
         }
 
+        /// <summary>
+        /// Converts a FILETIME structure to a 64-bit file time value representing the number of 100-nanosecond
+        /// intervals since January 1, 1601 (UTC).
+        /// </summary>
+        /// <param name="FileTime">The FILETIME structure to convert.</param>
+        /// <returns>A 64-bit signed integer representing the file time.</returns>
         public static long FileTimeFromFileTime(this System.Runtime.InteropServices.ComTypes.FILETIME FileTime)
         {
             long fileTime = ((long)FileTime.dwHighDateTime << 32) + FileTime.dwLowDateTime;
 
             return fileTime;
-        }
-
-        public static bool ValidateImageExports(string FileName)
-        {
-            LOADED_IMAGE loadedMappedImage = default;
-            IMAGE_EXPORT_DIRECTORY* exportDirectory;
-
-            try
-            {
-                if (!PInvoke.MapAndLoad(FileName, null, out loadedMappedImage, false, true))
-                    return false;
-
-                try
-                {
-                    exportDirectory = (IMAGE_EXPORT_DIRECTORY*)PInvoke.ImageDirectoryEntryToData(
-                        loadedMappedImage.MappedAddress, false,
-                        IMAGE_DIRECTORY_ENTRY.IMAGE_DIRECTORY_ENTRY_EXPORT, out uint DirectorySize
-                        );
-
-                    if (exportDirectory != null)
-                    {
-                        if (exportDirectory->NumberOfNames == 0)
-                            return true;
-
-                        Program.PrintColorMessage("Exported functions missing from module export definition file: ", ConsoleColor.Yellow);
-
-                        uint* exportNameTable = (uint*)PInvoke.ImageRvaToVa(loadedMappedImage.FileHeader, loadedMappedImage.MappedAddress, exportDirectory->AddressOfNames, null);
-
-                        for (uint i = 0; i < exportDirectory->NumberOfNames; i++)
-                        {
-                            uint nameRva = exportNameTable[i];
-                            IntPtr namePtr = (IntPtr)PInvoke.ImageRvaToVa(loadedMappedImage.FileHeader, loadedMappedImage.MappedAddress, nameRva, null);
-                            var exportName = Marshal.PtrToStringUTF8(namePtr);
-
-                            Program.PrintColorMessage($"{i}: {exportName}", ConsoleColor.Yellow);
-                        }
-                    }
-                    else
-                    {
-                        Program.PrintColorMessage("IMAGE_DIRECTORY_ENTRY_EXPORT", ConsoleColor.Red);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Program.PrintColorMessage($"ValidateImageExports: {ex}", ConsoleColor.Red);
-                }
-            }
-            finally
-            {
-                PInvoke.UnMapAndLoad(ref loadedMappedImage);
-            }
-
-            return false;
         }
 
         /// <summary>
@@ -1139,7 +1784,13 @@ namespace CustomBuildTool
             _ => throw new ArgumentException("Unsupported toolchain")
         };
 
-        public static string CMakeGetPlatform(BuildToolchain toolchain) => toolchain switch
+        /// <summary>
+        /// Gets the CMake platform name corresponding to the specified build toolchain.
+        /// </summary>
+        /// <param name="Toolchain">The build toolchain for which to retrieve the CMake platform name.</param>
+        /// <returns>The CMake platform name associated with the specified toolchain.</returns>
+        /// <exception cref="ArgumentException">Thrown when the specified toolchain is not supported.</exception>
+        public static string CMakeGetPlatform(BuildToolchain Toolchain) => Toolchain switch
         {
             BuildToolchain.MsvcX86 or BuildToolchain.ClangMsvcX86 => "Win32",
             BuildToolchain.MsvcAmd64 or BuildToolchain.ClangMsvcAmd64 => "x64",
@@ -1147,11 +1798,47 @@ namespace CustomBuildTool
             _ => throw new ArgumentException("Unsupported toolchain")
         };
 
-        public static string GetToolchainString(BuildToolchain toolchain)
+        /// <summary>
+        /// Determines whether the specified toolchain targets the x86 architecture.
+        /// </summary>
+        /// <param name="Toolchain">The build toolchain to evaluate.</param>
+        /// <returns>true if the toolchain targets x86; otherwise, false.</returns>
+        public static bool IsX86Toolchain(BuildToolchain Toolchain)
         {
-            switch (toolchain)
+            return Toolchain == BuildToolchain.MsvcX86 || Toolchain == BuildToolchain.ClangMsvcX86;
+        }
+
+        /// <summary>
+        /// Determines whether the specified toolchain targets the AMD64 architecture.
+        /// </summary>
+        /// <param name="Toolchain">The build toolchain to evaluate.</param>
+        /// <returns>true if the toolchain targets AMD64; otherwise, false.</returns>
+        public static bool IsAmd64Toolchain(BuildToolchain Toolchain)
+        {
+            return Toolchain == BuildToolchain.MsvcAmd64 || Toolchain == BuildToolchain.ClangMsvcAmd64;
+        }
+
+        /// <summary>
+        /// Determines whether the specified toolchain targets the ARM64 architecture.
+        /// </summary>
+        /// <param name="Toolchain">The build toolchain to evaluate.</param>
+        /// <returns>true if the toolchain targets ARM64; otherwise, false.</returns>
+        public static bool IsArm64Toolchain(BuildToolchain Toolchain)
+        {
+            return Toolchain == BuildToolchain.MsvcArm64 || Toolchain == BuildToolchain.ClangMsvcArm64;
+        }
+
+        /// <summary>
+        /// Returns the string representation of the specified build toolchain.
+        /// </summary>
+        /// <param name="Toolchain">The build toolchain to convert.</param>
+        /// <returns>A string representing the specified build toolchain.</returns>
+        /// <exception cref="ArgumentException">Thrown when the specified toolchain is not supported.</exception>
+        public static string GetToolchainString(BuildToolchain Toolchain)
+        {
+            switch (Toolchain)
             {
-            case BuildToolchain.MsvcX86:         
+            case BuildToolchain.MsvcX86:
                 return "msvc-x86";
             case BuildToolchain.MsvcAmd64:
                 return "msvc-amd64";
@@ -1168,6 +1855,12 @@ namespace CustomBuildTool
             throw new ArgumentException("Unsupported toolchain");
         }
 
+        /// <summary>
+        /// Parses a string to determine the corresponding build toolchain.
+        /// </summary>
+        /// <param name="s">The string representation of the build toolchain.</param>
+        /// <returns>A value of the BuildToolchain enumeration that matches the specified string, or ClangMsvcAmd64 if the string
+        /// is null, empty, or unrecognized.</returns>
         public static BuildToolchain GetToolchainFromString(string s)
         {
             if (string.IsNullOrWhiteSpace(s))
@@ -1194,6 +1887,11 @@ namespace CustomBuildTool
             return BuildToolchain.ClangMsvcAmd64;
         }
 
+        /// <summary>
+        /// Parses a string to determine the appropriate build generator.
+        /// </summary>
+        /// <param name="s">The input string representing the build generator.</param>
+        /// <returns>A value of the BuildGenerator enumeration corresponding to the input string.</returns>
         public static BuildGenerator GetGeneratorFromString(string s)
         {
             if (string.IsNullOrWhiteSpace(s))
@@ -1213,18 +1911,27 @@ namespace CustomBuildTool
             return BuildGenerator.Ninja;
         }
 
+        /// <summary>
+        /// Returns the string representation of the specified build generator.
+        /// </summary>
+        /// <param name="gen">The build generator to convert to a string.</param>
+        /// <param name="original">The original string to use for unknown generators. Defaults to null.</param>
+        /// <returns>A string representing the build generator, or the original string if the generator is unknown.</returns>
         public static string GetGeneratorString(BuildGenerator gen, string original = null)
         {
             return gen switch
             {
                 BuildGenerator.Ninja => "Ninja",
                 BuildGenerator.VisualStudio => "Visual Studio",
-                BuildGenerator.Other => original ?? string.Empty,
                 _ => original ?? string.Empty
             };
         }
     }
 
+    /// <summary>
+    /// Represents a request to update build information, including identifiers, version details, and associated binary
+    /// and setup metadata.
+    /// </summary>
     public class BuildUpdateRequest
     {
         [JsonPropertyName("build_id")] public string BuildId { get; init; }
@@ -1254,17 +1961,22 @@ namespace CustomBuildTool
             return this.BuildId;
         }
 
-        public string SerializeToJson()
-        {
-            return JsonSerializer.Serialize(this, BuildUpdateRequestContext.Default.BuildUpdateRequest);
-        }
-
+        /// <summary>
+        /// Serializes the update request to a UTF-8 encoded JSON byte array.
+        /// </summary>
+        /// <returns>A byte array containing the JSON representation of the request.</returns>
         public byte[] SerializeToBytes()
         {
             return JsonSerializer.SerializeToUtf8Bytes(this, BuildUpdateRequestContext.Default.BuildUpdateRequest);
         }
     }
 
+    /// <summary>
+    /// Represents a request to create a new release on GitHub, including release tag, target branch, name, description,
+    /// and release options.
+    /// </summary>
+    /// <remarks>Provides properties for configuring release details such as draft status, prerelease status,
+    /// and automatic release note generation. Supports serialization to JSON and UTF-8 byte arrays.</remarks>
     public class GithubReleasesRequest
     {
         [JsonPropertyName("tag_name")]
@@ -1292,22 +2004,18 @@ namespace CustomBuildTool
         {
             return this.ReleaseTag;
         }
-
-        public string SerializeToJson()
-        {
-            return JsonSerializer.Serialize(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
-
-        public byte[] SerializeToBytes()
-        {
-            return JsonSerializer.SerializeToUtf8Bytes(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
     }
 
+    /// <summary>
+    /// Represents a GitHub release as returned by the GitHub API.
+    /// </summary>
     public class GithubReleasesResponse
     {
         [JsonPropertyName("id")]
         public ulong ReleaseId { get; init; }
+
+        [JsonPropertyName("tag_name")]
+        public string TagName { get; init; }
 
         [JsonPropertyName("upload_url")]
         public string UploadUrl { get; init; }
@@ -1322,18 +2030,11 @@ namespace CustomBuildTool
         {
             return this.ReleaseId.ToString();
         }
-
-        public string SerializeToJson()
-        {
-            return JsonSerializer.Serialize(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
-
-        public byte[] SerializeToBytes()
-        {
-            return JsonSerializer.SerializeToUtf8Bytes(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
     }
 
+    /// <summary>
+    /// Represents the response from a GitHub release query.
+    /// </summary>
     public class GithubReleaseQueryResponse
     {
         [JsonPropertyName("id")]
@@ -1368,18 +2069,11 @@ namespace CustomBuildTool
         {
             return this.ReleaseId.ToString();
         }
-
-        public string SerializeToJson()
-        {
-            return JsonSerializer.Serialize(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
-
-        public byte[] SerializeToBytes()
-        {
-            return JsonSerializer.SerializeToUtf8Bytes(this, GithubResponseContext.Default.GithubReleasesRequest);
-        }
     }
 
+    /// <summary>
+    /// Represents a GitHub release asset as returned by the GitHub API.
+    /// </summary>
     public class GithubAssetsResponse
     {
         [JsonPropertyName("id")]
@@ -1414,7 +2108,7 @@ namespace CustomBuildTool
                 if (string.IsNullOrWhiteSpace(this.Digest))
                     return string.Empty;
 
-                if (this.Digest.AsSpan().IndexOf(':') is int idx && idx >= 0)
+                if (this.Digest.AsSpan().IndexOf(':') is var idx && idx >= 0)
                 {
                     return this.Digest[..idx];
                 }
@@ -1431,7 +2125,7 @@ namespace CustomBuildTool
                 if (string.IsNullOrWhiteSpace(this.Digest))
                     return string.Empty;
 
-                if (this.Digest.AsSpan().IndexOf(':') is int idx && idx >= 0)
+                if (this.Digest.AsSpan().IndexOf(':') is var idx && idx >= 0)
                 {
                     return this.Digest[idx..];
                 }
@@ -1446,6 +2140,9 @@ namespace CustomBuildTool
         }
     }
 
+    /// <summary>
+    /// Represents the author or committer information of a GitHub commit.
+    /// </summary>
     public class GithubUser
     {
         [JsonPropertyName("name")]
@@ -1509,6 +2206,9 @@ namespace CustomBuildTool
         public string Type { get; init; }
     }
 
+    /// <summary>
+    /// Represents the commit details of a GitHub commit.
+    /// </summary>
     public class GithubCommit
     {
         [JsonPropertyName("author")]
@@ -1578,6 +2278,9 @@ namespace CustomBuildTool
     //    public string html_url { get; init; }
     //}
 
+    /// <summary>
+    /// Represents a GitHub commit as returned by the GitHub API.
+    /// </summary>
     public class GithubCommitResponse
     {
         [JsonPropertyName("sha")]
@@ -1614,6 +2317,9 @@ namespace CustomBuildTool
         //public List<GithubFile> files { get; init; }
     }
 
+    /// <summary>
+    /// Represents the line change statistics of a GitHub commit.
+    /// </summary>
     public class GithubCommitStats
     {
         [JsonPropertyName("total")]
@@ -1626,6 +2332,9 @@ namespace CustomBuildTool
         public ulong Deletions { get; init; }
     }
 
+    /// <summary>
+    /// Represents the tree referenced by a GitHub commit.
+    /// </summary>
     public class GithubCommitTree
     {
         [JsonPropertyName("sha")]
@@ -1635,6 +2344,9 @@ namespace CustomBuildTool
         public string Url { get; init; }
     }
 
+    /// <summary>
+    /// Represents the signature verification details of a GitHub commit.
+    /// </summary>
     public class GithubCommitVerification
     {
         [JsonPropertyName("verified")]
@@ -1650,6 +2362,9 @@ namespace CustomBuildTool
         public string Payload { get; init; }
     }
 
+    /// <summary>
+    /// Represents the head commit of a GitHub Actions workflow run.
+    /// </summary>
     public class GithubHeadCommit
     {
         [JsonPropertyName("id")]
@@ -1671,6 +2386,9 @@ namespace CustomBuildTool
         public GithubUser Committer { get; set; }
     }
 
+    /// <summary>
+    /// Represents the head repository of a GitHub Actions workflow run.
+    /// </summary>
     public class GithubHeadRepository
     {
         [JsonPropertyName("id")]
@@ -1812,6 +2530,9 @@ namespace CustomBuildTool
         public string DeploymentsUrl { get; set; }
     }
 
+    /// <summary>
+    /// Represents a workflow referenced by a GitHub Actions workflow run.
+    /// </summary>
     public class GithubReferencedWorkflow
     {
         [JsonPropertyName("path")]
@@ -1824,6 +2545,9 @@ namespace CustomBuildTool
         //public string @ref { get; set; }
     }
 
+    /// <summary>
+    /// Represents a GitHub repository as returned by the GitHub API.
+    /// </summary>
     public class GithubRepository
     {
         [JsonPropertyName("id")]
@@ -1971,6 +2695,9 @@ namespace CustomBuildTool
         public string HooksUrl { get; set; }
     }
 
+    /// <summary>
+    /// Represents a GitHub Actions workflow run as returned by the GitHub API.
+    /// </summary>
     public class GithubActionRun
     {
         [JsonPropertyName("id")]
@@ -2079,6 +2806,9 @@ namespace CustomBuildTool
         public GithubHeadRepository HeadRepository { get; set; }
     }
 
+    /// <summary>
+    /// Represents the file details returned by a SourceForge upload.
+    /// </summary>
     public class SourceForgeResponseData
     {
         [JsonPropertyName("file_type")]
@@ -2151,24 +2881,36 @@ namespace CustomBuildTool
         public string vscan_when { get; init; }
     }
 
+    /// <summary>
+    /// Represents the response from a SourceForge upload request.
+    /// </summary>
     public class SourceForgeUploadResponse
     {
         [JsonPropertyName("result")]
         public SourceForgeResponseData Result { get; init; }
     }
 
+    /// <summary>
+    /// Represents the response from a VirusTotal large file upload URL request.
+    /// </summary>
     public class VirusTotalLargeUploadResponse
     {
         [JsonPropertyName("data")]
         public string data { get; init; }
     }
 
+    /// <summary>
+    /// Represents the links associated with a VirusTotal analysis.
+    /// </summary>
     public class VirusTotalAnalysisLinksResponse
     {
         [JsonPropertyName("self")]
         public string self { get; init; }
     }
 
+    /// <summary>
+    /// Represents the data object of a VirusTotal analysis response.
+    /// </summary>
     public class VirusTotalAnalysisDataResponse
     {
         [JsonPropertyName("type")]
@@ -2181,18 +2923,37 @@ namespace CustomBuildTool
         public VirusTotalAnalysisLinksResponse links { get; init; }
     }
 
+    /// <summary>
+    /// Represents the response from a VirusTotal file analysis request.
+    /// </summary>
     public class VirusTotalAnalysisResponse
     {
         [JsonPropertyName("data")]
         public VirusTotalAnalysisDataResponse data { get; init; }
     }
 
+    /// <summary>
+    /// Represents a SourceLink document mapping local source paths to remote URLs.
+    /// </summary>
+    public class SourceLink
+    {
+        [JsonPropertyName("documents")]
+        public Dictionary<string, string> Documents { get; init; }
+    }
+
+    /// <summary>
+    /// Represents the response from a NuGet flat container package versions query.
+    /// </summary>
+    public class NugetFlatContainerResponse
+    {
+        [JsonPropertyName("versions")]
+        public List<string> Versions { get; init; }
+    }
+
+
     [JsonSerializable(typeof(BuildUpdateRequest))]
     [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, GenerationMode = JsonSourceGenerationMode.Default)]
-    public partial class BuildUpdateRequestContext : JsonSerializerContext
-    {
-
-    }
+    public partial class BuildUpdateRequestContext : JsonSerializerContext;
 
     [JsonSerializable(typeof(GithubActionRun))]
     [JsonSerializable(typeof(GithubAssetsResponse))]
@@ -2200,60 +2961,77 @@ namespace CustomBuildTool
     [JsonSerializable(typeof(GithubReleasesRequest))]
     [JsonSerializable(typeof(GithubReleasesResponse))]
     [JsonSerializable(typeof(GithubReleaseQueryResponse))]
+    [JsonSerializable(typeof(SourceLink))]
+    [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
     [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, GenerationMode = JsonSourceGenerationMode.Default)]
-    public partial class GithubResponseContext : JsonSerializerContext
-    {
-
-    }
+    public partial class GithubResponseContext : JsonSerializerContext;
 
     [JsonSerializable(typeof(SourceForgeUploadResponse))]
     [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, GenerationMode = JsonSourceGenerationMode.Default)]
-    public partial class SourceForgeUploadResponseContext : JsonSerializerContext
-    {
-
-    }
+    public partial class SourceForgeUploadResponseContext : JsonSerializerContext;
 
     [JsonSerializable(typeof(VirusTotalLargeUploadResponse))]
     [JsonSerializable(typeof(VirusTotalAnalysisResponse))]
     [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, GenerationMode = JsonSourceGenerationMode.Default)]
-    public partial class VirusTotalResponseContext : JsonSerializerContext
-    {
+    public partial class VirusTotalResponseContext : JsonSerializerContext;
 
-    }
-
-    [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, GenerationMode = JsonSourceGenerationMode.Default)]
     [JsonSerializable(typeof(Dictionary<string, string>))]
-    public partial class DictionarySerializerContext : JsonSerializerContext
-    {
-    }
+    public partial class DictionarySerializerContext : JsonSerializerContext;
 
-    public static class Extextensions
+    /// <summary>
+    /// Provides extension methods for formatting numeric values as human-readable file sizes.
+    /// </summary>
+    /// <remarks>The methods in this class convert numeric values representing byte counts into formatted
+    /// strings using common size units such as kilobytes (Kb), megabytes (Mb), gigabytes (Gb), and terabytes (Tb).
+    /// These extensions are intended to simplify displaying file sizes in user interfaces or logs. All methods are
+    /// thread-safe and can be used with integer and long values, including unsigned long. The class is static and
+    /// cannot be instantiated.</remarks>
+    public static class Extensions
     {
         private const long OneKb = 1024;
         private const long OneMb = OneKb * 1024;
         private const long OneGb = OneMb * 1024;
         private const long OneTb = OneGb * 1024;
 
+        /// <summary>
+        /// Formats a byte count as a human-readable size string.
+        /// </summary>
+        /// <param name="value">The byte count.</param>
+        /// <param name="decimalPlaces">The number of decimal places to round to.</param>
+        /// <returns>The formatted size string.</returns>
         public static string ToPrettySize(this int value, int decimalPlaces = 0)
         {
             return ((ulong)value).ToPrettySize(decimalPlaces);
         }
 
+        /// <summary>
+        /// Formats a byte count as a human-readable size string.
+        /// </summary>
+        /// <param name="value">The byte count.</param>
+        /// <param name="decimalPlaces">The number of decimal places to round to.</param>
+        /// <returns>The formatted size string.</returns>
         public static string ToPrettySize(this long value, int decimalPlaces = 0)
         {
             return ((ulong)value).ToPrettySize(decimalPlaces);
         }
 
+        /// <summary>
+        /// Formats a byte count as a human-readable size string.
+        /// </summary>
+        /// <param name="value">The byte count.</param>
+        /// <param name="decimalPlaces">The number of decimal places to round to.</param>
+        /// <returns>The formatted size string.</returns>
         public static string ToPrettySize(this ulong value, int decimalPlaces = 0)
         {
             double asTb = Math.Round((double)value / OneTb, decimalPlaces);
             double asGb = Math.Round((double)value / OneGb, decimalPlaces);
             double asMb = Math.Round((double)value / OneMb, decimalPlaces);
             double asKb = Math.Round((double)value / OneKb, decimalPlaces);
-            string chosenValue = asTb > 1 ? $"{asTb}Tb"
-                : asGb > 1 ? $"{asGb}Gb"
-                : asMb > 1 ? $"{asMb}Mb"
-                : asKb > 1 ? $"{asKb}Kb"
+            string chosenValue = asTb > 1 ? $"{asTb} Tb"
+                : asGb > 1 ? $"{asGb} Gb"
+                : asMb > 1 ? $"{asMb} Mb"
+                : asKb > 1 ? $"{asKb} Kb"
                 : $"{Math.Round((double)value, decimalPlaces)}B";
             return chosenValue;
         }
@@ -2272,12 +3050,16 @@ namespace CustomBuildTool
         BuildApi = 64,
         BuildMsix = 128,
         BuildCMake = 256,
+        BuildAnalyze = 512,
 
         Debug = Build32bit | Build64bit | BuildArm64bit | BuildDebug | BuildApi | BuildVerbose,
         Release = Build32bit | Build64bit | BuildArm64bit | BuildRelease | BuildApi | BuildVerbose,
         All = Build32bit | Build64bit | BuildArm64bit | BuildDebug | BuildRelease | BuildApi | BuildVerbose,
     }
 
+    /// <summary>
+    /// Specifies the compiler toolchain and target architecture used for a build.
+    /// </summary>
     public enum BuildToolchain
     {
         None,
@@ -2289,6 +3071,9 @@ namespace CustomBuildTool
         ClangMsvcArm64 = 6
     }
 
+    /// <summary>
+    /// Specifies the CMake generator used for a build.
+    /// </summary>
     public enum BuildGenerator
     {
         Ninja,
@@ -2302,87 +3087,394 @@ namespace CustomBuildTool
     [InterpolatedStringHandler]
     public readonly ref struct LogInterpolatedStringHandler
     {
-        public readonly StringBuilder builder;
+        private readonly StringBuilder _builder;
+        public readonly bool Enabled;
 
-        public LogInterpolatedStringHandler(int literalLength, int formattedCount)
+        /// <summary>
+        /// Initializes a new instance of the handler that always formats the message.
+        /// </summary>
+        /// <param name="literalLength">The number of literal characters in the interpolated string.</param>
+        /// <param name="formattedCount">The number of formatted holes in the interpolated string.</param>
+        /// <param name="enabled">Receives true, indicating the message is formatted.</param>
+        public LogInterpolatedStringHandler(int literalLength, int formattedCount, out bool enabled)
         {
-            builder = new StringBuilder(literalLength);
+            this.Enabled = true;
+            enabled = true;
+            this._builder = new StringBuilder(literalLength);
         }
 
+        /// <summary>
+        /// Initializes a new instance of the handler that formats the message only when verbose output is enabled.
+        /// </summary>
+        /// <param name="literalLength">The number of literal characters in the interpolated string.</param>
+        /// <param name="formattedCount">The number of formatted holes in the interpolated string.</param>
+        /// <param name="Flags">The build flags used to determine whether verbose output is enabled.</param>
+        /// <param name="enabled">Receives true if the message is formatted; otherwise, false.</param>
+        public LogInterpolatedStringHandler(int literalLength, int formattedCount, BuildFlags Flags, out bool enabled)
+        {
+            this.Enabled = (Flags & BuildFlags.BuildVerbose) != 0;
+            enabled = this.Enabled;
+            this._builder = enabled ? new StringBuilder(literalLength) : null;
+        }
+
+        /// <summary>
+        /// Appends a literal string to the message.
+        /// </summary>
+        /// <param name="s">The literal string.</param>
         public void AppendLiteral(string s)
         {
-            builder.Append(s.AsSpan());
+            _builder?.Append(s.AsSpan());
         }
 
+        /// <summary>
+        /// Appends a formatted value to the message.
+        /// </summary>
+        /// <typeparam name="T">The type of the value.</typeparam>
+        /// <param name="t">The value to append.</param>
         public void AppendFormatted<T>(T t)
         {
-            builder.Append(t?.ToString());
+            _builder?.Append(t?.ToString());
         }
 
+        /// <summary>
+        /// Appends a formatted value to the message using the specified format string.
+        /// </summary>
+        /// <typeparam name="T">The type of the value.</typeparam>
+        /// <param name="t">The value to append.</param>
+        /// <param name="format">The format string.</param>
         public void AppendFormatted<T>(T t, string format) where T : IFormattable
         {
-            builder.Append(t?.ToString(format, null));
+            _builder?.Append(t?.ToString(format, null));
         }
 
+        /// <summary>
+        /// Gets the formatted message text.
+        /// </summary>
+        /// <returns>The formatted message, or an empty string if formatting was disabled.</returns>
         internal string GetFormattedText()
         {
-            return builder.ToString();
+            return _builder?.ToString() ?? string.Empty;
         }
     }
 
+    /// <summary>
+    /// Provides ANSI virtual terminal escape sequences for console text colors.
+    /// </summary>
     public static class VT
     {
+        /// <summary>
+        /// Returns the escape sequence, or an empty string when output is redirected
+        /// outside of CI (e.g. MSBuild Exec) so captured logs stay free of escape codes.
+        /// Evaluated per access because <see cref="Build.BuildIntegration"/> is set after startup.
+        /// </summary>
+        private static string C(string Sequence)
+        {
+            return Console.IsOutputRedirected && !Build.BuildIntegration ? string.Empty : Sequence;
+        }
+
         // Reset
-        public const string RESET       = "\x1b[0m";
+        public static string RESET       => C("\x1b[0m");
 
         // Standard foreground colors
-        public const string BLACK       = "\x1b[30m";
-        public const string RED         = "\x1b[31m";
-        public const string GREEN       = "\x1b[32m";
-        public const string YELLOW      = "\x1b[33m";
-        public const string BLUE        = "\x1b[34m";
-        public const string MAGENTA     = "\x1b[35m";
-        public const string CYAN        = "\x1b[36m";
-        public const string WHITE       = "\x1b[37m";
+        public static string BLACK       => C("\x1b[30m");
+        public static string RED         => C("\x1b[31m");
+        public static string GREEN       => C("\x1b[32m");
+        public static string YELLOW      => C("\x1b[33m");
+        public static string BLUE        => C("\x1b[34m");
+        public static string MAGENTA     => C("\x1b[35m");
+        public static string CYAN        => C("\x1b[36m");
+        public static string WHITE       => C("\x1b[37m");
+        public static string GRAY        => C("\x1b[90m");
 
         // Bright foreground colors
-        public const string BRIGHT_BLACK    = "\x1b[90m";
-        public const string BRIGHT_RED      = "\x1b[91m";
-        public const string BRIGHT_GREEN    = "\x1b[92m";
-        public const string BRIGHT_YELLOW   = "\x1b[93m";
-        public const string BRIGHT_BLUE     = "\x1b[94m";
-        public const string BRIGHT_MAGENTA  = "\x1b[95m";
-        public const string BRIGHT_CYAN     = "\x1b[96m";
-        public const string BRIGHT_WHITE    = "\x1b[97m";
+        public static string BRIGHT_RED      => C("\x1b[91m");
+        public static string BRIGHT_GREEN    => C("\x1b[92m");
+        public static string BRIGHT_YELLOW   => C("\x1b[93m");
+        public static string BRIGHT_BLUE     => C("\x1b[94m");
+        public static string BRIGHT_MAGENTA  => C("\x1b[95m");
+        public static string BRIGHT_CYAN     => C("\x1b[96m");
+        public static string BRIGHT_WHITE    => C("\x1b[97m");
 
         // Background colors
-        public const string BG_BLACK    = "\x1b[40m";
-        public const string BG_RED      = "\x1b[41m";
-        public const string BG_GREEN    = "\x1b[42m";
-        public const string BG_YELLOW   = "\x1b[43m";
-        public const string BG_BLUE     = "\x1b[44m";
-        public const string BG_MAGENTA  = "\x1b[45m";
-        public const string BG_CYAN     = "\x1b[46m";
-        public const string BG_WHITE    = "\x1b[47m";
+        public static string BG_BLACK    => C("\x1b[40m");
+        public static string BG_RED      => C("\x1b[41m");
+        public static string BG_GREEN    => C("\x1b[42m");
+        public static string BG_YELLOW   => C("\x1b[43m");
+        public static string BG_BLUE     => C("\x1b[44m");
+        public static string BG_MAGENTA  => C("\x1b[45m");
+        public static string BG_CYAN     => C("\x1b[46m");
+        public static string BG_WHITE    => C("\x1b[47m");
 
         // Bright background colors
-        public const string BG_BRIGHT_BLACK     = "\x1b[100m";
-        public const string BG_BRIGHT_RED       = "\x1b[101m";
-        public const string BG_BRIGHT_GREEN     = "\x1b[102m";
-        public const string BG_BRIGHT_YELLOW    = "\x1b[103m";
-        public const string BG_BRIGHT_BLUE      = "\x1b[104m";
-        public const string BG_BRIGHT_MAGENTA   = "\x1b[105m";
-        public const string BG_BRIGHT_CYAN      = "\x1b[106m";
-        public const string BG_BRIGHT_WHITE     = "\x1b[107m";
+        public static string BG_BRIGHT_BLACK     => C("\x1b[100m");
+        public static string BG_BRIGHT_RED       => C("\x1b[101m");
+        public static string BG_BRIGHT_GREEN     => C("\x1b[102m");
+        public static string BG_BRIGHT_YELLOW    => C("\x1b[103m");
+        public static string BG_BRIGHT_BLUE      => C("\x1b[104m");
+        public static string BG_BRIGHT_MAGENTA   => C("\x1b[105m");
+        public static string BG_BRIGHT_CYAN      => C("\x1b[106m");
+        public static string BG_BRIGHT_WHITE     => C("\x1b[107m");
 
         // 256-color foreground
-        public static string FROM256(int n) => $"\x1b[38;5;{n}m";
+        public static string FROM256(int n) => C($"\x1b[38;5;{n}m");
 
         // 256-color background
-        public static string BGFROM256(int n) => $"\x1b[48;5;{n}m";
+        public static string BGFROM256(int n) => C($"\x1b[48;5;{n}m");
 
         // True-color (RGB)
-        public static string RGB(int r, int g, int b) => $"\x1b[38;2;{r};{g};{b}m";
-        public static string BGRGB(int r, int g, int b) => $"\x1b[48;2;{r};{g};{b}m";
+        public static string RGB(int r, int g, int b) => C($"\x1b[38;2;{r};{g};{b}m");
+        public static string BGRGB(int r, int g, int b) => C($"\x1b[48;2;{r};{g};{b}m");
+
+        // Extended palette colors (256-color ANSI)
+        public static string ORANGE => C("\u001b[38;5;208m");
+        public static string PURPLE => C("\u001b[38;5;141m");
+        public static string TEAL => C("\u001b[38;5;44m");
+        public static string PINK => C("\u001b[38;5;213m");
+        public static string LIME => C("\u001b[38;5;118m");
+    }
+
+    /// <summary>
+    /// Represents an unmanaged, non-paged buffer of characters that is securely zeroed out after use.
+    /// </summary>
+    public sealed unsafe class SecureBuffer : IDisposable
+    {
+        private IntPtr _buffer;
+        private readonly nuint _regionSize;
+        private readonly int _length;
+
+        // NTSTATUS Constants
+        private const int STATUS_SUCCESS = 0;
+
+        // Memory Constants
+        private const uint MEM_COMMIT = 0x00001000;
+        private const uint MEM_RESERVE = 0x00002000;
+        private const uint MEM_RELEASE = 0x00008000;
+        private const uint PAGE_READWRITE = 0x04;
+        private const uint LOCK_VM_IN_WSL = 1;
+
+        public int Length => this._length;
+
+        public ReadOnlySpan<char> Span
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(this._buffer == IntPtr.Zero, this);
+                return new ReadOnlySpan<char>((void*)this._buffer, this._length);
+            }
+        }
+
+        internal Span<char> WritableSpan
+        {
+            get
+            {
+                ObjectDisposedException.ThrowIf(this._buffer == IntPtr.Zero, this);
+                return new Span<char>((void*)this._buffer, this._length);
+            }
+        }
+
+        /// <summary>
+        /// Allocates a new secure buffer and attempts to lock it into the working set.
+        /// </summary>
+        /// <param name="length">The number of characters the buffer holds.</param>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown when <paramref name="length"/> is negative.</exception>
+        /// <exception cref="Win32Exception">Thrown when the memory allocation fails.</exception>
+        public SecureBuffer(int length)
+        {
+            if (length < 0)
+                throw new ArgumentOutOfRangeException(nameof(length));
+
+            this._length = length;
+            if (length == 0)
+                return;
+
+            nuint size = (nuint)(length * sizeof(char));
+            void* baseAddress = PInvoke.VirtualAlloc(
+                null,
+                size,
+                VIRTUAL_ALLOCATION_TYPE.MEM_COMMIT | VIRTUAL_ALLOCATION_TYPE.MEM_RESERVE,
+                PAGE_PROTECTION_FLAGS.PAGE_READWRITE
+                );
+
+            if (baseAddress == null)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            this._buffer = (IntPtr)baseAddress;
+            this._regionSize = size;
+
+            // Attempt to lock memory in the working set to prevent it from being written to the pagefile.
+            // We do not throw on failure, as the process might lack the necessary quotas or privileges, 
+            // making this a best-effort security enhancement.
+            PInvoke.VirtualLock(baseAddress, size); // LOCK_VM_IN_WSL
+        }
+
+        /// <summary>
+        /// Zeroes, unlocks, and releases the buffer memory.
+        /// </summary>
+        public void Dispose()
+        {
+            IntPtr buffer = Interlocked.Exchange(ref this._buffer, IntPtr.Zero);
+
+            if (buffer != IntPtr.Zero)
+            {
+                // CryptographicOperations.ZeroMemory is preserved here instead of P/Invoking RtlSecureZeroMemory
+                // because it uses the exact same JIT/AOT intrinsic protections without the P/Invoke boundary overhead.
+                CryptographicOperations.ZeroMemory(new Span<byte>((void*)buffer, (int)this._regionSize));
+
+                PInvoke.VirtualUnlock((void*)buffer, this._regionSize); // LOCK_VM_IN_WSL
+                PInvoke.VirtualFree((void*)buffer, this._regionSize, VIRTUAL_FREE_TYPE.MEM_RELEASE);
+            }
+        }
+    }
+
+    public static partial class Utils
+    {
+        /// <summary>
+        /// Reads the contents of a text file into a <see cref="SecureBuffer"/>, detecting the encoding from the byte order mark.
+        /// </summary>
+        /// <remarks>The intermediate byte array is zeroed before the method returns. Files without a byte order mark are decoded as UTF-8.</remarks>
+        /// <param name="FileName">The path of the file to read.</param>
+        /// <returns>A secure buffer containing the file text, or null if the file does not exist.</returns>
+        public static SecureBuffer ReadAllTextSecure(string FileName)
+        {
+            if (!File.Exists(FileName))
+                return null;
+
+            byte[] fileBytes = File.ReadAllBytes(FileName);
+
+            try
+            {
+                Encoding encoding = Utils.UTF8NoBOM;
+                int preambleLength = 0;
+                ReadOnlySpan<byte> bytes = fileBytes;
+                ReadOnlySpan<byte> start1 = [0x00, 0x00, 0xFE, 0xFF];
+                ReadOnlySpan<byte> start2 = [0xFF, 0xFE, 0x00, 0x00];
+                ReadOnlySpan<byte> start3 = [0xEF, 0xBB, 0xBF];
+                ReadOnlySpan<byte> start4 = [0xFE, 0xFF];
+                ReadOnlySpan<byte> start5 = [0xFF, 0xFE];
+
+                if (bytes.StartsWith(start1))
+                {
+                    encoding = new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true);
+                    preambleLength = 4;
+                }
+                else if (bytes.StartsWith(start2))
+                {
+                    encoding = new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true);
+                    preambleLength = 4;
+                }
+                else if (bytes.StartsWith(start3))
+                {
+                    preambleLength = 3;
+                }
+                else if (bytes.StartsWith(start4))
+                {
+                    encoding = new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true);
+                    preambleLength = 2;
+                }
+                else if (bytes.StartsWith(start5))
+                {
+                    encoding = new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true);
+                    preambleLength = 2;
+                }
+
+                bytes = bytes[preambleLength..];
+                var secureBuffer = new SecureBuffer(encoding.GetCharCount(bytes));
+
+                try
+                {
+                    encoding.GetChars(bytes, secureBuffer.WritableSpan);
+                    return secureBuffer;
+                }
+                catch
+                {
+                    secureBuffer.Dispose();
+                    throw;
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(fileBytes);
+            }
+        }
+
+        /// <summary>
+        /// Calculates the maximum number of bytes required to form URL encode the specified number of characters.
+        /// </summary>
+        /// <param name="CharacterCount">The number of characters to encode.</param>
+        /// <returns>The maximum number of encoded bytes.</returns>
+        public static int GetFormUrlEncodedMaxByteCount(int CharacterCount)
+        {
+            return checked(Utils.UTF8NoBOM.GetMaxByteCount(CharacterCount) * 3);
+        }
+
+        /// <summary>
+        /// Form URL encodes the specified characters as UTF-8 into the destination buffer.
+        /// </summary>
+        /// <param name="Value">The characters to encode.</param>
+        /// <param name="Destination">The buffer that receives the encoded bytes.</param>
+        /// <returns>The number of bytes written to <paramref name="Destination"/>.</returns>
+        /// <exception cref="ArgumentException">Thrown when <paramref name="Destination"/> is too small.</exception>
+        public static int WriteFormUrlEncoded(ReadOnlySpan<char> Value, Span<byte> Destination)
+        {
+            int byteCount = Utils.UTF8NoBOM.GetByteCount(Value);
+            byte[] utf8Buffer = ArrayPool<byte>.Shared.Rent(byteCount);
+
+            try
+            {
+                int bytesWritten = Utils.UTF8NoBOM.GetBytes(Value, utf8Buffer);
+                ReadOnlySpan<byte> utf8Value = utf8Buffer.AsSpan(0, bytesWritten);
+                int encodedLength = 0;
+
+                foreach (byte value in utf8Value)
+                {
+                    encodedLength = checked(encodedLength + (IsFormUrlUnreserved(value) ? 1 : 3));
+                }
+
+                if (Destination.Length < encodedLength)
+                    throw new ArgumentException("The destination is too small.", nameof(Destination));
+
+                ReadOnlySpan<byte> hexDigits = "0123456789ABCDEF"u8;
+                int destinationIndex = 0;
+
+                foreach (byte value in utf8Value)
+                {
+                    if (IsFormUrlUnreserved(value))
+                    {
+                        Destination[destinationIndex++] = value;
+                    }
+                    else
+                    {
+                        Destination[destinationIndex++] = (byte)'%';
+                        Destination[destinationIndex++] = hexDigits[value >> 4];
+                        Destination[destinationIndex++] = hexDigits[value & 0xf];
+                    }
+                }
+
+                return destinationIndex;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(utf8Buffer, clearArray: true);
+            }
+        }
+
+        /// <summary>
+        /// Determines whether the specified byte is an unreserved character that does not require percent encoding.
+        /// </summary>
+        /// <param name="Value">The byte to test.</param>
+        /// <returns>True if the byte is unreserved; otherwise, false.</returns>
+        private static bool IsFormUrlUnreserved(byte Value)
+        {
+            return
+                Value >= (byte)'A' && Value <= (byte)'Z' ||
+                Value >= (byte)'a' && Value <= (byte)'z' ||
+                Value >= (byte)'0' && Value <= (byte)'9' ||
+                Value == (byte)'-' ||
+                Value == (byte)'_' ||
+                Value == (byte)'.' ||
+                Value == (byte)'~';
+        }
     }
 }

@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -90,6 +90,8 @@ NTSTATUS PhCreateJsonParserEx(
         PPH_STRING jsonStringUtf16 = JsonString;
         PPH_BYTES jsonStringUtf8;
 
+        if (!jsonStringUtf16)
+            return STATUS_FAIL_CHECK;
         if (jsonStringUtf16->Length / sizeof(WCHAR) >= INT32_MAX)
             return STATUS_INVALID_BUFFER_SIZE;
         if (!(tokenerObject = json_tokener_new()))
@@ -104,17 +106,33 @@ NTSTATUS PhCreateJsonParserEx(
             jsonStringUtf16->Buffer,
             jsonStringUtf16->Length
             );
+
+        if (!jsonStringUtf8)
+        {
+            json_tokener_free(tokenerObject);
+            return STATUS_FAIL_CHECK;
+        }
+
         jsonObject = json_tokener_parse_ex(
             tokenerObject,
             jsonStringUtf8->Buffer,
             (LONG)jsonStringUtf8->Length
             );
+
         PhDereferenceObject(jsonStringUtf8);
+
+        if (!jsonObject)
+        {
+            json_tokener_free(tokenerObject);
+            return STATUS_FAIL_CHECK;
+        }
     }
     else
     {
         PPH_BYTES jsonStringUtf8 = JsonString;
 
+        if (!jsonStringUtf8)
+            return STATUS_FAIL_CHECK;
         if (jsonStringUtf8->Length >= INT32_MAX)
             return STATUS_INVALID_BUFFER_SIZE;
         if (!(tokenerObject = json_tokener_new()))
@@ -130,6 +148,12 @@ NTSTATUS PhCreateJsonParserEx(
             jsonStringUtf8->Buffer,
             (LONG)jsonStringUtf8->Length
             );
+
+        if (!jsonObject)
+        {
+            json_tokener_free(tokenerObject);
+            return STATUS_FAIL_CHECK;
+        }
     }
 
     jsonStatus = json_tokener_get_error(tokenerObject);
@@ -229,6 +253,13 @@ LONGLONG PhGetJsonInt64Object(
     return json_object_get_int64(Object);
 }
 
+DOUBLE PhGetJsonDoubleObject(
+    _In_ PVOID Object
+    )
+{
+    return json_object_get_double(Object);
+}
+
 PVOID PhCreateJsonObject(
     VOID
     )
@@ -300,6 +331,14 @@ VOID PhAddJsonObjectValue(
     json_object_object_add_ex(Object, Key, Value, JSON_C_OBJECT_ADD_KEY_IS_NEW | JSON_C_OBJECT_ADD_CONSTANT_KEY);
 }
 
+VOID PhRemoveJsonObject(
+    _In_ PVOID Object,
+    _In_ PCSTR Key
+    )
+{
+    json_object_object_del(Object, Key);
+}
+
 VOID PhAddJsonObject(
     _In_ PVOID Object,
     _In_ PCSTR Key,
@@ -330,6 +369,15 @@ VOID PhAddJsonObjectUtf8(
     PVOID string = json_object_new_string_len(String->Buffer, (UINT32)String->Length);
 
     json_object_object_add_ex(Object, Key, string, JSON_C_OBJECT_ADD_KEY_IS_NEW | JSON_C_OBJECT_ADD_CONSTANT_KEY);
+}
+
+VOID PhAddJsonObjectBoolean(
+    _In_ PVOID Object,
+    _In_ PCSTR Key,
+    _In_ BOOLEAN Value
+    )
+{
+    json_object_object_add_ex(Object, Key, json_object_new_boolean(Value), JSON_C_OBJECT_ADD_KEY_IS_NEW | JSON_C_OBJECT_ADD_CONSTANT_KEY);
 }
 
 VOID PhAddJsonObjectInt64(
@@ -424,7 +472,7 @@ VOID PhEnumJsonArrayObject(
 {
     if (PhGetJsonObjectType(Object) == PH_JSON_OBJECT_TYPE_OBJECT)
     {
-        json_object_iter iter;
+        json_object_iter iter = { 0 };
 
         json_object_object_foreachC(Object, iter)
         {
@@ -442,7 +490,7 @@ PVOID PhGetJsonObjectAsArrayList(
 
     if (PhGetJsonObjectType(Object) == PH_JSON_OBJECT_TYPE_OBJECT)
     {
-        json_object_iter iter;
+        json_object_iter iter = { 0 };
 
         listArray = PhCreateList(1);
 
@@ -471,6 +519,13 @@ NTSTATUS PhLoadJsonObjectFromFile(
 
     if (NT_SUCCESS(status = PhFileReadAllText(&content, FileName, FALSE)))
     {
+        if (content->Length == 0)
+        {
+            // A blank file is OK.
+            PhDereferenceObject(content);
+            return STATUS_END_OF_FILE;
+        }
+
         status = PhCreateJsonParserEx(JsonObject, content, FALSE);
         PhDereferenceObject(content);
     }
@@ -575,14 +630,19 @@ static void PhJsonObjectToJsonStringEscape(
                     }
 
                     char buffer[7];
-                    const char* json_hex_chars = "0123456789abcdefABCDEF";
-                    sprintf_s(buffer, sizeof(buffer), "\\u00%c%c", json_hex_chars[c >> 4], json_hex_chars[c & 0xf]);
-                    
+                    const char* json_hex_chars = "0123456789abcdef";
+                    buffer[0] = '\\';
+                    buffer[1] = 'u';
+                    buffer[2] = '0';
+                    buffer[3] = '0';
+                    buffer[4] = json_hex_chars[(c >> 4) & 0xf];
+                    buffer[5] = json_hex_chars[c & 0xf];
+                    buffer[6] = ANSI_NULL;
+
                     PH_BYTESREF string;
                     string.Buffer = buffer;
-                    string.Length = (SIZE_T)strlen(buffer);
+                    string.Length = 6;
                     PhAppendBytesBuilder(StringBuilder, &string);
-
                     offset = ++pos;
                 }
                 else
@@ -776,75 +836,32 @@ BOOLEAN PhJsonObjectToString(
                 PH_BYTESREF stringFormat;
 
                 stringFormat.Buffer = formatBuffer;
-                stringFormat.Length = returnLength - sizeof(ANSI_NULL);
+                stringFormat.Length = returnLength;
 
                 PhAppendBytesBuilder(StringBuilder, &stringFormat);
-            }
-            else
-            {
-                CHAR buffer[64];
-
-                // %.17g is standard to preserve double precision in text
-                if (sprintf_s(buffer, sizeof(buffer), "%.17g", json_object_get_double(Object)) > 0)
-                {
-                    // Handle specific JSON quirk: if double looks like int (no dot), append .0?
-                    // Standard JSON-C usually handles this, but strictly speaking "1" is a valid double in JSON.
-                    // We stick to the string output.
-                    PhAppendBytesBuilder2(StringBuilder, buffer);
-                }
             }
         }
         break;
     case json_type_int:
         {
             SIZE_T returnLength;
-            //PH_FORMAT format[1];
-            //WCHAR formatBuffer[260];
-            //
-            //PhInitFormatI64D(&format[0], json_object_get_int64(Object));
-            //
-            //if (PhFormatToBuffer(
-            //    format,
-            //    RTL_NUMBER_OF(format),
-            //    formatBuffer,
-            //    sizeof(formatBuffer),
-            //    &returnLength
-            //    ))
-            //{
-            //    PH_BYTESREF stringFormat;
-            //
-            //    stringFormat.Buffer = formatBuffer;
-            //    stringFormat.Length = returnLength - sizeof(ANSI_NULL);
-            //
-            //    PhAppendBytesBuilder(StringBuilder, &stringFormat);
-            //}
-            //else
+            CHAR formatBuffer[65];
+
+            if (NT_SUCCESS(PhIntegerToUtf8Buffer(
+                json_object_get_int64(Object),
+                10,
+                TRUE,
+                formatBuffer,
+                sizeof(formatBuffer),
+                &returnLength
+                )))
             {
-                CHAR formatBuffer[65];
+                PH_BYTESREF stringFormat;
 
-                if (NT_SUCCESS(PhIntegerToUtf8Buffer(
-                    json_object_get_int64(Object),
-                    10,
-                    TRUE,
-                    formatBuffer,
-                    sizeof(formatBuffer),
-                    &returnLength
-                    )))
-                {
-                    PH_BYTESREF stringFormat;
+                stringFormat.Buffer = formatBuffer;
+                stringFormat.Length = returnLength;
 
-                    stringFormat.Buffer = formatBuffer;
-                    stringFormat.Length = returnLength - sizeof(ANSI_NULL);
-
-                    PhAppendBytesBuilder(StringBuilder, &stringFormat);
-                }
-                else
-                {
-                    if (sprintf_s(formatBuffer, sizeof(formatBuffer), "%lld", json_object_get_int64(Object)) > 0)
-                    {
-                        PhAppendBytesBuilder2(StringBuilder, formatBuffer);
-                    }
-                }
+                PhAppendBytesBuilder(StringBuilder, &stringFormat);
             }
         }
         break;
@@ -893,6 +910,52 @@ PPH_BYTES PhJsonObjectToJsonString(
 
     PhDeleteBytesBuilder(&stringBuilder);
     return NULL;
+}
+
+static NTSTATUS PhpSaveBufferToFile(
+    _In_ PCPH_STRINGREF FileName,
+    _In_reads_bytes_(BufferLength) PVOID Buffer,
+    _In_ ULONG BufferLength
+    )
+{
+    NTSTATUS status;
+    HANDLE fileHandle;
+    LARGE_INTEGER allocationSize;
+
+    allocationSize.QuadPart = BufferLength;
+
+    status = PhCreateFileEx(
+        &fileHandle,
+        FileName,
+        FILE_GENERIC_WRITE,
+        NULL,
+        &allocationSize,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        FILE_OVERWRITE_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL
+        );
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    status = PhWriteFile(
+        fileHandle,
+        Buffer,
+        BufferLength,
+        NULL,
+        NULL
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        PhFlushBuffersFile(fileHandle);
+    }
+
+    NtClose(fileHandle);
+
+    return status;
 }
 
 NTSTATUS PhSaveJsonObjectToFile(
@@ -994,6 +1057,15 @@ NTSTATUS PhSaveJsonObjectToFile(
         FileName
         );
 
+    if (!NT_SUCCESS(status))
+    {
+        status = PhpSaveBufferToFile(
+            FileName,
+            (PVOID)jsonStringUtf8->Buffer,
+            (ULONG)jsonStringUtf8->Length
+            );
+    }
+
 CleanupExit:
     if (fileHandle)
     {
@@ -1034,6 +1106,7 @@ static PPH_BYTES PhXmlSaveString(
 {
     mxml_options_t* options;
     PPH_BYTES string;
+    char* buffer;
 
     options = mxmlOptionsNew();
     mxmlOptionsSetTypeValue(options, MXML_TYPE_OPAQUE);
@@ -1043,8 +1116,14 @@ static PPH_BYTES PhXmlSaveString(
         mxmlOptionsSetWhitespaceCallback(options, XmlSaveCallback, NULL);
     }
 
-    string = PhCreateBytes(mxmlSaveAllocString(XmlRootObject, options));
+    buffer = mxmlSaveAllocString(XmlRootObject, options);
     mxmlOptionsDelete(options);
+
+    if (!buffer)
+        return NULL;
+
+    string = PhCreateBytes(buffer);
+    free(buffer);
 
     return string;
 }
@@ -1220,6 +1299,15 @@ NTSTATUS PhSaveXmlObjectToFile(
         FileName
         );
 
+    if (!NT_SUCCESS(status))
+    {
+        status = PhpSaveBufferToFile(
+            FileName,
+            (PVOID)string->Buffer,
+            (ULONG)string->Length
+            );
+    }
+
 CleanupExit:
     if (fileHandle)
     {
@@ -1371,10 +1459,12 @@ SIZE_T PhGetXmlNodeAttributeCount(
     return mxmlElementGetAttrCount(XmlNodeObject);
 }
 
-typedef BOOLEAN (NTAPI* PPH_ENUM_XML_NODE_CALLBACK)(
+typedef _Function_class_(PH_ENUM_XML_NODE_CALLBACK)
+BOOLEAN NTAPI PH_ENUM_XML_NODE_CALLBACK(
     _In_ PVOID XmlNodeObject,
     _In_opt_ PVOID Context
     );
+typedef PH_ENUM_XML_NODE_CALLBACK* PPH_ENUM_XML_NODE_CALLBACK;
 
 BOOLEAN PhEnumXmlNode(
     _In_ PVOID XmlNodeObject,

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -23,6 +23,7 @@
 #include <mapimg.h>
 #include <mapldr.h>
 #include <thirdparty.h>
+#include <json.h>
 
 #if defined(_ARM64_)
 #define PH_THREAD_STACK_NATIVE_MACHINE IMAGE_FILE_MACHINE_ARM64
@@ -104,7 +105,14 @@ typeof(&UnDecorateSymbolNameW) UnDecorateSymbolNameW_I = NULL;
 _SymGetDiaSource SymGetDiaSource_I = NULL;
 _SymGetDiaSession SymGetDiaSession_I = NULL;
 _SymFreeDiaString SymFreeDiaString_I = NULL;
+static ULONG PhSymbolProviderInternalOptions = PH_SYMOPT_VERIFY_MICROSOFT_CHAIN;
 
+/**
+ * Creates a symbol provider object.
+ *
+ * \param ProcessId The process identifier, or NULL for a provider without a real process handle.
+ * \return A pointer to the created symbol provider.
+ */
 PPH_SYMBOL_PROVIDER PhCreateSymbolProvider(
     _In_opt_ HANDLE ProcessId
     )
@@ -160,6 +168,12 @@ PPH_SYMBOL_PROVIDER PhCreateSymbolProvider(
     return symbolProvider;
 }
 
+/**
+ * Deletes a symbol provider object.
+ *
+ * \param Object A pointer to the symbol provider object.
+ * \param Flags Not used.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NTAPI PhpSymbolProviderDeleteProcedure(
     _In_ PVOID Object,
@@ -186,6 +200,12 @@ VOID NTAPI PhpSymbolProviderDeleteProcedure(
     if (symbolProvider->IsRealHandle) NtClose(symbolProvider->ProcessHandle);
 }
 
+/**
+ * Symbol provider callback work item.
+ *
+ * \param Context Pointer to the symbol event data.
+ * \return STATUS_SUCCESS.
+ */
 #if defined(PH_SYMEVNT_WORKQUEUE)
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhpSymbolProviderCallbackWorkItem(
@@ -203,6 +223,13 @@ NTSTATUS PhpSymbolProviderCallbackWorkItem(
 }
 #endif
 
+/**
+ * Invokes the symbol provider callback.
+ *
+ * \param EventType The type of event.
+ * \param EventMessage The event message string.
+ * \param EventProgress The progress value.
+ */
 static VOID PhpSymbolProviderInvokeCallback(
     _In_ ULONG EventType,
     _In_opt_ PPH_STRING EventMessage,
@@ -235,6 +262,13 @@ static VOID PhpSymbolProviderInvokeCallback(
 #endif
 }
 
+/**
+ * Symbol provider event callback.
+ *
+ * \param SymbolProvider Pointer to the symbol provider.
+ * \param ActionCode The action code.
+ * \param CallbackData The callback data.
+ */
 static VOID PhpSymbolProviderEventCallback(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ ULONG ActionCode,
@@ -281,6 +315,7 @@ static VOID PhpSymbolProviderEventCallback(
         }
         break;
     case CBA_DEFERRED_SYMBOL_LOAD_COMPLETE:
+    case CBA_DEFERRED_SYMBOL_LOAD_FAILURE:
         {
             PhClearReference(&PhSymbolProviderEventMessageText);
             PhpSymbolProviderInvokeCallback(PH_SYMBOL_EVENT_TYPE_LOAD_END, NULL, 0);
@@ -344,6 +379,15 @@ static VOID PhpSymbolProviderEventCallback(
     }
 }
 
+/**
+ * Symbol callback function.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param ActionCode The action code.
+ * \param CallbackData The callback data.
+ * \param UserContext The user context.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 BOOL CALLBACK PhpSymbolCallbackFunction(
     _In_ HANDLE ProcessHandle,
     _In_ ULONG ActionCode,
@@ -432,37 +476,19 @@ BOOL CALLBACK PhpSymbolCallbackFunction(
     return FALSE;
 }
 
-VOID PhpSymbolProviderCompleteInitialization(
+/**
+ * Retrieves the Windows Kits debugger directory for the current architecture.
+ *
+ * \return The path to the Debuggers\\<arch>\\ directory (with trailing backslash),
+ * or NULL when no Windows SDK is installed. The caller must dereference the string.
+ */
+PPH_STRING NTAPI PhGetKitsDebuggersDirectory(
     VOID
     )
 {
     static CONST PH_STRINGREF windowsKitsRootKeyName = PH_STRINGREF_INIT(L"Software\\Microsoft\\Windows Kits\\Installed Roots");
-    static CONST PH_STRINGREF dbgcoreFileName = PH_STRINGREF_INIT(L"dbgcore.dll"); // dbghelp.dll dependency required for MiniDumpWriteDump (dmex)
-    static CONST PH_STRINGREF dbghelpFileName = PH_STRINGREF_INIT(L"dbghelp.dll");
-    static CONST PH_STRINGREF symsrvFileName = PH_STRINGREF_INIT(L"symsrv.dll");
-    PPH_STRING winsdkPath;
-    PVOID dbgcoreHandle;
-    PVOID dbghelpHandle;
-    PVOID symsrvHandle;
+    PPH_STRING winsdkPath = NULL;
     HANDLE keyHandle;
-
-    if (
-        PhGetLoaderEntryDllBase(NULL, &dbgcoreFileName) &&
-        PhGetLoaderEntryDllBase(NULL, &dbghelpFileName) &&
-        PhGetLoaderEntryDllBase(NULL, &symsrvFileName)
-        )
-    {
-        return;
-    }
-
-#if defined(PH_SYMEVNT_WORKQUEUE)
-    PhInitializeFreeList(&PhSymEventFreeList, sizeof(PH_SYMBOL_EVENT_DATA), 5);
-#endif
-
-    winsdkPath = NULL;
-    dbgcoreHandle = NULL;
-    dbghelpHandle = NULL;
-    symsrvHandle = NULL;
 
     if (NT_SUCCESS(PhOpenKey(
         &keyHandle,
@@ -481,19 +507,62 @@ VOID PhpSymbolProviderCompleteInitialization(
         NtClose(keyHandle);
     }
 
+    if (PhIsNullOrEmptyString(winsdkPath))
+    {
+        PhClearReference(&winsdkPath);
+        return NULL;
+    }
+
+#if defined(_AMD64_)
+    PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\x64\\"));
+#elif defined(_ARM64_)
+    PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\arm64\\"));
+#else
+    PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\x86\\"));
+#endif
+
+    return winsdkPath;
+}
+
+/**
+ * Completes initialization of the symbol provider.
+ */
+VOID PhpSymbolProviderCompleteInitialization(
+    VOID
+    )
+{
+    static CONST PH_STRINGREF dbgcoreFileName = PH_STRINGREF_INIT(L"dbgcore.dll"); // dbghelp.dll dependency required for MiniDumpWriteDump (dmex)
+    static CONST PH_STRINGREF dbghelpFileName = PH_STRINGREF_INIT(L"dbghelp.dll");
+    static CONST PH_STRINGREF symsrvFileName = PH_STRINGREF_INIT(L"symsrv.dll");
+    PPH_STRING winsdkPath;
+    PVOID dbgcoreHandle;
+    PVOID dbghelpHandle;
+    PVOID symsrvHandle;
+
+    if (
+        PhGetLoaderEntryDllBase(NULL, &dbgcoreFileName) &&
+        PhGetLoaderEntryDllBase(NULL, &dbghelpFileName) &&
+        PhGetLoaderEntryDllBase(NULL, &symsrvFileName)
+        )
+    {
+        return;
+    }
+
+#if defined(PH_SYMEVNT_WORKQUEUE)
+    PhInitializeFreeList(&PhSymEventFreeList, sizeof(PH_SYMBOL_EVENT_DATA), 5);
+#endif
+
+    winsdkPath = PhGetKitsDebuggersDirectory();
+    dbgcoreHandle = NULL;
+    dbghelpHandle = NULL;
+    symsrvHandle = NULL;
+
     if (winsdkPath)
     {
         PPH_STRING dbgcoreName;
         PPH_STRING dbghelpName;
         PPH_STRING symsrvName;
 
-#if defined(_AMD64_)
-        PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\x64\\"));
-#elif defined(_ARM64_)
-        PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\arm64\\"));
-#else
-        PhMoveReference(&winsdkPath, PhConcatStringRefZ(&winsdkPath->sr, L"\\Debuggers\\x86\\"));
-#endif
         if (dbgcoreName = PhConcatStringRef3(&PhWin32ExtendedPathPrefix, &winsdkPath->sr, &dbgcoreFileName))
         {
             dbgcoreHandle = PhLoadLibrary(PhGetString(dbgcoreName));
@@ -585,6 +654,12 @@ VOID PhpSymbolProviderCompleteInitialization(
     }
 }
 
+/**
+ * Registers a symbol provider.
+ *
+ * \param SymbolProvider A pointer to the symbol provider.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 BOOLEAN PhpRegisterSymbolProvider(
     _In_opt_ PPH_SYMBOL_PROVIDER SymbolProvider
     )
@@ -636,6 +711,11 @@ BOOLEAN PhpRegisterSymbolProvider(
     return SymbolProvider->IsRegistered;
 }
 
+/**
+ * Unregisters a symbol provider.
+ *
+ * \param SymbolProvider A pointer to the symbol provider.
+ */
 VOID PhpUnregisterSymbolProvider(
     _In_opt_ PPH_SYMBOL_PROVIDER SymbolProvider
     )
@@ -662,6 +742,11 @@ VOID PhpUnregisterSymbolProvider(
     }
 }
 
+/**
+ * Frees a symbol module object.
+ *
+ * \param SymbolModule A pointer to the symbol module.
+ */
 VOID PhpFreeSymbolModule(
     _In_ PPH_SYMBOL_MODULE SymbolModule
     )
@@ -671,6 +756,13 @@ VOID PhpFreeSymbolModule(
     PhFree(SymbolModule);
 }
 
+/**
+ * Compares two symbol modules.
+ *
+ * \param Links1 A pointer to the first link.
+ * \param Links2 A pointer to the second link.
+ * \return A negative value if Links1 < Links2, zero if equal, or a positive value if Links1 > Links2.
+ */
 _Function_class_(PH_AVL_TREE_COMPARE_FUNCTION)
 LONG NTAPI PhpSymbolModuleCompareFunction(
     _In_ PPH_AVL_LINKS Links1,
@@ -683,6 +775,16 @@ LONG NTAPI PhpSymbolModuleCompareFunction(
     return uintptrcmp((ULONG_PTR)symbolModule1->BaseAddress, (ULONG_PTR)symbolModule2->BaseAddress);
 }
 
+/**
+ * Gets line information from an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param Address The address.
+ * \param FileName A pointer to a variable that receives the file name.
+ * \param Displacement A pointer to a variable that receives the displacement.
+ * \param Information A pointer to a variable that receives the symbol line information.
+ * \return TRUE on success, FALSE on failure.
+ */
 _Success_(return)
 BOOLEAN PhGetLineFromAddress(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -735,6 +837,14 @@ BOOLEAN PhGetLineFromAddress(
     return TRUE;
 }
 
+/**
+ * Gets the module from an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param Address The address.
+ * \param FileName A pointer to a variable that receives the file name.
+ * \return The base address of the module, or NULL if not found.
+ */
 _Success_(return != 0)
 PVOID PhGetModuleFromAddress(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -786,6 +896,13 @@ PVOID PhGetModuleFromAddress(
     return foundBaseAddress;
 }
 
+/**
+ * Gets the symbol module from an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param Address The address.
+ * \return A pointer to the symbol module.
+ */
 PPH_SYMBOL_MODULE PhGetSymbolModuleFromAddress(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ PVOID Address
@@ -817,6 +934,14 @@ PPH_SYMBOL_MODULE PhGetSymbolModuleFromAddress(
     return module;
 }
 
+/**
+ * Gets the machine architecture for an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param ProcessHandle Handle to the process.
+ * \param Address The address.
+ * \return The machine architecture type.
+ */
 USHORT PhpGetMachineForAddress(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_opt_ HANDLE ProcessHandle,
@@ -874,6 +999,12 @@ USHORT PhpGetMachineForAddress(
     return machine;
 }
 
+/**
+ * Converts ANSI symbol information to Unicode.
+ *
+ * \param SymbolInfoW Pointer to the Unicode symbol information structure.
+ * \param SymbolInfoA Pointer to the ANSI symbol information structure.
+ */
 VOID PhpSymbolInfoAnsiToUnicode(
     _Out_ PSYMBOL_INFOW SymbolInfoW,
     _In_ PSYMBOL_INFO SymbolInfoA
@@ -910,6 +1041,18 @@ VOID PhpSymbolInfoAnsiToUnicode(
     }
 }
 
+/**
+ * Gets a symbol string for an address.
+ *
+ * \param[in] SymbolProvider A pointer to the symbol provider.
+ * \param[in] Address The address to resolve.
+ * \param[out,opt] ResolveLevel A pointer to a variable that receives the resolution level.
+ * \param[out,opt] FileName A pointer to a variable that receives the module file name.
+ * \param[out,opt] SymbolName A pointer to a variable that receives the symbol name.
+ * \param[out,opt] Displacement A pointer to a variable that receives the displacement from the
+ * symbol. Only meaningful when the resolve level is a symbol.
+ * \return A string representing the symbol, or NULL on failure.
+ */
 _Success_(return != NULL)
 PPH_STRING PhGetSymbolFromAddress(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -924,7 +1067,7 @@ PPH_STRING PhGetSymbolFromAddress(
     ULONG nameLength;
     PPH_STRING symbol = NULL;
     PH_SYMBOL_RESOLVE_LEVEL resolveLevel;
-    ULONG64 displacement;
+    ULONG64 displacement = 0;
     PPH_STRING modFileName = NULL;
     PPH_STRING modBaseName = NULL;
     PVOID modBase = NULL;
@@ -1080,6 +1223,14 @@ CleanupExit:
     return symbol;
 }
 
+/**
+ * Gets symbol information for a name.
+ *
+ * \param[in] SymbolProvider A pointer to the symbol provider.
+ * \param[in] Name The name of the symbol to resolve.
+ * \param[out] Information A pointer to a structure that receives the symbol information.
+ * \return TRUE on success, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN PhGetSymbolFromName(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -1125,6 +1276,15 @@ BOOLEAN PhGetSymbolFromName(
     return TRUE;
 }
 
+/**
+ * Creates a symbol module structure.
+ *
+ * \param[in] ProcessHandle A handle to the process.
+ * \param[in] FileName The file name of the module.
+ * \param[in] BaseAddress The base address of the module.
+ * \param[in] Size The size of the module.
+ * \return A pointer to the new \c PH_SYMBOL_MODULE structure.
+ */
 PPH_SYMBOL_MODULE PhpCreateSymbolModule(
     _In_ HANDLE ProcessHandle,
     _In_ PPH_STRING FileName,
@@ -1156,6 +1316,15 @@ PPH_SYMBOL_MODULE PhpCreateSymbolModule(
     return symbolModule;
 }
 
+/**
+ * Loads a module into the symbol provider.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param FileName The file name of the module.
+ * \param BaseAddress The base address of the module.
+ * \param Size The size of the module.
+ * \return TRUE if the module was loaded or already present, FALSE otherwise.
+ */
 BOOLEAN PhLoadModuleSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ PPH_STRING FileName,
@@ -1213,7 +1382,7 @@ BOOLEAN PhLoadModuleSymbolProvider(
         symbolModule = PhpCreateSymbolModule(SymbolProvider->ProcessHandle, FileName, BaseAddress, Size);
         existingLinks = PhAddElementAvlTree(&SymbolProvider->ModulesSet, &symbolModule->Links);
         assert(!existingLinks);
-        InsertTailList(&SymbolProvider->ModulesListHead, &symbolModule->ListEntry);
+        InsertTailListNoFence(&SymbolProvider->ModulesListHead, &symbolModule->ListEntry);
     }
 
     PhReleaseQueuedLockExclusive(&SymbolProvider->ModulesListLock);
@@ -1224,6 +1393,15 @@ BOOLEAN PhLoadModuleSymbolProvider(
         return FALSE;
 }
 
+/**
+ * Loads symbols for a module from a file.
+ *
+ * \param[in] SymbolProvider A pointer to the symbol provider.
+ * \param[in] FileName The file name of the module.
+ * \param[in] BaseAddress The base address of the module.
+ * \param[in] Size The size of the module.
+ * \return TRUE on success, FALSE otherwise.
+ */
 BOOLEAN PhLoadFileNameSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ PPH_STRING FileName,
@@ -1276,7 +1454,7 @@ BOOLEAN PhLoadFileNameSymbolProvider(
 
         existingLinks = PhAddElementAvlTree(&SymbolProvider->ModulesSet, &symbolModule->Links);
         assert(!existingLinks);
-        InsertTailList(&SymbolProvider->ModulesListHead, &symbolModule->ListEntry);
+        InsertTailListNoFence(&SymbolProvider->ModulesListHead, &symbolModule->ListEntry);
     }
 
     PhReleaseQueuedLockExclusive(&SymbolProvider->ModulesListLock);
@@ -1293,6 +1471,13 @@ typedef struct _PH_LOAD_SYMBOLS_CONTEXT
     HANDLE ProcessId;
 } PH_LOAD_SYMBOLS_CONTEXT, *PPH_LOAD_SYMBOLS_CONTEXT;
 
+/**
+ * Symbol provider module enumeration callback.
+ *
+ * \param Module A pointer to the module information.
+ * \param Context A pointer to the user-defined context.
+ * \return TRUE if the enumeration should continue, FALSE otherwise.
+ */
 _Function_class_(PH_ENUM_GENERIC_MODULES_CALLBACK)
 static BOOLEAN NTAPI PhpSymbolProviderEnumModulesCallback(
     _In_ PPH_MODULE_INFO Module,
@@ -1324,6 +1509,12 @@ static BOOLEAN NTAPI PhpSymbolProviderEnumModulesCallback(
     return TRUE;
 }
 
+/**
+ * Loads modules for a symbol provider.
+ *
+ * \param SymbolProvider A pointer to the symbol provider.
+ * \param ProcessId The process ID.
+ */
 VOID PhLoadSymbolProviderModules(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ HANDLE ProcessId
@@ -1380,12 +1571,21 @@ VOID PhLoadSymbolProviderModules(
     }
 }
 
-VOID PhLoadModulesForVirtualSymbolProvider(
+/**
+ * Loads modules for a virtual symbol provider.
+ *
+ * \param SymbolProvider A pointer to the symbol provider.
+ * \param ProcessId The process ID.
+ * \param ProcessHandle A handle to the process.
+ * \return STATUS_SUCCESS on success, or an NTSTATUS error code on failure.
+ */
+NTSTATUS PhLoadModulesForVirtualSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_opt_ HANDLE ProcessId,
     _In_opt_ HANDLE ProcessHandle
     )
 {
+    NTSTATUS status;
     PH_LOAD_SYMBOLS_CONTEXT context;
     HANDLE processHandle = NULL;
     BOOLEAN closeHandle = FALSE;
@@ -1396,18 +1596,33 @@ VOID PhLoadModulesForVirtualSymbolProvider(
     if (SymbolProvider->IsRealHandle)
     {
         processHandle = SymbolProvider->ProcessHandle;
+        status = STATUS_SUCCESS;
     }
     else if (ProcessHandle)
     {
         processHandle = ProcessHandle;
+        status = STATUS_SUCCESS;
     }
-    else
+    else if (ProcessId)
     {
-        if (NT_SUCCESS(PhOpenProcess(&processHandle, PROCESS_QUERY_LIMITED_INFORMATION, ProcessId)))
+        status = PhOpenProcess(
+            &processHandle,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            ProcessId
+            );
+
+        if (NT_SUCCESS(status))
         {
             closeHandle = TRUE;
         }
     }
+    else
+    {
+        status = STATUS_INVALID_PARAMETER_1;
+    }
+
+    if (!NT_SUCCESS(status))
+        return status;
 
     // Load symbols for process modules.
     if (ProcessId != SYSTEM_IDLE_PROCESS_ID && processHandle)
@@ -1458,6 +1673,8 @@ VOID PhLoadModulesForVirtualSymbolProvider(
     {
         NtClose(processHandle);
     }
+
+    return status;
 }
 
 static const PH_FLAG_MAPPING PhSymbolProviderOptions[] =
@@ -1465,6 +1682,12 @@ static const PH_FLAG_MAPPING PhSymbolProviderOptions[] =
     { PH_SYMOPT_UNDNAME, SYMOPT_UNDNAME },
 };
 
+/**
+ * Sets symbol provider options.
+ *
+ * \param Mask The mask for the options.
+ * \param Value The value for the options.
+ */
 VOID PhSetOptionsSymbolProvider(
     _In_ ULONG Mask,
     _In_ ULONG Value
@@ -1473,6 +1696,15 @@ VOID PhSetOptionsSymbolProvider(
     ULONG options;
     ULONG mask = 0;
     ULONG value = 0;
+    ULONG internalMask;
+
+    internalMask = Mask & PH_SYMOPT_VERIFY_MICROSOFT_CHAIN;
+
+    if (internalMask)
+    {
+        PhSymbolProviderInternalOptions =
+            (PhSymbolProviderInternalOptions & ~internalMask) | (Value & internalMask);
+    }
 
     PhpRegisterSymbolProvider(NULL);
 
@@ -1503,6 +1735,12 @@ VOID PhSetOptionsSymbolProvider(
     PH_UNLOCK_SYMBOLS();
 }
 
+/**
+ * Sets the search path for a symbol provider.
+ *
+ * \param SymbolProvider A pointer to the symbol provider.
+ * \param Path The search path.
+ */
 VOID PhSetSearchPathSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ PCWSTR Path
@@ -1522,6 +1760,18 @@ VOID PhSetSearchPathSymbolProvider(
 
 #ifdef _WIN64
 
+/**
+ * Looks up a dynamic function table for an address.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param Address The address to look up.
+ * \param FunctionTableAddress A pointer to a variable that receives the function table address.
+ * \param FunctionTable A pointer to a variable that receives the function table.
+ * \param OutOfProcessCallbackDllBuffer A buffer for the out-of-process callback DLL path.
+ * \param OutOfProcessCallbackDllBufferSize The size of the buffer.
+ * \param OutOfProcessCallbackDllString A pointer to a variable that receives the callback DLL string.
+ * \return STATUS_SUCCESS on success, or an NTSTATUS error code on failure.
+ */
 NTSTATUS PhpLookupDynamicFunctionTable(
     _In_ HANDLE ProcessHandle,
     _In_ ULONG64 Address,
@@ -1544,7 +1794,7 @@ NTSTATUS PhpLookupDynamicFunctionTable(
     ULONG i;
     BOOLEAN foundNull;
 
-    rtlGetFunctionTableListHead = PhGetDllProcedureAddress(L"ntdll.dll", "RtlGetFunctionTableListHead", 0);
+    rtlGetFunctionTableListHead = PhGetDllProcedureAddressZ(L"ntdll.dll", "RtlGetFunctionTableListHead", 0);
 
     if (!rtlGetFunctionTableListHead)
         return STATUS_PROCEDURE_NOT_FOUND;
@@ -1652,6 +1902,15 @@ NTSTATUS PhpLookupDynamicFunctionTable(
     return STATUS_NOT_FOUND;
 }
 
+/**
+ * Looks up a runtime function entry.
+ *
+ * \param Functions A pointer to the runtime functions.
+ * \param NumberOfFunctions The number of functions.
+ * \param Sorted Whether the functions are sorted.
+ * \param RelativeControlPc The relative control PC address.
+ * \return A pointer to the runtime function, or NULL if not found.
+ */
 PRUNTIME_FUNCTION PhpLookupFunctionEntry(
     _In_ PRUNTIME_FUNCTION Functions,
     _In_ ULONG NumberOfFunctions,
@@ -1705,6 +1964,16 @@ PRUNTIME_FUNCTION PhpLookupFunctionEntry(
     return NULL;
 }
 
+/**
+ * Accesses a callback function table.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param FunctionTableAddress The address of the function table.
+ * \param OutOfProcessCallbackDllString The string of the callback DLL.
+ * \param Functions A pointer to a variable that receives the runtime functions.
+ * \param NumberOfFunctions A pointer to a variable that receives the number of functions.
+ * \return STATUS_SUCCESS on success, or an NTSTATUS error code on failure.
+ */
 NTSTATUS PhpAccessCallbackFunctionTable(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID FunctionTableAddress,
@@ -1746,7 +2015,8 @@ NTSTATUS PhpAccessCallbackFunctionTable(
 
         // Verify the signature is valid and the certificate chained to Microsoft (dmex)
 
-        if (!PhVerifyFileIsChainedToMicrosoft(&fileName, FALSE))
+        if (FlagOn(PhSymbolProviderInternalOptions, PH_SYMOPT_VERIFY_MICROSOFT_CHAIN) &&
+            !PhVerifyFileIsChainedToMicrosoft(&fileName, FALSE))
         {
             return STATUS_ACCESS_DISABLED_BY_POLICY_DEFAULT;
         }
@@ -1775,6 +2045,15 @@ NTSTATUS PhpAccessCallbackFunctionTable(
     return status;
 }
 
+/**
+ * Accesses a normal function table.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param FunctionTable A pointer to the dynamic function table.
+ * \param Functions A pointer to a variable that receives the runtime functions.
+ * \param NumberOfFunctions A pointer to a variable that receives the number of functions.
+ * \return STATUS_SUCCESS on success, or an NTSTATUS error code on failure.
+ */
 NTSTATUS PhpAccessNormalFunctionTable(
     _In_ HANDLE ProcessHandle,
     _In_ PDYNAMIC_FUNCTION_TABLE FunctionTable,
@@ -1811,6 +2090,14 @@ NTSTATUS PhpAccessNormalFunctionTable(
     return status;
 }
 
+/**
+ * Accesses an out-of-process function entry.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param ControlPc The control PC address.
+ * \param Function A pointer to a structure that receives the runtime function.
+ * \return STATUS_SUCCESS on success, or an NTSTATUS error code on failure.
+ */
 NTSTATUS PhAccessOutOfProcessFunctionEntry(
     _In_ HANDLE ProcessHandle,
     _In_ ULONG64 ControlPc,
@@ -1888,6 +2175,13 @@ NTSTATUS PhAccessOutOfProcessFunctionEntry(
 
 #endif
 
+/**
+ * Gets the base address of a module.
+ *
+ * \param hProcess Handle to the process.
+ * \param dwAddr The address for which to get the module base.
+ * \return The base address of the module, or 0 if not found.
+ */
 ULONG64 __stdcall PhGetModuleBase64(
     _In_ HANDLE hProcess,
     _In_ ULONG64 dwAddr
@@ -1925,6 +2219,13 @@ ULONG64 __stdcall PhGetModuleBase64(
     return base;
 }
 
+/**
+ * Accesses the function table for an address.
+ *
+ * \param hProcess Handle to the process.
+ * \param AddrBase The base address of the function.
+ * \return A pointer to the function table entry, or NULL if not found.
+ */
 PVOID __stdcall PhFunctionTableAccess64(
     _In_ HANDLE hProcess,
     _In_ ULONG64 AddrBase
@@ -1968,7 +2269,6 @@ PVOID __stdcall PhFunctionTableAccess64(
  * \param FunctionTableAccessRoutine A callback routine that provides access to the run-time function table for the process.
  * \param GetModuleBaseRoutine A callback routine that provides a module base for any given virtual address.
  * \param TranslateAddress A callback routine that provides address translation for 16-bit addresses.
- *
  * \return Successful or errant status.
  */
 BOOLEAN PhStackWalk(
@@ -2043,6 +2343,18 @@ BOOLEAN PhStackWalk(
     return FALSE;
 }
 
+/**
+ * Writes a mini dump for a process.
+ *
+ * \param ProcessHandle Handle to the process.
+ * \param ProcessId The ID of the process.
+ * \param FileHandle Handle to the file to write the dump to.
+ * \param DumpType The type of the mini dump.
+ * \param ExceptionParam Pointer to exception information (optional).
+ * \param UserStreamParam Pointer to user stream information (optional).
+ * \param CallbackParam Pointer to callback information (optional).
+ * \return S_OK on success, or a failure HRESULT.
+ */
 HRESULT PhWriteMiniDumpProcess(
     _In_ HANDLE ProcessHandle,
     _In_ HANDLE ProcessId,
@@ -2082,16 +2394,18 @@ HRESULT PhWriteMiniDumpProcess(
  * \param StackFrame A pointer to the STACKFRAME64 structure to convert.
  * \param Machine Machine to set in the resulting structure.
  * \param Flags Flags to set in the resulting structure.
+ * \param ContextRecord The unwound register context for the frame (optional).
  * \param ThreadStackFrame A pointer to the resulting PH_THREAD_STACK_FRAME structure.
  */
 VOID PhConvertStackFrame(
     _In_ CONST STACKFRAME_EX *StackFrame,
     _In_ USHORT Machine,
     _In_ USHORT Flags,
+    _In_opt_ PVOID ContextRecord,
     _Out_ PPH_THREAD_STACK_FRAME ThreadStackFrame
     )
 {
-    memset(ThreadStackFrame, 0, sizeof(ThreadStackFrame->Params));
+    memset(ThreadStackFrame, 0, sizeof(PH_THREAD_STACK_FRAME));
     ThreadStackFrame->PcAddress = (PVOID)StackFrame->AddrPC.Offset;
     ThreadStackFrame->ReturnAddress = (PVOID)StackFrame->AddrReturn.Offset;
     ThreadStackFrame->FrameAddress = (PVOID)StackFrame->AddrFrame.Offset;
@@ -2108,6 +2422,12 @@ VOID PhConvertStackFrame(
         ThreadStackFrame->Flags |= PH_THREAD_STACK_FRAME_FPO_DATA_PRESENT;
 
     ThreadStackFrame->InlineFrameContext = StackFrame->InlineFrameContext;
+
+    if (ContextRecord)
+    {
+        ThreadStackFrame->ContextRecord = ContextRecord;
+        ThreadStackFrame->Flags |= PH_THREAD_STACK_FRAME_CONTEXT_PRESENT;
+    }
 }
 
 /**
@@ -2148,6 +2468,13 @@ NTSTATUS PhWalkThreadStack(
     BOOLEAN isSystemThread = FALSE;
     THREAD_BASIC_INFORMATION basicInfo;
     HANDLE stateChangeHandle = NULL;
+    PPH_SYMBOL_PROVIDER symbolProvider;
+
+    // When the caller asked for raw frames only, drop the symbol provider so
+    // PhStackWalk does not register it (which would trigger SymInitialize and
+    // on-demand PDB downloads). Out-of-process pdata unwind via
+    // PhFunctionTableAccess64/PhGetModuleBase64 continues to work. (dmex)
+    symbolProvider = (Flags & PH_WALK_NO_SYMBOL_LOOKUP) ? NULL : SymbolProvider;
 
     // Open a handle to the process if we weren't given one.
     if (!ProcessHandle)
@@ -2236,7 +2563,7 @@ NTSTATUS PhWalkThreadStack(
     // Kernel stack walk.
     if ((Flags & PH_WALK_KERNEL_STACK) && (KsiLevel() >= KphLevelMed))
     {
-        PVOID stack[256 - 2]; // See MAX_STACK_DEPTH
+        PVOID stack[256];
         ULONG capturedFrames = 0;
         ULONG i;
 
@@ -2334,7 +2661,7 @@ NTSTATUS PhWalkThreadStack(
                 ThreadHandle,
                 &stackFrame,
                 contextRecord,
-                SymbolProvider,
+                symbolProvider,
                 NULL,
                 NULL,
                 NULL,
@@ -2376,7 +2703,7 @@ CheckFinalARM64VirtualFrame:
                 {
                     // Convert the stack frame and execute the callback.
 
-                    PhConvertStackFrame(&virtualFrame, (USHORT)virtualMachine, 0, &threadStackFrame);
+                    PhConvertStackFrame(&virtualFrame, (USHORT)virtualMachine, 0, NULL, &threadStackFrame);
 
                     if (!Callback(&threadStackFrame, Context))
                         goto ResumeExit;
@@ -2402,7 +2729,7 @@ CheckFinalARM64VirtualFrame:
             //   known to be affected, other arches on ARM64 need tested too. Seems to be a bug in
             //   dbghelp.dll because dbgeng.dll (e.g. windbg.exe) seems to be broken here too.
 
-            frameMachine = PhpGetMachineForAddress(SymbolProvider, ProcessHandle, (PVOID)stackFrame.AddrPC.Offset);
+            frameMachine = PhpGetMachineForAddress(symbolProvider, ProcessHandle, (PVOID)stackFrame.AddrPC.Offset);
 
             if (machine != frameMachine)
             {
@@ -2428,7 +2755,7 @@ CheckFinalARM64VirtualFrame:
 
                 // Convert the stack frame and execute the callback.
 
-                PhConvertStackFrame(&virtualFrame, (USHORT)virtualMachine, 0, &threadStackFrame);
+                PhConvertStackFrame(&virtualFrame, (USHORT)virtualMachine, 0, NULL, &threadStackFrame);
 
                 if (!Callback(&threadStackFrame, Context))
                     goto ResumeExit;
@@ -2449,7 +2776,7 @@ CheckFinalARM64VirtualFrame:
 
             // Convert the stack frame and execute the callback.
 
-            PhConvertStackFrame(&stackFrame, (USHORT)machine, 0, &threadStackFrame);
+            PhConvertStackFrame(&stackFrame, (USHORT)machine, 0, contextRecord, &threadStackFrame);
 
             if (!Callback(&threadStackFrame, Context))
                 goto ResumeExit;
@@ -2477,8 +2804,7 @@ SkipUserStack:
         WOW64_CONTEXT context;
 
         memset(&context, 0, sizeof(WOW64_CONTEXT));
-        context.ContextFlags = WOW64_CONTEXT_ALL;
-        context.ContextFlags |= CONTEXT_EXCEPTION_REQUEST;
+        context.ContextFlags = WOW64_CONTEXT_ALL | CONTEXT_EXCEPTION_REQUEST;
 
         if (!NT_SUCCESS(status = PhGetThreadWow64Context(ThreadHandle, &context)))
             goto SkipI386Stack;
@@ -2500,7 +2826,7 @@ SkipUserStack:
                 ThreadHandle,
                 &stackFrame,
                 &context,
-                SymbolProvider,
+                symbolProvider,
                 NULL,
                 NULL,
                 NULL,
@@ -2522,7 +2848,7 @@ SkipUserStack:
 
             // Convert the stack frame and execute the callback.
 
-            PhConvertStackFrame(&stackFrame, IMAGE_FILE_MACHINE_I386, 0, &threadStackFrame);
+            PhConvertStackFrame(&stackFrame, IMAGE_FILE_MACHINE_I386, 0, &context, &threadStackFrame);
 
             if (!Callback(&threadStackFrame, Context))
                 goto ResumeExit;
@@ -2560,8 +2886,17 @@ SkipI386Stack:
         context.ContextFlags |= CONTEXT_EXCEPTION_REQUEST;
 
         // ThreadWow64Context ARM_NT_CONTEXT
-        if (!NT_SUCCESS(status = PhGetThreadArm32Context(ThreadHandle, &context)))
-            goto SkipARMStack;
+        // Don't overwrite the native walk status; only report this failure when it was the only walk requested.
+        {
+            NTSTATUS arm32Status = PhGetThreadArm32Context(ThreadHandle, &context);
+
+            if (!NT_SUCCESS(arm32Status))
+            {
+                if (!(Flags & PH_WALK_USER_STACK))
+                    status = arm32Status;
+                goto SkipARMStack;
+            }
+        }
 
         memset(&stackFrame, 0, sizeof(STACKFRAME_EX));
         stackFrame.StackFrameSize = sizeof(STACKFRAME_EX);
@@ -2580,7 +2915,7 @@ SkipI386Stack:
                 ThreadHandle,
                 &stackFrame,
                 &context,
-                SymbolProvider,
+                symbolProvider,
                 NULL,
                 NULL,
                 NULL,
@@ -2596,7 +2931,7 @@ SkipI386Stack:
 
             // Convert the stack frame and execute the callback.
 
-            PhConvertStackFrame(&stackFrame, IMAGE_FILE_MACHINE_ARMNT, 0, &threadStackFrame);
+            PhConvertStackFrame(&stackFrame, IMAGE_FILE_MACHINE_ARMNT, 0, &context, &threadStackFrame);
 
             if (!Callback(&threadStackFrame, Context))
                 goto ResumeExit;
@@ -2627,6 +2962,13 @@ ResumeExit:
     return status;
 }
 
+/**
+ * Undecorates a symbol name.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param DecoratedName The decorated symbol name.
+ * \return The undecorated symbol name, or NULL if unavailable.
+ */
 PPH_STRING PhUndecorateSymbolName(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ PCWSTR DecoratedName
@@ -2671,6 +3013,14 @@ typedef struct _PH_ENUMERATE_SYMBOLS_CONTEXT
     PPH_ENUMERATE_SYMBOLS_CALLBACK UserCallback;
 } PH_ENUMERATE_SYMBOLS_CONTEXT, *PPH_ENUMERATE_SYMBOLS_CONTEXT;
 
+/**
+ * Callback wrapper for symbol enumeration.
+ *
+ * \param SymbolInfo The symbol information.
+ * \param SymbolSize The size of the symbol.
+ * \param Context The enumeration context.
+ * \return TRUE to continue enumeration, FALSE to stop.
+ */
 BOOL CALLBACK PhEnumerateSymbolsCallback(
     _In_ PSYMBOL_INFOW SymbolInfo,
     _In_ ULONG SymbolSize,
@@ -2716,6 +3066,17 @@ BOOL CALLBACK PhEnumerateSymbolsCallback(
     return FALSE;
 }
 
+/**
+ * Enumerates symbols for a module.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param ProcessHandle The process handle.
+ * \param BaseOfDll The base address of the module.
+ * \param Mask The symbol name mask.
+ * \param EnumSymbolsCallback The callback function.
+ * \param UserContext The user context passed to the callback.
+ * \return TRUE if enumeration succeeded, FALSE otherwise.
+ */
 BOOLEAN PhEnumerateSymbols(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
     _In_ HANDLE ProcessHandle,
@@ -2732,7 +3093,7 @@ BOOLEAN PhEnumerateSymbols(
         return FALSE;
 
     if (!SymEnumSymbolsW_I)
-        SymEnumSymbolsW_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymEnumSymbolsW", 0);
+        SymEnumSymbolsW_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymEnumSymbolsW", 0);
 
     if (!SymEnumSymbolsW_I)
     {
@@ -2761,6 +3122,14 @@ BOOLEAN PhEnumerateSymbols(
     return FALSE;
 }
 
+/**
+ * Gets the DIA data source for a module.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param BaseOfDll The base address of the module.
+ * \param DiaSource A pointer to a variable that receives the DIA data source.
+ * \return TRUE on success, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN PhGetSymbolProviderDiaSource(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -2775,7 +3144,7 @@ BOOLEAN PhGetSymbolProviderDiaSource(
         return FALSE;
 
     if (!SymGetDiaSource_I)
-        SymGetDiaSource_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymGetDiaSource", 0);
+        SymGetDiaSource_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymGetDiaSource", 0);
     if (!SymGetDiaSource_I)
         return FALSE;
 
@@ -2799,6 +3168,14 @@ BOOLEAN PhGetSymbolProviderDiaSource(
     return FALSE;
 }
 
+/**
+ * Gets the DIA session for a module.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param BaseOfDll The base address of the module.
+ * \param DiaSession A pointer to a variable that receives the DIA session.
+ * \return TRUE on success, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN PhGetSymbolProviderDiaSession(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -2813,7 +3190,7 @@ BOOLEAN PhGetSymbolProviderDiaSession(
         return FALSE;
 
     if (!SymGetDiaSession_I)
-        SymGetDiaSession_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymGetDiaSession", 0);
+        SymGetDiaSession_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymGetDiaSession", 0);
     if (!SymGetDiaSession_I)
         return FALSE;
 
@@ -2837,18 +3214,28 @@ BOOLEAN PhGetSymbolProviderDiaSession(
     return FALSE;
 }
 
+/**
+ * Frees a DIA string allocated by DbgHelp.
+ *
+ * \param DiaString The DIA string to free.
+ */
 VOID PhSymbolProviderFreeDiaString(
     _In_ PCWSTR DiaString
     )
 {
     if ((SymGetDiaSession_I || SymGetDiaSource_I) && !SymFreeDiaString_I)
-        SymFreeDiaString_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymFreeDiaString", 0);
+        SymFreeDiaString_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymFreeDiaString", 0);
     if (!SymFreeDiaString_I)
         return;
 
     SymFreeDiaString_I(DiaString);
 }
 
+/**
+ * Determines whether inline-context symbol resolution is supported.
+ *
+ * \return TRUE if inline-context APIs are available, FALSE otherwise.
+ */
 BOOLEAN PhSymbolProviderInlineContextSupported(
     VOID
     )
@@ -2856,6 +3243,18 @@ BOOLEAN PhSymbolProviderInlineContextSupported(
     return StackWalkEx_I && SymFromInlineContextW_I;
 }
 
+/**
+ * Gets a symbol string for an inline stack frame.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param StackFrame The stack frame.
+ * \param ResolveLevel A pointer to a variable that receives the resolution level.
+ * \param FileName A pointer to a variable that receives the module file name.
+ * \param SymbolName A pointer to a variable that receives the symbol name.
+ * \param Displacement A pointer to a variable that receives the displacement.
+ * \param BaseAddress A pointer to a variable that receives the module base address.
+ * \return A string representing the symbol, or NULL on failure.
+ */
 _Success_(return != NULL)
 PPH_STRING PhGetSymbolFromInlineContext(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -2871,7 +3270,7 @@ PPH_STRING PhGetSymbolFromInlineContext(
     ULONG nameLength;
     PPH_STRING symbol = NULL;
     PH_SYMBOL_RESOLVE_LEVEL resolveLevel;
-    ULONG64 displacement;
+    ULONG64 displacement = 0;
     PPH_STRING modFileName = NULL;
     PPH_STRING modBaseName = NULL;
     PVOID modBase = NULL;
@@ -3018,6 +3417,17 @@ CleanupExit:
     return symbol;
 }
 
+/**
+ * Gets source line information for an inline stack frame.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param StackFrame The stack frame.
+ * \param BaseAddress The module base address.
+ * \param FileName A pointer to a variable that receives the file name.
+ * \param Displacement A pointer to a variable that receives the displacement.
+ * \param Information A pointer to a variable that receives the line information.
+ * \return TRUE on success, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN PhGetLineFromInlineContext(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -3098,9 +3508,9 @@ BOOLEAN PhGetLineFromInlineContext(
 //        return NULL;
 //
 //    if (!SymAddrIncludeInlineTrace_I)
-//        SymAddrIncludeInlineTrace_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymAddrIncludeInlineTrace", 0);
+//        SymAddrIncludeInlineTrace_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymAddrIncludeInlineTrace", 0);
 //    if (!SymQueryInlineTrace_I)
-//        SymQueryInlineTrace_I = PhGetDllProcedureAddress(L"dbghelp.dll", "SymQueryInlineTrace", 0);
+//        SymQueryInlineTrace_I = PhGetDllProcedureAddressZ(L"dbghelp.dll", "SymQueryInlineTrace", 0);
 //
 //    if (!(
 //        SymAddrIncludeInlineTrace_I &&
@@ -3357,6 +3767,13 @@ BOOLEAN PhGetLineFromInlineContext(
 //    PhDereferenceObject(InlineSymbolList);
 //}
 
+
+/**
+ * Gets the compiland language for a DIA line number.
+ *
+ * \param LineNumber The DIA line number.
+ * \return The compiland language identifier, or ULONG_MAX if unavailable.
+ */
 CV_CFL_LANG PhGetDiaSymbolCompilandInformation(
     _In_ IDiaLineNumber* LineNumber
     )
@@ -3393,6 +3810,15 @@ CV_CFL_LANG PhGetDiaSymbolCompilandInformation(
     return compilandLanguage;
 }
 
+/**
+ * Gets language information for a DIA symbol.
+ *
+ * \param Session The DIA session.
+ * \param Symbol The DIA symbol.
+ * \param Address The symbol address.
+ * \param Length The symbol length.
+ * \return A string containing language information, or NULL if unavailable.
+ */
 PPH_STRING PhGetDiaSymbolLineInformation(
     _In_ IDiaSession* Session,
     _In_ IDiaSymbol* Symbol,
@@ -3478,6 +3904,12 @@ PPH_STRING PhGetDiaSymbolLineInformation(
 
 // SymTagCompilandDetails : https://learn.microsoft.com/en-us/visualstudio/debugger/debug-interface-access/compilanddetails
 // SymTagFunction: https://learn.microsoft.com/en-us/visualstudio/debugger/debug-interface-access/function-debug-interface-access-sdk
+/**
+ * Gets additional descriptive information for a DIA symbol.
+ *
+ * \param Symbol The DIA symbol.
+ * \return A string containing additional symbol attributes.
+ */
 PPH_STRING PhGetDiaSymbolExtraInformation(
     _In_ IDiaSymbol* Symbol
     )
@@ -3564,6 +3996,14 @@ PPH_STRING PhGetDiaSymbolExtraInformation(
     return PhFinalStringBuilderString(&stringBuilder);
 }
 
+/**
+ * Gets DIA symbol information for an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param Address The address to query.
+ * \param SymbolInformation A pointer to a variable that receives DIA symbol information.
+ * \return TRUE on success, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN PhGetDiaSymbolInformation(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -3616,6 +4056,408 @@ BOOLEAN PhGetDiaSymbolInformation(
     return TRUE;
 }
 
+static CONST GUID PhpIID_IDiaSymbol10 = { 0x9034a70b, 0xb0b7, 0x4605, { 0x8a, 0x97, 0x33, 0x77, 0x2f, 0x3a, 0x7b, 0x8c } };
+
+/**
+ * Gets the Source Link JSON document embedded in a module's PDB.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param BaseOfDll The base address of the module.
+ * \param SourceLink A pointer to a variable that receives the UTF-8 Source Link document.
+ * \return TRUE on success, FALSE otherwise.
+ */
+_Success_(return)
+BOOLEAN PhGetSymbolProviderSourceLink(
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
+    _In_ PVOID BaseOfDll,
+    _Out_ PPH_BYTES* SourceLink
+    )
+{
+    BOOLEAN result = FALSE;
+    IDiaSession* datasession;
+    IDiaSymbol* globalScope;
+    IDiaSymbol10* symbol10;
+    DWORD length = 0;
+
+    if (!PhGetSymbolProviderDiaSession(SymbolProvider, BaseOfDll, &datasession))
+        return FALSE;
+
+    if (IDiaSession_get_globalScope(datasession, &globalScope) == S_OK)
+    {
+        if (IDiaSymbol_QueryInterface(globalScope, &PhpIID_IDiaSymbol10, (PVOID*)&symbol10) == S_OK)
+        {
+            if (
+                IDiaSymbol10_get_sourceLink(symbol10, 0, &length, NULL) == S_OK &&
+                length != 0 && length <= 0x1000000
+                )
+            {
+                PPH_BYTES buffer = PhCreateBytesEx(NULL, length);
+
+                if (IDiaSymbol10_get_sourceLink(symbol10, length, &length, (BYTE*)buffer->Buffer) == S_OK &&
+                    length <= buffer->Length)
+                {
+                    while (length != 0 && buffer->Buffer[length - 1] == ANSI_NULL)
+                        length--;
+
+                    if (length != 0)
+                    {
+                        buffer->Length = length;
+                        buffer->Buffer[length] = ANSI_NULL;
+                        *SourceLink = buffer;
+                        buffer = NULL;
+                        result = TRUE;
+                    }
+                }
+
+                if (buffer)
+                    PhDereferenceObject(buffer);
+            }
+
+            IDiaSymbol10_Release(symbol10);
+        }
+
+        IDiaSymbol_Release(globalScope);
+    }
+
+    IDiaSession_Release(datasession);
+
+    return result;
+}
+
+typedef struct _PHP_SOURCELINK_MATCH_CONTEXT
+{
+    PH_STRINGREF LocalPath;
+    BOOLEAN Found;
+    BOOLEAN Exact;
+    SIZE_T MatchLength;
+    PPH_STRING Url;
+} PHP_SOURCELINK_MATCH_CONTEXT, *PPHP_SOURCELINK_MATCH_CONTEXT;
+
+static VOID PhpAppendSourceLinkPath(
+    _Inout_ PPH_STRING_BUILDER StringBuilder,
+    _In_ PCPH_STRINGREF Path
+    )
+{
+    for (SIZE_T i = 0; i < Path->Length / sizeof(WCHAR); i++)
+    {
+        WCHAR c = Path->Buffer[i];
+
+        if (c == L'\\')
+            PhAppendCharStringBuilder(StringBuilder, L'/');
+        else if (c == L' ')
+            PhAppendStringBuilder2(StringBuilder, L"%20");
+        else if (c == L'#')
+            PhAppendStringBuilder2(StringBuilder, L"%23");
+        else
+            PhAppendCharStringBuilder(StringBuilder, c);
+    }
+}
+
+static BOOLEAN NTAPI PhpSourceLinkDocumentCallback(
+    _In_ PVOID Object,
+    _In_ PCSTR Key,
+    _In_ PVOID Value,
+    _In_opt_ PVOID Context
+    )
+{
+    PPHP_SOURCELINK_MATCH_CONTEXT context = Context;
+    PPH_STRING key;
+    PPH_STRING value;
+
+    if (!context || context->Exact)
+        return FALSE;
+    if (PhGetJsonObjectType(Value) != PH_JSON_OBJECT_TYPE_STRING)
+        return TRUE;
+    if (!(key = PhConvertUtf8ToUtf16(Key)))
+        return TRUE;
+    if (!(value = PhGetJsonObjectString(Value)))
+    {
+        PhDereferenceObject(key);
+        return TRUE;
+    }
+
+    if (key->Length != 0 && key->Buffer[key->Length / sizeof(WCHAR) - 1] == L'*')
+    {
+        PH_STRINGREF prefix;
+
+        prefix.Buffer = key->Buffer;
+        prefix.Length = key->Length - sizeof(WCHAR);
+
+        if (
+            PhStartsWithStringRef(&context->LocalPath, &prefix, TRUE) &&
+            (!context->Found || prefix.Length > context->MatchLength)
+            )
+        {
+            PH_STRINGREF valueBefore;
+            PH_STRINGREF valueAfter;
+            PH_STRINGREF remainder;
+
+            remainder.Buffer = PTR_ADD_OFFSET(context->LocalPath.Buffer, prefix.Length);
+            remainder.Length = context->LocalPath.Length - prefix.Length;
+
+            if (PhSplitStringRefAtChar(&value->sr, L'*', &valueBefore, &valueAfter))
+            {
+                PH_STRING_BUILDER stringBuilder;
+
+                PhInitializeStringBuilder(&stringBuilder, 0x100);
+                PhAppendStringBuilder(&stringBuilder, &valueBefore);
+                PhpAppendSourceLinkPath(&stringBuilder, &remainder);
+                PhAppendStringBuilder(&stringBuilder, &valueAfter);
+
+                PhMoveReference(&context->Url, PhFinalStringBuilderString(&stringBuilder));
+                context->Found = TRUE;
+                context->MatchLength = prefix.Length;
+            }
+        }
+    }
+    else if (PhEqualStringRef(&key->sr, &context->LocalPath, TRUE))
+    {
+        PhSetReference(&context->Url, value);
+        context->Found = TRUE;
+        context->Exact = TRUE;
+    }
+
+    PhDereferenceObject(value);
+    PhDereferenceObject(key);
+    return !context->Exact;
+}
+
+static BOOLEAN PhpGetSourceLinkQueryParameter(
+    _In_ PCPH_STRINGREF Query,
+    _In_ PCWSTR Name,
+    _Out_ PPH_STRINGREF Value
+    )
+{
+    PH_STRINGREF remaining = *Query;
+    PH_STRINGREF part;
+    PH_STRINGREF name;
+    PH_STRINGREF value;
+
+    while (remaining.Length != 0)
+    {
+        PhSplitStringRefAtChar(&remaining, L'&', &part, &remaining);
+
+        if (PhSplitStringRefAtChar(&part, L'=', &name, &value) && PhEqualStringRef2(&name, Name, TRUE))
+        {
+            *Value = value;
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static PPH_STRING PhpGetBrowsableSourceLinkUrl(
+    _In_ PPH_STRING Url,
+    _In_ ULONG LineNumber
+    )
+{
+    static CONST PH_STRINGREF githubRawPrefix = PH_STRINGREF_INIT(L"https://raw.githubusercontent.com/");
+    static CONST PH_STRINGREF azureApiSeparator = PH_STRINGREF_INIT(L"/_apis/git/repositories/");
+    PH_STRINGREF remaining;
+    PH_STRINGREF before;
+    PH_STRINGREF after;
+
+    if (PhStartsWithStringRef(&Url->sr, &githubRawPrefix, TRUE))
+    {
+        PH_STRINGREF owner;
+        PH_STRINGREF repo;
+        PH_STRINGREF commit;
+        PH_STRINGREF path;
+
+        // https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{path}
+        remaining.Buffer = PTR_ADD_OFFSET(Url->Buffer, githubRawPrefix.Length);
+        remaining.Length = Url->Length - githubRawPrefix.Length;
+
+        if (
+            PhSplitStringRefAtChar(&remaining, L'/', &owner, &remaining) &&
+            PhSplitStringRefAtChar(&remaining, L'/', &repo, &remaining) &&
+            PhSplitStringRefAtChar(&remaining, L'/', &commit, &path) &&
+            owner.Length && repo.Length && commit.Length && path.Length
+            )
+        {
+            if (LineNumber)
+            {
+                return PhFormatString(
+                    L"https://github.com/%.*s/%.*s/blob/%.*s/%.*s#L%lu",
+                    (ULONG)(owner.Length / sizeof(WCHAR)), owner.Buffer,
+                    (ULONG)(repo.Length / sizeof(WCHAR)), repo.Buffer,
+                    (ULONG)(commit.Length / sizeof(WCHAR)), commit.Buffer,
+                    (ULONG)(path.Length / sizeof(WCHAR)), path.Buffer,
+                    LineNumber
+                    );
+            }
+
+            return PhFormatString(
+                L"https://github.com/%.*s/%.*s/blob/%.*s/%.*s",
+                (ULONG)(owner.Length / sizeof(WCHAR)), owner.Buffer,
+                (ULONG)(repo.Length / sizeof(WCHAR)), repo.Buffer,
+                (ULONG)(commit.Length / sizeof(WCHAR)), commit.Buffer,
+                (ULONG)(path.Length / sizeof(WCHAR)), path.Buffer
+                );
+        }
+    }
+    else if (PhSplitStringRefAtString(&Url->sr, &azureApiSeparator, TRUE, &before, &after))
+    {
+        PH_STRINGREF repo;
+        PH_STRINGREF query;
+        PH_STRINGREF path;
+        PH_STRINGREF version;
+
+        // {org}/{project}/_apis/git/repositories/{repo}/items?path={path}&versionType=commit&version={commit}
+        if (
+            PhSplitStringRefAtChar(&after, L'/', &repo, &remaining) &&
+            PhSplitStringRefAtChar(&remaining, L'?', &remaining, &query) &&
+            PhpGetSourceLinkQueryParameter(&query, L"path", &path) &&
+            PhpGetSourceLinkQueryParameter(&query, L"version", &version) &&
+            repo.Length && path.Length && version.Length
+            )
+        {
+            if (LineNumber)
+            {
+                return PhFormatString(
+                    L"%.*s/_git/%.*s?path=%.*s&version=GC%.*s&line=%lu&lineEnd=%lu&lineStartColumn=1&lineEndColumn=1",
+                    (ULONG)(before.Length / sizeof(WCHAR)), before.Buffer,
+                    (ULONG)(repo.Length / sizeof(WCHAR)), repo.Buffer,
+                    (ULONG)(path.Length / sizeof(WCHAR)), path.Buffer,
+                    (ULONG)(version.Length / sizeof(WCHAR)), version.Buffer,
+                    LineNumber,
+                    LineNumber
+                    );
+            }
+
+            return PhFormatString(
+                L"%.*s/_git/%.*s?path=%.*s&version=GC%.*s",
+                (ULONG)(before.Length / sizeof(WCHAR)), before.Buffer,
+                (ULONG)(repo.Length / sizeof(WCHAR)), repo.Buffer,
+                (ULONG)(path.Length / sizeof(WCHAR)), path.Buffer,
+                (ULONG)(version.Length / sizeof(WCHAR)), version.Buffer
+                );
+        }
+    }
+
+    return PhReferenceObject(Url);
+}
+
+static BOOLEAN PhpIsSafeSourceLinkUrl(
+    _In_ PPH_STRING Url
+    )
+{
+    static CONST PH_STRINGREF httpsPrefix = PH_STRINGREF_INIT(L"https://");
+
+    // Source Link documents come from untrusted PDBs; only allow plain https URLs
+    if (!PhStartsWithStringRef(&Url->sr, &httpsPrefix, TRUE))
+        return FALSE;
+    if (Url->Length <= httpsPrefix.Length)
+        return FALSE;
+
+    for (SIZE_T i = 0; i < Url->Length / sizeof(WCHAR); i++)
+    {
+        WCHAR c = Url->Buffer[i];
+
+        if (c <= L' ' || c == L'"' || c == L'<' || c == L'>' || c == L'\\' || c == L'^' || c == L'`' || c == L'|' || c == 0x7f)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+/**
+ * Resolves a local source file path to a browsable URL using a Source Link document.
+ *
+ * \param SourceLink The UTF-8 Source Link JSON document.
+ * \param LocalPath The local source file path recorded in the PDB.
+ * \param LineNumber The line number, or zero to omit the line anchor.
+ * \param Url A pointer to a variable that receives the URL.
+ * \return TRUE on success, FALSE otherwise.
+ */
+_Success_(return)
+BOOLEAN PhResolveSourceLinkUrl(
+    _In_ PPH_BYTES SourceLink,
+    _In_ PCPH_STRINGREF LocalPath,
+    _In_ ULONG LineNumber,
+    _Out_ PPH_STRING* Url
+    )
+{
+    PHP_SOURCELINK_MATCH_CONTEXT context;
+    PVOID rootObject;
+    PVOID documentsObject;
+    PPH_STRING url;
+
+    if (!NT_SUCCESS(PhCreateJsonParserEx(&rootObject, SourceLink, FALSE)))
+        return FALSE;
+
+    memset(&context, 0, sizeof(PHP_SOURCELINK_MATCH_CONTEXT));
+    context.LocalPath = *LocalPath;
+
+    if (documentsObject = PhGetJsonObject(rootObject, "documents"))
+    {
+        PhEnumJsonArrayObject(documentsObject, PhpSourceLinkDocumentCallback, &context);
+    }
+
+    PhFreeJsonObject(rootObject);
+
+    if (!context.Url)
+        return FALSE;
+
+    url = PhpGetBrowsableSourceLinkUrl(context.Url, LineNumber);
+    PhDereferenceObject(context.Url);
+
+    if (!PhpIsSafeSourceLinkUrl(url))
+    {
+        PhDereferenceObject(url);
+        return FALSE;
+    }
+
+    *Url = url;
+    return TRUE;
+}
+
+/**
+ * Gets a browsable Source Link URL for the source line at an address.
+ *
+ * \param SymbolProvider The symbol provider.
+ * \param Address The address.
+ * \param Url A pointer to a variable that receives the URL.
+ * \return TRUE on success, FALSE otherwise.
+ * \remarks The Source Link document is not cached; callers resolving many frames should cache
+ * the result of PhGetSymbolProviderSourceLink per module.
+ */
+_Success_(return)
+BOOLEAN PhGetSourceLinkUrlFromAddress(
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
+    _In_ PVOID Address,
+    _Out_ PPH_STRING* Url
+    )
+{
+    BOOLEAN result = FALSE;
+    PVOID baseAddress;
+    PPH_STRING fileName;
+    PH_SYMBOL_LINE_INFORMATION lineInfo;
+    PPH_BYTES sourceLink;
+
+    if (!(baseAddress = PhGetModuleFromAddress(SymbolProvider, Address, NULL)))
+        return FALSE;
+
+    if (!PhGetLineFromAddress(SymbolProvider, Address, &fileName, NULL, &lineInfo))
+        return FALSE;
+
+    if (PhGetSymbolProviderSourceLink(SymbolProvider, baseAddress, &sourceLink))
+    {
+        result = PhResolveSourceLinkUrl(sourceLink, &fileName->sr, lineInfo.LineNumber, Url);
+        PhDereferenceObject(sourceLink);
+    }
+
+    PhDereferenceObject(fileName);
+
+    return result;
+}
+
+/**
+ * Unregisters a symbol provider.
+ *
+ * \param SymbolProvider The symbol provider.
+ */
 VOID PhUnregisterSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider
     )

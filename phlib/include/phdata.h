@@ -43,6 +43,8 @@ extern CONST SID PhSeLocalSystemSid;
 extern CONST SID PhSeLocalServiceSid;
 extern CONST SID PhSeNetworkServiceSid;
 
+extern CONST SID PhSeAuthenticationAuthorityAssertedSid;
+
 PSID PhSeAdministratorsSid(
     VOID
     );
@@ -97,6 +99,8 @@ extern CONST BOOLEAN PhIsUTF16PrintableHighByte[256];
 //
 
 extern CONST ULONG PhCrc32Table[256];
+extern CONST ULONG PhCrc32CTable[256];
+extern CONST ULONG PhCrc32Slice8Table[8][256];
 
 //
 // Enums

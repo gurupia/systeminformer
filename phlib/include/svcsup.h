@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2018-2023
+ *     dmex    2018-2026
  *
  */
 
@@ -372,8 +372,31 @@ PPH_STRING
 NTAPI
 PhGetServiceConfigFileName(
     _In_ ULONG ServiceType,
-    _In_ PCWSTR ServicePathName,
+    _In_opt_ PCWSTR ServicePathName,
     _In_ PPH_STRINGREF ServiceName
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsServiceUnquotedPath(
+    _In_ ULONG ServiceType,
+    _In_opt_ PCWSTR ServicePathName
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsServiceUncommonFileName(
+    _In_ PCPH_STRINGREF FileName
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsServiceAccountReversiblePassword(
+    _In_ ULONG ServiceType,
+    _In_opt_ PCWSTR ServiceStartName
     );
 
 PHLIBAPI
@@ -428,6 +451,21 @@ PPH_STRING
 NTAPI
 PhGetServicePackageFullName(
     _In_ PPH_STRINGREF ServiceName
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhGetServiceGroupName(
+    _In_ PPH_STRINGREF ServiceName
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhGetServiceGroupOrderIndex(
+    _In_ PPH_STRINGREF ServiceName,
+    _Out_ PULONG GroupOrderIndex
     );
 
 PHLIBAPI

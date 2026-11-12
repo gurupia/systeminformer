@@ -34,7 +34,7 @@ typedef struct _QUAD
     {
         __int64 UseThisFieldToCopy;
         double DoNotUseThisField;
-    };
+    } DUMMYUNIONNAME;
 } QUAD, *PQUAD;
 
 /**
@@ -118,7 +118,15 @@ typedef LARGE_INTEGER PHYSICAL_ADDRESS, *PPHYSICAL_ADDRESS;
  */
 typedef struct _LARGE_INTEGER_128
 {
-    LONGLONG QuadPart[2];
+    union
+    {
+        LONGLONG QuadPart[2];
+        struct
+        {
+            ULARGE_INTEGER LowPart;
+            LARGE_INTEGER HighPart;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } LARGE_INTEGER_128, *PLARGE_INTEGER_128;
 
 /**
@@ -126,7 +134,15 @@ typedef struct _LARGE_INTEGER_128
  */
 typedef struct _ULARGE_INTEGER_128
 {
-    ULONGLONG QuadPart[2];
+    union
+    {
+        ULONGLONG QuadPart[2];
+        struct
+        {
+            ULARGE_INTEGER LowPart;
+            ULARGE_INTEGER HighPart;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } ULARGE_INTEGER_128, *PULARGE_INTEGER_128;
 
 //
@@ -178,11 +194,15 @@ typedef struct _ULARGE_INTEGER_128
 #define POINTER_ALIGNMENT
 #endif
 
+#ifdef MAX_NATURAL_ALIGNMENT
+#undef MAX_NATURAL_ALIGNMENT
+#endif
+
 #if defined(_WIN64) || defined(_M_ALPHA)
 #define MAX_NATURAL_ALIGNMENT sizeof(ULONGLONG)
 #define MEMORY_ALLOCATION_ALIGNMENT 16
 #else
-#define MAX_NATURAL_ALIGNMENT sizeof(DWORD)
+#define MAX_NATURAL_ALIGNMENT sizeof(ULONG)
 #define MEMORY_ALLOCATION_ALIGNMENT 8
 #endif
 
@@ -351,7 +371,6 @@ typedef struct _SINGLE_LIST_ENTRY32
 
 /**
  * The STRING32 structure is a 32-bit thunked representation of the `STRING` structure.
- *
  * \remarks Used for marshaling between 32-bit and 64-bit contexts.
  */
 typedef struct _STRING32
@@ -369,7 +388,6 @@ typedef const STRING32 *PCANSI_STRING32;
 
 /**
  * The STRING64 structure is a 64-bit thunked representation of the `STRING` structure.
- *
  * \remarks Used for marshaling between 64-bit and 32-bit contexts.
  */
 typedef struct _STRING64
@@ -587,7 +605,8 @@ typedef enum _SUITE_TYPE
     ComputeServer,
     WHServer,
     PhoneNT,
-    MaxSuiteType
+    MultiUserTS = 17, // Multi-user Terminal Services suite index.
+    MaxSuiteType = 18
 } SUITE_TYPE;
 
 //
@@ -625,8 +644,6 @@ typedef struct _CLIENT_ID64
     ULONGLONG UniqueThread;
 } CLIENT_ID64, *PCLIENT_ID64;
 
-#include <pshpack4.h>
-
 /**
  * The KSYSTEM_TIME structure represents interrupt time, system time, and time zone bias.
  */
@@ -636,8 +653,6 @@ typedef struct _KSYSTEM_TIME
     LONG High1Time;
     LONG High2Time;
 } KSYSTEM_TIME, *PKSYSTEM_TIME;
-
-#include <poppack.h>
 
 #if defined(__INTELLISENSE__) || defined(DOXYGEN)
 
@@ -755,7 +770,7 @@ typedef struct _KSYSTEM_TIME
  * \return A pointer at or below @p Address aligned down to @p Alignment.
  * \remarks The pointer is treated as an integer (`ULONG_PTR`) for masking.
  */
-#define ALIGN_DOWN_POINTER_BY(Address, Alignment) ((PVOID)((ULONG_PTR)(Address) & ~((ULONG_PTR)(Alignment) - 1)))
+#define ALIGN_DOWN_POINTER_BY(Address, Alignment) ((PVOID)ALIGN_DOWN_BY(Address, Alignment))
 #endif
 
 #ifndef ALIGN_UP_POINTER_BY
@@ -765,9 +780,9 @@ typedef struct _KSYSTEM_TIME
  * \param Address   The pointer to align.
  * \param Alignment The alignment boundary in bytes (typically a power of two).
  * \return A pointer at or above @p Address aligned up to @p Alignment.
- * \remarks This uses ALIGN_DOWN_POINTER_BY after adding (@p Alignment - 1).
+ * \remarks This is a pointer wrapper over ALIGN_UP_BY.
  */
-#define ALIGN_UP_POINTER_BY(Address, Alignment) (ALIGN_DOWN_POINTER_BY(((ULONG_PTR)(Address) + (Alignment) - 1), Alignment))
+#define ALIGN_UP_POINTER_BY(Address, Alignment) ((PVOID)ALIGN_UP_BY(Address, Alignment))
 #endif
 
 #ifndef ALIGN_DOWN
@@ -904,6 +919,48 @@ typedef struct _KSYSTEM_TIME
 #define PAGE_TAILSIZE(p) (PAGE_SIZE - PAGE_OFFSET(p))
 #endif
 
+#ifndef ADDRESS_AND_SIZE_TO_SPAN_PAGES
+/**
+ * Calculates the number of pages spanned by a virtual address and size.
+ *
+ * @param Address The starting virtual address.
+ * @param Size The size of the memory region in bytes.
+ * @return The number of pages spanned by the specified region.
+ */
+#define ADDRESS_AND_SIZE_TO_SPAN_PAGES(Address, Size) ((BYTE_OFFSET(Address) + ((SIZE_T)(Size)) + PAGE_MASK) >> PAGE_SHIFT)
+#endif
+
+#ifndef ROUND_TO_SIZE
+/**
+ * Rounds a value up to the nearest multiple of a specified alignment.
+ *
+ * @param Size The value to round.
+ * @param Alignment The alignment boundary. This must be a power of two.
+ * @return The rounded value.
+ */
+#define ROUND_TO_SIZE(Size, Alignment) ((((ULONG_PTR)(Size)) + ((Alignment) - 1)) & ~(ULONG_PTR)((Alignment) - 1))
+#endif
+
+#ifndef ROUND_TO_PAGES
+/**
+ * Rounds a size in bytes up to the nearest page boundary.
+ *
+ * @param Size The size in bytes to round.
+ * @return The size rounded up to the nearest multiple of the system page size.
+ */
+#define ROUND_TO_PAGES(Size) (((ULONG_PTR)(Size) + PAGE_MASK) & ~PAGE_MASK)
+#endif
+
+#ifndef BYTES_TO_PAGES
+/**
+ * Calculates the number of pages required to hold a specified number of bytes.
+ *
+ * @param Size The size in bytes.
+ * @return The number of pages, rounded up if the size is not page-aligned.
+ */
+#define BYTES_TO_PAGES(Size) (((Size) >> PAGE_SHIFT) + (((Size) & PAGE_MASK) != 0))
+#endif
+
 #else
 
 #ifndef AFFINITY_MASK
@@ -937,10 +994,10 @@ typedef struct _KSYSTEM_TIME
 #define ALIGN_UP_BY(Length, Alignment) (ALIGN_DOWN_BY(((ULONG_PTR)(Length) + (Alignment) - 1), Alignment))
 #endif
 #ifndef ALIGN_DOWN_POINTER_BY
-#define ALIGN_DOWN_POINTER_BY(Address, Alignment) ((PVOID)((ULONG_PTR)(Address) & ~((ULONG_PTR)(Alignment) - 1)))
+#define ALIGN_DOWN_POINTER_BY(Address, Alignment) ((PVOID)ALIGN_DOWN_BY(Address, Alignment))
 #endif
 #ifndef ALIGN_UP_POINTER_BY
-#define ALIGN_UP_POINTER_BY(Address, Alignment) (ALIGN_DOWN_POINTER_BY(((ULONG_PTR)(Address) + (Alignment) - 1), Alignment))
+#define ALIGN_UP_POINTER_BY(Address, Alignment) ((PVOID)ALIGN_UP_BY(Address, Alignment))
 #endif
 #ifndef ALIGN_DOWN
 #define ALIGN_DOWN(Length, Type) ALIGN_DOWN_BY(Length, sizeof(Type))

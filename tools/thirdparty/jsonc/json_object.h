@@ -220,7 +220,7 @@ JSON_EXPORT enum json_type json_object_get_type(const struct json_object *obj);
  * @param obj the json_object instance
  * @returns a string in JSON format
  */
-JSON_EXPORT const char *json_object_to_json_string(struct json_object *obj);
+JSON_EXPORT const unsigned char *json_object_to_json_string(struct json_object *obj);
 
 /** Stringify object to json format
  * @see json_object_to_json_string() for details on how to free string.
@@ -228,7 +228,7 @@ JSON_EXPORT const char *json_object_to_json_string(struct json_object *obj);
  * @param flags formatting options, see JSON_C_TO_STRING_PRETTY and other constants
  * @returns a string in JSON format
  */
-JSON_EXPORT const char *json_object_to_json_string_ext(struct json_object *obj, int flags);
+JSON_EXPORT const unsigned char *json_object_to_json_string_ext(struct json_object *obj, int flags);
 
 /** Stringify object to json format
  * @see json_object_to_json_string() for details on how to free string.
@@ -237,8 +237,8 @@ JSON_EXPORT const char *json_object_to_json_string_ext(struct json_object *obj, 
  * @param length a pointer where, if not NULL, the length (without null) is stored
  * @returns a string in JSON format and the length if not NULL
  */
-JSON_EXPORT const char *json_object_to_json_string_length(struct json_object *obj, int flags,
-                                                          size_t *length);
+JSON_EXPORT const unsigned char *json_object_to_json_string_length(struct json_object *obj,
+                                                                   int flags, size_t *length);
 
 /**
  * Returns the userdata set by json_object_set_userdata() or
@@ -400,7 +400,7 @@ JSON_C_CONST_FUNCTION(JSON_EXPORT size_t json_c_object_sizeof(void));
  * @return On success, <code>0</code> is returned.
  * 	On error, a negative value is returned.
  */
-JSON_EXPORT int json_object_object_add(struct json_object *obj, const char *key,
+JSON_EXPORT int json_object_object_add(struct json_object *obj, const unsigned char *key,
                                        struct json_object *val);
 
 /** Add an object field to a json_object of type json_type_object
@@ -416,7 +416,7 @@ JSON_EXPORT int json_object_object_add(struct json_object *obj, const char *key,
  * @param opts process-modifying options. To specify multiple options, use
  *             (OPT1|OPT2)
  */
-JSON_EXPORT int json_object_object_add_ex(struct json_object *obj, const char *const key,
+JSON_EXPORT int json_object_object_add_ex(struct json_object *obj, const unsigned char *const key,
                                           struct json_object *const val, const unsigned opts);
 
 /** Get the json_object associate with a given object field.
@@ -441,7 +441,7 @@ JSON_EXPORT int json_object_object_add_ex(struct json_object *obj, const char *c
  * @returns the json_object associated with the given field name
  */
 JSON_EXPORT struct json_object *json_object_object_get(const struct json_object *obj,
-                                                       const char *key);
+                                                       const unsigned char *key);
 
 /** Get the json_object associated with a given object field.
  *
@@ -461,8 +461,9 @@ JSON_EXPORT struct json_object *json_object_object_get(const struct json_object 
  *              It is safe to pass a NULL value.
  * @returns 1 if the key exists, 0 otherwise
  */
-JSON_EXPORT int json_object_object_get_ex(const struct json_object *obj, const char *key,
-                                                struct json_object **value);
+JSON_EXPORT int json_object_object_get_ex(const struct json_object *obj,
+                                          const unsigned char *key,
+                                          struct json_object **value);
 
 /** Delete the given json_object field
  *
@@ -473,7 +474,7 @@ JSON_EXPORT int json_object_object_get_ex(const struct json_object *obj, const c
  * @param obj the json_object instance
  * @param key the object field name
  */
-JSON_EXPORT void json_object_object_del(struct json_object *obj, const char *key);
+JSON_EXPORT void json_object_object_del(struct json_object *obj, const unsigned char *key);
 
 /**
  * Iterate through all keys and values of an object.
@@ -491,14 +492,14 @@ JSON_EXPORT void json_object_object_del(struct json_object *obj, const char *key
 #if defined(__GNUC__) && !defined(__STRICT_ANSI__) && (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
 
 #define json_object_object_foreach(obj, key, val)                                \
-    char *key = NULL;                                                        \
+    unsigned char *key = NULL;                                                        \
     struct json_object *val __attribute__((__unused__)) = NULL;              \
     for (struct lh_entry *entry##key = lh_table_head(json_object_get_object(obj)),    \
                          *entry_next##key = NULL;                            \
          ({                                                                  \
              if (entry##key)                                             \
              {                                                           \
-                 key = (char *)lh_entry_k(entry##key);               \
+                 key = (unsigned char *)lh_entry_k(entry##key);               \
                  val = (struct json_object *)lh_entry_v(entry##key); \
                  entry_next##key = lh_entry_next(entry##key);        \
              };                                                          \
@@ -514,7 +515,7 @@ JSON_EXPORT void json_object_object_del(struct json_object *obj, const char *key
     struct lh_entry *entry##key;                                           \
     struct lh_entry *entry_next##key = NULL;                               \
     for (entry##key = lh_table_head(json_object_get_object(obj));          \
-         (entry##key ? (key = (char *)lh_entry_k(entry##key),              \
+         (entry##key ? (key = (unsigned char *)lh_entry_k(entry##key),              \
                        val = (struct json_object *)lh_entry_v(entry##key), \
                        entry_next##key = lh_entry_next(entry##key), entry##key)     \
                      : 0);                                                 \
@@ -528,7 +529,7 @@ JSON_EXPORT void json_object_object_del(struct json_object *obj, const char *key
  */
 #define json_object_object_foreachC(obj, iter)                                                  \
     for (iter.entry = lh_table_head(json_object_get_object(obj));                                    \
-         (iter.entry ? (iter.key = (char *)lh_entry_k(iter.entry),                          \
+         (iter.entry ? (iter.key = (unsigned char *)lh_entry_k(iter.entry),                          \
                        iter.val = (struct json_object *)lh_entry_v(iter.entry), iter.entry) \
                      : 0);                                                                  \
          iter.entry = lh_entry_next(iter.entry))
@@ -693,7 +694,7 @@ JSON_EXPORT struct json_object *json_object_new_boolean(json_bool b);
  * The type is coerced to a json_bool if the passed object is not a json_bool.
  * integer and double objects will return 0 if there value is zero
  * or 1 otherwise. If the passed object is a string it will return
- * 1 if it has a non zero length. 
+ * 1 if it has a non zero length.
  * If any other object type is passed 0 will be returned, even non-empty
  *  json_type_array and json_type_object objects.
  *
@@ -739,9 +740,12 @@ JSON_EXPORT struct json_object *json_object_new_uint64(uint64_t i);
 /** Get the int value of a json_object
  *
  * The type is coerced to a int if the passed object is not a int.
- * double objects will return their integer conversion. Strings will be
- * parsed as an integer. If no conversion exists then 0 is returned
- * and errno is set to EINVAL. null is equivalent to 0 (no error values set)
+ * double objects will return their integer conversion except for NaN values
+ * which return INT32_MIN and the errno is set to EINVAL.
+ * Strings will be parsed as an integer. If no conversion exists then 0 is
+ * returned and errno is set to EINVAL. null is equivalent to 0 (no error values
+ * set).
+ * Sets errno to ERANGE if the value exceeds the range of int.
  *
  * Note that integers are stored internally as 64-bit values.
  * If the value of too big or too small to fit into 32-bit, INT32_MAX or
@@ -783,8 +787,12 @@ JSON_EXPORT int json_object_int_inc(struct json_object *obj, int64_t val);
 /** Get the int value of a json_object
  *
  * The type is coerced to a int64 if the passed object is not a int64.
- * double objects will return their int64 conversion. Strings will be
- * parsed as an int64. If no conversion exists then 0 is returned.
+ * double objects will return their int64 conversion except for NaN values
+ * which return INT64_MIN and the errno is set to EINVAL.
+ * Strings will be parsed as an int64. If no conversion exists then 0 is
+ * returned and errno is set to EINVAL. null is equivalent to 0 (no error values
+ * set).
+ * Sets errno to ERANGE if the value exceeds the range of int64.
  *
  * NOTE: Set errno to 0 directly before a call to this function to determine
  * whether or not conversion was successful (it does not clear the value for
@@ -798,8 +806,12 @@ JSON_EXPORT int64_t json_object_get_int64(const struct json_object *obj);
 /** Get the uint value of a json_object
  *
  * The type is coerced to a uint64 if the passed object is not a uint64.
- * double objects will return their uint64 conversion. Strings will be
- * parsed as an uint64. If no conversion exists then 0 is returned.
+ * double objects will return their uint64 conversion except for NaN values
+ * which return 0 and the errno is set to EINVAL.
+ * Strings will be parsed as an uint64. If no conversion exists then 0 is
+ * returned and errno is set to EINVAL. null is equivalent to 0 (no error values
+ * set).
+ * Sets errno to ERANGE if the value exceeds the range of uint64.
  *
  * NOTE: Set errno to 0 directly before a call to this function to determine
  * whether or not conversion was successful (it does not clear the value for
@@ -872,7 +884,7 @@ JSON_EXPORT struct json_object *json_object_new_double(double d);
  * @param d the numeric value of the double.
  * @param ds the string representation of the double.  This will be copied.
  */
-JSON_EXPORT struct json_object *json_object_new_double_s(double d, const char *ds);
+JSON_EXPORT struct json_object *json_object_new_double_s(double d, const unsigned char *ds);
 
 /**
  * Set a global or thread-local json-c option, depending on whether
@@ -886,7 +898,7 @@ JSON_EXPORT struct json_object *json_object_new_double_s(double d, const char *d
  *
  * @return -1 on errors, 0 on success.
  */
-JSON_EXPORT int json_c_set_serialization_double_format(const char *double_format,
+JSON_EXPORT int json_c_set_serialization_double_format(const unsigned char *double_format,
                                                        int global_or_thread);
 
 /** Serialize a json_object of type json_type_double to a string.
@@ -961,7 +973,7 @@ JSON_EXPORT int json_object_set_double(struct json_object *obj, double new_value
  * @returns a json_object of type json_type_string
  * @see json_object_new_string_len()
  */
-JSON_EXPORT struct json_object *json_object_new_string(const char *s);
+JSON_EXPORT struct json_object *json_object_new_string(const unsigned char *s);
 
 /** Create a new empty json_object of type json_type_string and allocate
  * len characters for the new string.
@@ -973,7 +985,7 @@ JSON_EXPORT struct json_object *json_object_new_string(const char *s);
  * @returns a json_object of type json_type_string
  * @see json_object_new_string()
  */
-JSON_EXPORT struct json_object *json_object_new_string_len(const char *s, const size_t len);
+JSON_EXPORT struct json_object *json_object_new_string_len(const unsigned char *s, const size_t len);
 
 /** Get the string value of a json_object
  *
@@ -991,7 +1003,7 @@ JSON_EXPORT struct json_object *json_object_new_string_len(const char *s, const 
  * @param obj the json_object instance
  * @returns a string or NULL
  */
-JSON_EXPORT const char *json_object_get_string(struct json_object *obj);
+JSON_EXPORT const unsigned char *json_object_get_string(struct json_object *obj);
 
 /** Get the string length of a json_object
  *
@@ -1007,7 +1019,7 @@ JSON_EXPORT size_t json_object_get_string_len(const struct json_object *obj);
  * equivalent to json_object_set_string_len (obj, new_value, strlen(new_value))
  * @returns 1 if value is set correctly, 0 otherwise
  */
-JSON_EXPORT int json_object_set_string(json_object *obj, const char *new_value);
+JSON_EXPORT int json_object_set_string(json_object *obj, const unsigned char *new_value);
 
 /** Set the string value of a json_object str
  *
@@ -1020,7 +1032,7 @@ JSON_EXPORT int json_object_set_string(json_object *obj, const char *new_value);
  * @param len the length of new_value
  * @returns 1 if value is set correctly, 0 otherwise
  */
-JSON_EXPORT int json_object_set_string_len(json_object *obj, const char *new_value, int len);
+JSON_EXPORT int json_object_set_string_len(json_object *obj, const unsigned char *new_value, int len);
 
 /** This method exists only to provide a complementary function
  * along the lines of the other json_object_new_* functions.
@@ -1061,7 +1073,7 @@ JSON_EXPORT int json_object_equal(struct json_object *obj1, struct json_object *
  *
  * @return On success 1 or 2, -1 on errors
  */
-typedef int(json_c_shallow_copy_fn)(json_object *src, json_object *parent, const char *key,
+typedef int(json_c_shallow_copy_fn)(json_object *src, json_object *parent, const unsigned char *key,
                                     size_t index, json_object **dst);
 
 /**

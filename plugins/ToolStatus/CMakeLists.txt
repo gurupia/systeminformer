@@ -23,6 +23,7 @@ set(SOURCES
     "find.c"
     "graph.c"
     "main.c"
+    "menubar.c"
     "plugin.c"
     "options.c"
     "statusbar.c"
@@ -43,4 +44,5 @@ si_add_plugin(ToolStatus ${ALL_FILES})
 target_link_libraries(ToolStatus PRIVATE
     user32
     gdi32
+    gdiplus
 )

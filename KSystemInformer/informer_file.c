@@ -16,9 +16,9 @@
 #include <trace.h>
 
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
-static const UNICODE_STRING KphpDefaultInstaceName = RTL_CONSTANT_STRING(L"DefaultInstance");
-static const UNICODE_STRING KphpAltitudeName = RTL_CONSTANT_STRING(L"Altitude");
-static const UNICODE_STRING KphpFlagsName = RTL_CONSTANT_STRING(L"Flags");
+DECLARE_CONST_UNICODE_STRING(KphpDefaultInstaceName, L"DefaultInstance");
+DECLARE_CONST_UNICODE_STRING(KphpAltitudeName, L"Altitude");
+DECLARE_CONST_UNICODE_STRING(KphpFlagsName, L"Flags");
 static const DWORD KphpFlagsValue = 0;
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 KPH_PROTECTED_DATA_SECTION_PUSH();
@@ -45,6 +45,11 @@ NTSTATUS FLTAPI KphpFltFilterUnloadCallback(
     UNREFERENCED_PARAMETER(Flags);
 
     KphTracePrint(TRACE_LEVEL_VERBOSE, INFORMER, "Filter unload invoked");
+
+    if (KphIsDriverUnloadProtected())
+    {
+        return STATUS_FLT_DO_NOT_DETACH;
+    }
 
     return STATUS_SUCCESS;
 }
@@ -263,7 +268,7 @@ NTSTATUS KphFltRegister(
 
     InitializeObjectAttributes(&objectAttributes,
                                &keyName,
-                               OBJ_KERNEL_HANDLE,
+                               OBJ_KERNEL_HANDLE | OBJ_DONT_REPARSE,
                                NULL,
                                NULL);
 
@@ -330,7 +335,7 @@ NTSTATUS KphFltRegister(
 
     InitializeObjectAttributes(&objectAttributes,
                                &keyName,
-                               OBJ_KERNEL_HANDLE,
+                               OBJ_KERNEL_HANDLE | OBJ_DONT_REPARSE,
                                NULL,
                                NULL);
 

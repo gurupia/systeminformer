@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2014-2023
+ *     dmex    2014-2026
  *
  */
 
@@ -16,6 +16,8 @@
 #include <phsettings.h>
 #include <mainwnd.h>
 #include <emenu.h>
+#include <procprv.h>
+#include <srvprv.h>
 
 #define WM_PH_LOG_UPDATED (WM_APP + 300)
 
@@ -151,6 +153,16 @@ ContinueLoop:
     return PhFinalStringBuilderString(&stringBuilder);
 }
 
+static PPH_STRING PhpGetLogEntryExtraString(
+    _In_ PPH_LOG_ENTRY Entry
+    )
+{
+    if (Entry->BufferLength == 0)
+        return PhReferenceEmptyString();
+
+    return PhCreateStringEx((PVOID)Entry->Buffer, Entry->BufferLength);
+}
+
 INT_PTR CALLBACK PhpLogDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -174,6 +186,7 @@ INT_PTR CALLBACK PhpLogDlgProc(
             PhListView_AddColumn(ListViewContext, 0, 0, 0, LVCFMT_LEFT, 140, L"Time");
             PhListView_AddColumn(ListViewContext, 1, 1, 1, LVCFMT_LEFT, 140, L"Type");
             PhListView_AddColumn(ListViewContext, 2, 2, 2, LVCFMT_LEFT, 260, L"Message");
+            PhListView_AddColumn(ListViewContext, 3, 3, 3, LVCFMT_LEFT, 200, L"Extra");
             PhLoadListViewColumnsFromSetting(SETTING_LOG_LIST_VIEW_COLUMNS, ListViewHandle);
 
             PhInitializeLayoutManager(&WindowLayoutManager, hwndDlg);
@@ -362,6 +375,62 @@ INT_PTR CALLBACK PhpLogDlgProc(
                             PhDereferenceObject(string);
                         }
                     }
+                    else if (dispInfo->item.iSubItem == 3)
+                    {
+                        if (FlagOn(dispInfo->item.mask, LVIF_TEXT))
+                        {
+                            PPH_STRING string;
+
+                            string = PhpGetLogEntryExtraString(entry);
+                            wcsncpy_s(dispInfo->item.pszText, dispInfo->item.cchTextMax, string->Buffer, _TRUNCATE);
+                            PhDereferenceObject(string);
+                        }
+                    }
+                }
+                break;
+            case NM_DBLCLK:
+                {
+                    LPNMITEMACTIVATE itemActivate = (LPNMITEMACTIVATE)header;
+                    PPH_LOG_ENTRY entry;
+
+                    if (header->hwndFrom != ListViewHandle)
+                        break;
+                    if (itemActivate->iItem < 0 || (ULONG)itemActivate->iItem >= ListViewCount)
+                        break;
+
+                    entry = PhGetItemCircularBuffer_PVOID(&PhLogBuffer, ListViewCount - itemActivate->iItem - 1);
+
+                    if (!entry)
+                        break;
+
+                    if (entry->Type == PH_LOG_ENTRY_PROCESS_CREATE || entry->Type == PH_LOG_ENTRY_PROCESS_DELETE)
+                    {
+                        PPH_PROCESS_RECORD record;
+
+                        if (record = entry->Process.Record)
+                        {
+                            // Reference the record before entering the modal dialog: its message
+                            // loop pumps log updates, which can recycle this entry and release
+                            // the entry's record reference while the dialog is showing it.
+                            PhReferenceProcessRecord(record);
+                            PhShowProcessRecordDialog(hwndDlg, record);
+                            PhDereferenceProcessRecord(record);
+                        }
+                        else
+                        {
+                            PhShowStatus(hwndDlg, L"The process does not exist.", STATUS_INVALID_CID, 0);
+                        }
+                    }
+                    else if (entry->Type >= PH_LOG_ENTRY_SERVICE_FIRST && entry->Type <= PH_LOG_ENTRY_SERVICE_LAST)
+                    {
+                        PPH_SERVICE_ITEM serviceItem;
+
+                        if (serviceItem = PhReferenceServiceItem(&entry->Service.Name->sr))
+                        {
+                            PhShowServiceProperties(hwndDlg, serviceItem);
+                            PhDereferenceObject(serviceItem);
+                        }
+                    }
                 }
                 break;
             }
@@ -404,9 +473,7 @@ INT_PTR CALLBACK PhpLogDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -442,9 +509,9 @@ INT_PTR CALLBACK PhpLogDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
@@ -458,3 +525,4 @@ INT_PTR CALLBACK PhpLogDlgProc(
 
     return FALSE;
 }
+

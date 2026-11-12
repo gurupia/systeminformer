@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2015
- *     dmex    2018-2024
+ *     dmex    2018-2026
  *
  */
 
@@ -37,6 +37,9 @@ static PH_TN_FILTER_SUPPORT FilterSupport;
 static PTOOLSTATUS_INTERFACE ToolStatusInterface;
 static PH_CALLBACK_REGISTRATION SearchChangedRegistration;
 
+/**
+ * Initializes the Disk tab page and registers it with the plugin system.
+ */
 VOID EtInitializeDiskTab(
     VOID
     )
@@ -58,6 +61,15 @@ VOID EtInitializeDiskTab(
     }
 }
 
+/**
+ * Callback function for the main Disk tab page window messages.
+ *
+ * \param Page A pointer to the main tab page.
+ * \param Message The tab page message.
+ * \param Parameter1 Message-specific parameter.
+ * \param Parameter2 Message-specific parameter.
+ * \return TRUE if the message was handled, FALSE otherwise.
+ */
 BOOLEAN EtpDiskPageCallback(
     _In_ PPH_MAIN_TAB_PAGE Page,
     _In_ PH_MAIN_TAB_PAGE_MESSAGE Message,
@@ -69,11 +81,12 @@ BOOLEAN EtpDiskPageCallback(
     {
     case MainTabPageCreateWindow:
         {
-            HWND hwnd;
+            HWND WindowHandle;
             ULONG thinRows;
             ULONG treelistBorder;
             ULONG treelistCustomColors;
-            PH_TREENEW_CREATEPARAMS treelistCreateParams = { 0 };
+            PH_TREENEW_CREATEPARAMS treelistCreateParams = { sizeof(PH_TREENEW_CREATEPARAMS) };
+            RECT clientRect = { 0 };
 
             thinRows = PhGetIntegerSetting(SETTING_THIN_ROWS) ? TN_STYLE_THIN_ROWS : 0;
             treelistBorder = (PhGetIntegerSetting(SETTING_TREE_LIST_BORDER_ENABLE) && !!PhGetIntegerSetting(SETTING_TREE_LIST_BORDER_ENABLE)) ? WS_BORDER : 0;
@@ -86,27 +99,31 @@ BOOLEAN EtpDiskPageCallback(
                 treelistCreateParams.SelectionColor = PhGetIntegerSetting(SETTING_TREE_LIST_CUSTOM_COLOR_SELECTION);
             }
 
-            hwnd = CreateWindow(
+            // Create the tree with the tab page container client area so the first layout
+            // and paint use the final size.
+            PhGetClientRect(Parameter2, &clientRect);
+
+            WindowHandle = PhCreateWindow(
                 PH_TREENEW_CLASSNAME,
                 NULL,
                 WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | thinRows | treelistBorder | treelistCustomColors,
-                0,
-                0,
-                0,
-                0,
+                clientRect.left,
+                clientRect.top,
+                clientRect.right - clientRect.left,
+                clientRect.bottom - clientRect.top,
                 Parameter2,
                 NULL,
                 NULL,
                 &treelistCreateParams
                 );
 
-            if (!hwnd)
+            if (!WindowHandle)
                 return FALSE;
 
             if (PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT))
             {
-                PhInitializeWindowTheme(hwnd, TRUE); // HACK (dmex)
-                TreeNew_ThemeSupport(hwnd, TRUE);
+                PhInitializeWindowTheme(WindowHandle, TRUE); // HACK (dmex)
+                TreeNew_ThemeSupport(WindowHandle, TRUE);
             }
 
             DiskTreeNewCreated = TRUE;
@@ -119,7 +136,7 @@ BOOLEAN EtpDiskPageCallback(
                 );
             DiskNodeList = PhCreateList(100);
 
-            EtInitializeDiskTreeList(hwnd);
+            EtInitializeDiskTreeList(WindowHandle);
 
             //if (!EtEtwEnabled) // always show status (dmex)
             {
@@ -146,13 +163,13 @@ BOOLEAN EtpDiskPageCallback(
                             );
                     }
 
-                    TreeNew_SetEmptyText(hwnd, &DiskTreeErrorText->sr, 0);
+                    TreeNew_SetEmptyText(WindowHandle, &DiskTreeErrorText->sr, 0);
                 }
                 else
                 {
                     if (!PhGetOwnTokenAttributes().Elevated)
                     {
-                        TreeNew_SetEmptyText(hwnd, &DiskTreeEmptyText, 0);
+                        TreeNew_SetEmptyText(WindowHandle, &DiskTreeEmptyText, 0);
                     }
                 }
             }
@@ -188,7 +205,7 @@ BOOLEAN EtpDiskPageCallback(
 
             if (Parameter1)
             {
-                *(HWND*)Parameter1 = hwnd;
+                *(HWND*)Parameter1 = WindowHandle;
             }
         }
         return TRUE;
@@ -239,6 +256,13 @@ BOOLEAN EtpDiskPageCallback(
     return FALSE;
 }
 
+/**
+ * Hashtable equality comparison function for disk nodes based on their disk items.
+ *
+ * \param Entry1 The first node to compare.
+ * \param Entry2 The second node to compare.
+ * \return TRUE if the nodes are equal, FALSE otherwise.
+ */
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN EtpDiskNodeHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -251,6 +275,12 @@ BOOLEAN EtpDiskNodeHashtableEqualFunction(
     return diskNode1->DiskItem == diskNode2->DiskItem;
 }
 
+/**
+ * Hashtable hash function for disk nodes.
+ *
+ * \param Entry The disk node to hash.
+ * \return The hash code for the disk node.
+ */
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
 ULONG EtpDiskNodeHashtableHashFunction(
     _In_ PVOID Entry
@@ -259,15 +289,19 @@ ULONG EtpDiskNodeHashtableHashFunction(
     return PhHashIntPtr((ULONG_PTR)(*(PET_DISK_NODE *)Entry)->DiskItem);
 }
 
+/**
+ * Initializes the disk tree list control, columns, and search filtering.
+ *
+ * \param WindowHandle The window handle of the tree list control.
+ */
 VOID EtInitializeDiskTreeList(
     _In_ HWND WindowHandle
     )
 {
     DiskTreeNewHandle = WindowHandle;
 
-    PhSetControlTheme(DiskTreeNewHandle, !PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) ? L"explorer" : L"DarkMode_Explorer");
+    PhSetControlTheme(WindowHandle, !PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) ? L"explorer" : L"DarkMode_Explorer");
     TreeNew_SetRedraw(WindowHandle, FALSE);
-    SendMessage(TreeNew_GetTooltips(DiskTreeNewHandle), TTM_SETDELAYTIME, TTDT_AUTOPOP, 0x7fff);
     TreeNew_SetCallback(WindowHandle, EtpDiskTreeNewCallback, NULL);
     TreeNew_SetImageList(WindowHandle, PhGetProcessSmallImageList());
 
@@ -278,8 +312,14 @@ VOID EtInitializeDiskTreeList(
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READRATEAVERAGE, TRUE, L"Read rate average", 70, PH_ALIGN_RIGHT, 3, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITERATEAVERAGE, TRUE, L"Write rate average", 70, PH_ALIGN_RIGHT, 4, DT_RIGHT, TRUE);
     PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALRATEAVERAGE, TRUE, L"Total rate average", 70, PH_ALIGN_RIGHT, 5, DT_RIGHT, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_IOPRIORITY, TRUE, L"I/O priority", 70, PH_ALIGN_LEFT, 6, 0, TRUE);
-    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_RESPONSETIME, TRUE, L"Response time (ms)", 70, PH_ALIGN_RIGHT, 7, 0, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READRATE, TRUE, L"Read rate", 70, PH_ALIGN_RIGHT, 6, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITERATE, TRUE, L"Write rate", 70, PH_ALIGN_RIGHT, 7, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALRATE, TRUE, L"Total rate", 70, PH_ALIGN_RIGHT, 8, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_READBYTES, TRUE, L"Read bytes", 70, PH_ALIGN_RIGHT, 9, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_WRITEBYTES, TRUE, L"Write bytes", 70, PH_ALIGN_RIGHT, 10, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_TOTALBYTES, TRUE, L"Total bytes", 70, PH_ALIGN_RIGHT, 11, DT_RIGHT, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_IOPRIORITY, TRUE, L"I/O priority", 70, PH_ALIGN_LEFT, 12, 0, TRUE);
+    PhAddTreeNewColumnEx(WindowHandle, ETDSTNC_RESPONSETIME, TRUE, L"Response time (ms)", 70, PH_ALIGN_RIGHT, 13, 0, TRUE);
     PhAddTreeNewColumn(WindowHandle, ETDSTNC_ORIGINALNAME, FALSE, L"Original name", 200, PH_ALIGN_LEFT, ULONG_MAX, DT_PATH_ELLIPSIS);
 
     PhInitializeTreeNewFilterSupport(&FilterSupport, WindowHandle, DiskNodeList);
@@ -290,6 +330,16 @@ VOID EtInitializeDiskTreeList(
         PhAddTreeNewFilter(&FilterSupport, EtpSearchDiskListFilterCallback, NULL);
     }
 
+    if (PhGetIntegerSetting(SETTING_TREE_LIST_CUSTOM_ROW_SIZE))
+    {
+        ULONG treelistCustomRowSize = PhGetIntegerSetting(SETTING_TREE_LIST_CUSTOM_ROW_SIZE);
+
+        if (treelistCustomRowSize < 15)
+            treelistCustomRowSize = 15;
+
+        TreeNew_SetRowHeight(WindowHandle, treelistCustomRowSize);
+    }
+
     TreeNew_SetSort(WindowHandle, ETDSTNC_TOTALRATEAVERAGE, DescendingSortOrder);
     TreeNew_SetTriState(WindowHandle, TRUE);
     TreeNew_SetRedraw(WindowHandle, TRUE);
@@ -297,6 +347,11 @@ VOID EtInitializeDiskTreeList(
     EtLoadSettingsDiskTreeList(WindowHandle);
 }
 
+/**
+ * Loads settings and column configurations for the disk tree list.
+ *
+ * \param WindowHandle The window handle of the tree list control.
+ */
 VOID EtLoadSettingsDiskTreeList(
     _In_ HWND WindowHandle
     )
@@ -312,6 +367,11 @@ VOID EtLoadSettingsDiskTreeList(
     TreeNew_SetSort(WindowHandle, (ULONG)sortSettings.X, (PH_SORT_ORDER)sortSettings.Y);
 }
 
+/**
+ * Saves settings and column configurations for the disk tree list.
+ *
+ * \param WindowHandle The window handle of the tree list control.
+ */
 VOID EtSaveSettingsDiskTreeList(
     _In_ HWND WindowHandle
     )
@@ -334,6 +394,12 @@ VOID EtSaveSettingsDiskTreeList(
     PhSetIntegerPairSetting(SETTING_NAME_DISK_TREE_LIST_SORT, sortSettings);
 }
 
+/**
+ * Adds a new disk node to the tree list and hashtable.
+ *
+ * \param DiskItem The disk item to associate with the new node.
+ * \return A pointer to the newly created disk node.
+ */
 PET_DISK_NODE EtAddDiskNode(
     _In_ PET_DISK_ITEM DiskItem
     )
@@ -363,6 +429,12 @@ PET_DISK_NODE EtAddDiskNode(
     return diskNode;
 }
 
+/**
+ * Finds a disk node in the hashtable by its associated disk item.
+ *
+ * \param DiskItem The disk item to look for.
+ * \return A pointer to the disk node, or NULL if not found.
+ */
 PET_DISK_NODE EtFindDiskNode(
     _In_ PET_DISK_ITEM DiskItem
     )
@@ -384,6 +456,11 @@ PET_DISK_NODE EtFindDiskNode(
         return NULL;
 }
 
+/**
+ * Removes a disk node from the tree list and hashtable.
+ *
+ * \param DiskNode The disk node to remove.
+ */
 VOID EtRemoveDiskNode(
     _In_ PET_DISK_NODE DiskNode
     )
@@ -407,6 +484,11 @@ VOID EtRemoveDiskNode(
     TreeNew_NodesStructured(DiskTreeNewHandle);
 }
 
+/**
+ * Updates an existing disk node with new statistics and details.
+ *
+ * \param DiskNode The disk node to update.
+ */
 VOID EtUpdateDiskNode(
     _In_ PET_DISK_NODE DiskNode
     )
@@ -416,9 +498,12 @@ VOID EtUpdateDiskNode(
     PhClearReference(&DiskNode->TooltipText);
 
     PhInvalidateTreeNewNode(&DiskNode->Node, TN_CACHE_ICON);
-    TreeNew_NodesStructured(DiskTreeNewHandle);
+    TreeNew_InvalidateNode(DiskTreeNewHandle, &DiskNode->Node);
 }
 
+/**
+ * Updates and ticks all active disk nodes, recalculating average rates and handling search filtering.
+ */
 VOID EtTickDiskNodes(
     VOID
     )
@@ -496,6 +581,57 @@ BEGIN_SORT_FUNCTION(TotalRateAverage)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(ReadRate)
+{
+    ULONG64 readRate1;
+    ULONG64 readRate2;
+
+    readRate1 = diskItem1->HistoryCount != 0 ? diskItem1->ReadHistory[diskItem1->HistoryPosition] : 0;
+    readRate2 = diskItem2->HistoryCount != 0 ? diskItem2->ReadHistory[diskItem2->HistoryPosition] : 0;
+    sortResult = uint64cmp(readRate1, readRate2);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(WriteRate)
+{
+    ULONG64 writeRate1;
+    ULONG64 writeRate2;
+
+    writeRate1 = diskItem1->HistoryCount != 0 ? diskItem1->WriteHistory[diskItem1->HistoryPosition] : 0;
+    writeRate2 = diskItem2->HistoryCount != 0 ? diskItem2->WriteHistory[diskItem2->HistoryPosition] : 0;
+    sortResult = uint64cmp(writeRate1, writeRate2);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(TotalRate)
+{
+    ULONG64 totalRate1;
+    ULONG64 totalRate2;
+
+    totalRate1 = diskItem1->HistoryCount != 0 ? diskItem1->ReadHistory[diskItem1->HistoryPosition] + diskItem1->WriteHistory[diskItem1->HistoryPosition] : 0;
+    totalRate2 = diskItem2->HistoryCount != 0 ? diskItem2->ReadHistory[diskItem2->HistoryPosition] + diskItem2->WriteHistory[diskItem2->HistoryPosition] : 0;
+    sortResult = uint64cmp(totalRate1, totalRate2);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(ReadBytes)
+{
+    sortResult = uint64cmp(diskItem1->ReadTotal, diskItem2->ReadTotal);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(WriteBytes)
+{
+    sortResult = uint64cmp(diskItem1->WriteTotal, diskItem2->WriteTotal);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(TotalBytes)
+{
+    sortResult = uint64cmp(diskItem1->ReadTotal + diskItem1->WriteTotal, diskItem2->ReadTotal + diskItem2->WriteTotal);
+}
+END_SORT_FUNCTION
+
 BEGIN_SORT_FUNCTION(IoPriority)
 {
     sortResult = uintcmp(diskItem1->IoPriority, diskItem2->IoPriority);
@@ -514,6 +650,15 @@ BEGIN_SORT_FUNCTION(OriginalFile)
 }
 END_SORT_FUNCTION
 
+/**
+ * Callback function for the disk tree list control (handling rendering, sorting, and user input).
+ *
+ * \param hwnd The window handle of the tree list control.
+ * \param uMsg The tree list message.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return TRUE if the message was handled, FALSE otherwise.
+ */
 BOOLEAN NTAPI EtpDiskTreeNewCallback(
     _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
@@ -532,7 +677,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Process),
                     SORT_FUNCTION(Pid),
@@ -543,8 +688,14 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                     SORT_FUNCTION(IoPriority),
                     SORT_FUNCTION(ResponseTime),
                     SORT_FUNCTION(OriginalFile),
+                    SORT_FUNCTION(ReadRate),
+                    SORT_FUNCTION(WriteRate),
+                    SORT_FUNCTION(TotalRate),
+                    SORT_FUNCTION(ReadBytes),
+                    SORT_FUNCTION(WriteBytes),
+                    SORT_FUNCTION(TotalBytes),
                 };
-                int (__cdecl *sortFunction)(const void *, const void *);
+                _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == ETDSTNC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -593,9 +744,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                 {
                     ULONG64 number;
 
-                    number = diskItem->ReadAverage;
-                    number *= 1000;
-                    number /= EtUpdateInterval;
+                    number = EtCalculateRate(diskItem->ReadAverage);
 
                     if (number != 0)
                     {
@@ -617,9 +766,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                 {
                     ULONG64 number;
 
-                    number = diskItem->WriteAverage;
-                    number *= 1000;
-                    number /= EtUpdateInterval;
+                    number = EtCalculateRate(diskItem->WriteAverage);
 
                     if (number != 0)
                     {
@@ -641,9 +788,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                 {
                     ULONG64 number;
 
-                    number = diskItem->ReadAverage + diskItem->WriteAverage;
-                    number *= 1000;
-                    number /= EtUpdateInterval;
+                    number = EtCalculateRate(diskItem->ReadAverage + diskItem->WriteAverage);
 
                     if (number != 0)
                     {
@@ -656,6 +801,139 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                         if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), node->TotalRateAverageText, sizeof(node->TotalRateAverageText), &returnLength))
                         {
                             getCellText->Text.Buffer = node->TotalRateAverageText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_READRATE:
+                {
+                    ULONG64 number;
+
+                    number = EtCalculateRate(diskItem->HistoryCount != 0 ?
+                        diskItem->ReadHistory[diskItem->HistoryPosition] : 0);
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format[2];
+
+                        PhInitFormatSize(&format[0], number);
+                        PhInitFormatS(&format[1], L"/s");
+
+                        if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), node->ReadRateText, sizeof(node->ReadRateText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->ReadRateText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_WRITERATE:
+                {
+                    ULONG64 number;
+
+                    number = EtCalculateRate(diskItem->HistoryCount != 0 ?
+                        diskItem->WriteHistory[diskItem->HistoryPosition] : 0);
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format[2];
+
+                        PhInitFormatSize(&format[0], number);
+                        PhInitFormatS(&format[1], L"/s");
+
+                        if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), node->WriteRateText, sizeof(node->WriteRateText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->WriteRateText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_TOTALRATE:
+                {
+                    ULONG64 number;
+
+                    number = EtCalculateRate(diskItem->HistoryCount != 0 ?
+                        diskItem->ReadHistory[diskItem->HistoryPosition] +
+                        diskItem->WriteHistory[diskItem->HistoryPosition] : 0);
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format[2];
+
+                        PhInitFormatSize(&format[0], number);
+                        PhInitFormatS(&format[1], L"/s");
+
+                        if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), node->TotalRateText, sizeof(node->TotalRateText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->TotalRateText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_READBYTES:
+                {
+                    ULONG64 number;
+
+                    number = diskItem->ReadTotal;
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format;
+
+                        PhInitFormatSize(&format, number);
+
+                        if (PhFormatToBuffer(&format, 1, node->ReadBytesText, sizeof(node->ReadBytesText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->ReadBytesText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_WRITEBYTES:
+                {
+                    ULONG64 number;
+
+                    number = diskItem->WriteTotal;
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format;
+
+                        PhInitFormatSize(&format, number);
+
+                        if (PhFormatToBuffer(&format, 1, node->WriteBytesText, sizeof(node->WriteBytesText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->WriteBytesText;
+                            getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                        }
+                    }
+                }
+                break;
+            case ETDSTNC_TOTALBYTES:
+                {
+                    ULONG64 number;
+
+                    number = diskItem->ReadTotal + diskItem->WriteTotal;
+
+                    if (number != 0)
+                    {
+                        SIZE_T returnLength;
+                        PH_FORMAT format;
+
+                        PhInitFormatSize(&format, number);
+
+                        if (PhFormatToBuffer(&format, 1, node->TotalBytesText, sizeof(node->TotalBytesText), &returnLength))
+                        {
+                            getCellText->Text.Buffer = node->TotalBytesText;
                             getCellText->Text.Length = returnLength - sizeof(UNICODE_NULL);
                         }
                     }
@@ -831,6 +1109,12 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
     return FALSE;
 }
 
+/**
+ * Retrieves the process name associated with a disk item.
+ *
+ * \param DiskItem The disk item.
+ * \return The process name string, or NULL if not available.
+ */
 PPH_STRING EtpGetDiskItemProcessName(
     _In_ PET_DISK_ITEM DiskItem
     )
@@ -852,6 +1136,11 @@ PPH_STRING EtpGetDiskItemProcessName(
     return PhFormat(format, RTL_NUMBER_OF(format), 0);
 }
 
+/**
+ * Retrieves the first selected disk item in the tree list.
+ *
+ * \return The selected disk item, or NULL if none selected.
+ */
 PET_DISK_ITEM EtGetSelectedDiskItem(
     VOID
     )
@@ -873,6 +1162,13 @@ PET_DISK_ITEM EtGetSelectedDiskItem(
     return diskItem;
 }
 
+/**
+ * Retrieves list of all selected disk items in the tree list.
+ *
+ * \param Nodes A pointer to a list that receives the selected disk items.
+ * \param NumberOfNodes A pointer to a variable that receives the number of disk items.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN EtGetSelectedDiskItems(
     _Out_ PET_DISK_ITEM **Nodes,
@@ -903,6 +1199,9 @@ BOOLEAN EtGetSelectedDiskItems(
     return FALSE;
 }
 
+/**
+ * Deselects all nodes in the disk tree list.
+ */
 VOID EtDeselectAllDiskNodes(
     VOID
     )
@@ -910,6 +1209,11 @@ VOID EtDeselectAllDiskNodes(
     TreeNew_DeselectRange(DiskTreeNewHandle, 0, -1);
 }
 
+/**
+ * Selects a disk node and scrolls the tree list to ensure it is visible.
+ *
+ * \param DiskNode The disk node to select.
+ */
 VOID EtSelectAndEnsureVisibleDiskNode(
     _In_ PET_DISK_NODE DiskNode
     )
@@ -922,6 +1226,9 @@ VOID EtSelectAndEnsureVisibleDiskNode(
     TreeNew_FocusMarkSelectNode(DiskTreeNewHandle, &DiskNode->Node);
 }
 
+/**
+ * Copies the disk tree list data to the clipboard.
+ */
 VOID EtCopyDiskList(
     VOID
     )
@@ -933,6 +1240,12 @@ VOID EtCopyDiskList(
     PhDereferenceObject(text);
 }
 
+/**
+ * Writes the disk tree list data to a string builder.
+ *
+ * \param FileStream The file stream to write the data to.
+ * \param Mode The write mode.
+ */
 VOID EtWriteDiskList(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ ULONG Mode
@@ -956,6 +1269,12 @@ VOID EtWriteDiskList(
     PhDereferenceObject(lines);
 }
 
+/**
+ * Handles commands and actions executed from the disk tab context menu or toolbar.
+ *
+ * \param WindowHandle The handle of the parent window.
+ * \param Id The ID of the command to execute.
+ */
 VOID EtHandleDiskCommand(
     _In_ HWND WindowHandle,
     _In_ ULONG Id
@@ -997,7 +1316,7 @@ VOID EtHandleDiskCommand(
                     if (found)
                     {
                         SystemInformer_SelectTabPage(0);
-                        PhSelectAndEnsureVisibleProcessNode(processNode);
+                        SystemInformer_SelectProcessNode(processNode);
                     }
                     else
                     {
@@ -1100,6 +1419,13 @@ VOID EtHandleDiskCommand(
     }
 }
 
+/**
+ * Initializes the disk tab context menu options.
+ *
+ * \param Menu The popup menu handle to initialize.
+ * \param DiskItems The list of currently selected disk items.
+ * \param NumberOfDiskItems The number of disk items.
+ */
 VOID EtpInitializeDiskMenu(
     _In_ PPH_EMENU Menu,
     _In_ PET_DISK_ITEM *DiskItems,
@@ -1141,6 +1467,12 @@ VOID EtpInitializeDiskMenu(
     }
 }
 
+/**
+ * Displays the context menu for selected disk items in the tree list.
+ *
+ * \param TreeWindowHandle The window handle of the tree list.
+ * \param ContextMenuEvent The context menu event parameters.
+ */
 VOID EtShowDiskContextMenu(
     _In_ HWND TreeWindowHandle,
     _In_ PPH_TREENEW_CONTEXT_MENU ContextMenuEvent
@@ -1196,6 +1528,12 @@ VOID EtShowDiskContextMenu(
     PhFree(diskItems);
 }
 
+/**
+ * Event handler triggered when a new disk item is registered.
+ *
+ * \param Parameter Event-specific parameter containing the added disk item.
+ * \param Context User-defined context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtpDiskItemAddedHandler(
     _In_ PVOID Parameter,
@@ -1208,6 +1546,12 @@ VOID NTAPI EtpDiskItemAddedHandler(
     PhPushProviderEventQueue(&EtpDiskEventQueue, ProviderAddedEvent, Parameter, EtRunCount);
 }
 
+/**
+ * Event handler triggered when a disk item is modified.
+ *
+ * \param Parameter Event-specific parameter containing the modified disk item.
+ * \param Context User-defined context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtpDiskItemModifiedHandler(
     _In_opt_ PVOID Parameter,
@@ -1217,6 +1561,12 @@ VOID NTAPI EtpDiskItemModifiedHandler(
     PhPushProviderEventQueue(&EtpDiskEventQueue, ProviderModifiedEvent, Parameter, EtRunCount);
 }
 
+/**
+ * Event handler triggered when a disk item is removed.
+ *
+ * \param Parameter Event-specific parameter containing the removed disk item.
+ * \param Context User-defined context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtpDiskItemRemovedHandler(
     _In_opt_ PVOID Parameter,
@@ -1226,6 +1576,12 @@ VOID NTAPI EtpDiskItemRemovedHandler(
     PhPushProviderEventQueue(&EtpDiskEventQueue, ProviderRemovedEvent, Parameter, EtRunCount);
 }
 
+/**
+ * Event handler triggered when the provider updates disk items.
+ *
+ * \param Parameter Event-specific parameter.
+ * \param Context User-defined context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtpDiskItemsUpdatedHandler(
     _In_opt_ PVOID Parameter,
@@ -1235,6 +1591,11 @@ VOID NTAPI EtpDiskItemsUpdatedHandler(
     SystemInformer_Invoke(EtpOnDiskItemsUpdated, UlongToPtr(EtRunCount));
 }
 
+/**
+ * Performs UI and data updates on the GUI thread when disk items are updated.
+ *
+ * \param RunId The run ID.
+ */
 VOID NTAPI EtpOnDiskItemsUpdated(
     _In_ ULONG RunId
     )
@@ -1278,6 +1639,12 @@ VOID NTAPI EtpOnDiskItemsUpdated(
         TreeNew_SetRedraw(DiskTreeNewHandle, TRUE);
 }
 
+/**
+ * Event handler triggered when the search query text changes.
+ *
+ * \param Parameter Event-specific parameter.
+ * \param Context User-defined context.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtpSearchChangedHandler(
     _In_opt_ PVOID Parameter,
@@ -1290,6 +1657,13 @@ VOID NTAPI EtpSearchChangedHandler(
     PhApplyTreeNewFilters(&FilterSupport);
 }
 
+/**
+ * Callback function used by the tree filter system to determine if a node matches the search query.
+ *
+ * \param Node The tree node to filter.
+ * \param Context User-defined context.
+ * \return TRUE if the node matches the filter, FALSE otherwise.
+ */
 _Function_class_(PH_TN_FILTER_FUNCTION)
 BOOLEAN NTAPI EtpSearchDiskListFilterCallback(
     _In_ PPH_TREENEW_NODE Node,
@@ -1315,6 +1689,13 @@ BOOLEAN NTAPI EtpSearchDiskListFilterCallback(
     return FALSE;
 }
 
+/**
+ * Activates or focuses content in the tool status banner for the disk tab.
+ *
+ * \param Info The tool status tab information structure.
+ * \param Activate TRUE to activate, FALSE to deactivate.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Function_class_(TOOLSTATUS_TAB_ACTIVATE_CONTENT)
 VOID NTAPI EtpToolStatusActivateContent(
     _In_ BOOLEAN Select
@@ -1331,6 +1712,12 @@ VOID NTAPI EtpToolStatusActivateContent(
     }
 }
 
+/**
+ * Retrieves the window handle of the disk tree list control for tool status integration.
+ *
+ * \param Info The tool status tab information structure.
+ * \return The handle of the tree list control.
+ */
 _Function_class_(TOOLSTATUS_GET_TREENEW_HANDLE)
 HWND NTAPI EtpToolStatusGetTreeNewHandle(
     VOID
@@ -1340,27 +1727,27 @@ HWND NTAPI EtpToolStatusGetTreeNewHandle(
 }
 
 //INT_PTR CALLBACK EtpDiskTabErrorDialogProc(
-//    _In_ HWND hwndDlg,
-//    _In_ UINT uMsg,
+//    _In_ HWND WindowHandle,
+//    _In_ UINT WindowMessage,
 //    _In_ WPARAM wParam,
 //    _In_ LPARAM lParam
 //    )
 //{
-//    switch (uMsg)
+//    switch (WindowMessage)
 //    {
 //    case WM_INITDIALOG:
 //        {
 //            if (!PhGetOwnTokenAttributes().Elevated)
 //            {
-//                Button_SetElevationRequiredState(GetDlgItem(hwndDlg, IDC_RESTART), TRUE);
+//                Button_SetElevationRequiredState(GetDlgItem(WindowHandle, IDC_RESTART), TRUE);
 //            }
 //            else
 //            {
-//                PhSetDialogItemText(hwndDlg, IDC_ERROR, L"Unable to start the kernel event tracing session.");
-//                ShowWindow(GetDlgItem(hwndDlg, IDC_RESTART), SW_HIDE);
+//                PhSetDialogItemText(WindowHandle, IDC_ERROR, L"Unable to start the kernel event tracing session.");
+//                ShowWindow(GetDlgItem(WindowHandle, IDC_RESTART), SW_HIDE);
 //            }
 //
-//            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+//            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 //        }
 //        break;
 //    case WM_COMMAND:

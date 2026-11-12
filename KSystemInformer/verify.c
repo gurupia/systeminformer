@@ -197,13 +197,14 @@ static const BCRYPT_PSS_PADDING_INFO KphpKeyPaddingInfo =
     KPH_KEY_HASH_ALGORITHM,
     KPH_KEY_HASH_ALGORITHM_BYTES
 };
-static const UNICODE_STRING KphpSigExtension = RTL_CONSTANT_STRING(L".sig");
+DECLARE_CONST_UNICODE_STRING(KphpSigExtension, L".sig");
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 KPH_PROTECTED_DATA_SECTION_PUSH();
 static BCRYPT_KEY_HANDLE KphpPublicKeyHandles[ARRAYSIZE(KphpPublicKeys)] = { 0 };
 static ULONG KphpPublicKeyHandlesCount = 0;
 C_ASSERT(ARRAYSIZE(KphpPublicKeyHandles) == ARRAYSIZE(KphpPublicKeys));
 KPH_PROTECTED_DATA_SECTION_POP();
+static KPH_RUNDOWN KphpVerifyRundown = { 0 };
 
 KPH_PAGED_FILE();
 
@@ -232,35 +233,44 @@ NTSTATUS KphpVerifyHash(
 
     KPH_PAGED_CODE_PASSIVE();
 
-    status = STATUS_UNSUCCESSFUL;
-
     if (KeyHandle)
     {
-        status = BCryptVerifySignature(KeyHandle,
+        return BCryptVerifySignature(KeyHandle,
+                                     KPH_KEY_PADDING_INFO,
+                                     HashInformation->Hash,
+                                     HashInformation->Length,
+                                     Signature,
+                                     SignatureLength,
+                                     KPH_KEY_PADDING_FLAGS);
+    }
+
+    if (!KphAcquireRundown(&KphpVerifyRundown))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      VERIFY,
+                      "Failed to acquire rundown.");
+
+        return STATUS_TOO_LATE;
+    }
+
+    status = STATUS_UNSUCCESSFUL;
+
+    for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
+    {
+        status = BCryptVerifySignature(KphpPublicKeyHandles[i],
                                        KPH_KEY_PADDING_INFO,
                                        HashInformation->Hash,
                                        HashInformation->Length,
                                        Signature,
                                        SignatureLength,
                                        KPH_KEY_PADDING_FLAGS);
-    }
-    else
-    {
-        for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
+        if (NT_SUCCESS(status))
         {
-            status = BCryptVerifySignature(KphpPublicKeyHandles[i],
-                                           KPH_KEY_PADDING_INFO,
-                                           HashInformation->Hash,
-                                           HashInformation->Length,
-                                           Signature,
-                                           SignatureLength,
-                                           KPH_KEY_PADDING_FLAGS);
-            if (NT_SUCCESS(status))
-            {
-                return status;
-            }
+            break;
         }
     }
+
+    KphReleaseRundown(&KphpVerifyRundown);
 
     return status;
 }
@@ -775,6 +785,8 @@ NTSTATUS KphInitializeVerify(
 
     KPH_PAGED_CODE_PASSIVE();
 
+    KphInitializeRundown(&KphpVerifyRundown);
+
     testSigning = KphTestSigningEnabled();
 
     for (ULONG i = 0; i < ARRAYSIZE(KphpPublicKeys); i++)
@@ -818,6 +830,8 @@ VOID KphCleanupVerify(
     )
 {
     KPH_PAGED_CODE_PASSIVE();
+
+    KphWaitForRundown(&KphpVerifyRundown);
 
     for (ULONG i = 0; i < KphpPublicKeyHandlesCount; i++)
     {

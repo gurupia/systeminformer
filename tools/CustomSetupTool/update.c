@@ -11,77 +11,215 @@
 
 #include "setup.h"
 
+/**
+ * Updates an existing System Informer installation.
+ *
+ * \param Context The setup context.
+ * \return Successful or errant status.
+ */
+_Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS CALLBACK SetupUpdateBuild(
-    _In_ PPH_SETUP_CONTEXT Context
+    _In_ PVOID Context
     )
 {
+    PPH_SETUP_CONTEXT context = (PPH_SETUP_CONTEXT)Context;
     NTSTATUS status;
+    BOOLEAN lockCreated = FALSE;
 
-    // Create the folder.
-    if (!NT_SUCCESS(status = PhCreateDirectoryWin32(&Context->SetupInstallPath->sr)))
+    context->SetupProgressActive = TRUE;
+    context->LastStatus = STATUS_SUCCESS; // clear any error from a previous attempt (Retry)
+
+#if !defined(PH_BUILD_API)
+    SetupSetProgressText(context, L"Downloading update...", NULL);
+
+    if (!NT_SUCCESS(status = SetupDownloadBuildZip(context)))
     {
-        Context->LastStatus = status;
+        context->LastStatus = status;
+        goto CleanupExit;
+    }
+#endif
+
+    //
+    // Create the target update folder.
+    //
+
+    SetupSetProgressMarquee(context, TRUE);
+    SetupSetProgressText(context, L"Preparing the update directory...", NULL);
+
+    if (!NT_SUCCESS(status = PhCreateDirectoryWin32(&context->SetupInstallPath->sr)))
+    {
+        context->LastStatus = status;
         goto CleanupExit;
     }
 
+    //
+    // Roll back a previous interrupted update, then create the update lock. The lock stays until
+    // the update completes (or is rolled back) so a half-updated install can be detected.
+    //
+
+    SetupRecoverIncompleteUpdate(context);
+
+    if (!NT_SUCCESS(status = SetupCreateUpdateLock(context)))
+    {
+        context->LastStatus = status;
+        goto CleanupExit;
+    }
+
+    lockCreated = TRUE;
+
+    //
     // Stop the application.
-    if (!NT_SUCCESS(status = SetupShutdownApplication(Context)))
+    //
+
+    SetupSetProgressText(context, L"Stopping System Informer...", NULL);
+
+    if (!NT_SUCCESS(status = SetupShutdownApplication(context)))
     {
-        Context->LastStatus = status;
+        context->LastStatus = status;
         goto CleanupExit;
     }
 
+    //
     // Stop the kernel driver.
-    if (!NT_SUCCESS(status = SetupUninstallDriver(Context)))
+    //
+
+    SetupSetProgressText(context, L"Stopping the kernel driver...", NULL);
+
+    if (!NT_SUCCESS(status = SetupUninstallDriver(context)))
     {
-        Context->LastStatus = status;
+        context->LastStatus = status;
         goto CleanupExit;
     }
 
+    //
+    // Create the uninstaller.
+    //
+
+    SetupSetProgressText(context, L"Updating the uninstaller...", NULL);
+
+    if (!NT_SUCCESS(status = SetupCreateUninstallFile(context)))
+    {
+        context->LastStatus = status;
+        goto CleanupExit;
+    }
+
+    //
+    // Extract the updated files.
+    //
+
+    SetupSetProgressText(context, L"Extracting updated files...", NULL);
+
+    //
+    // Keep the backups until the whole update succeeded so a later failure can still roll back.
+    //
+
+    context->SetupDeferFinalize = TRUE;
+
+    //
+    // Extract the update into the target directory.
+    //
+
+    if (!NT_SUCCESS(status = SetupExtractBuild(context)))
+    {
+        context->LastStatus = status;
+        goto CleanupExit;
+    }
+
+    //
     // Upgrade the settings file.
+    //
+
+    SetupSetProgressText(context, L"Updating settings...", NULL);
     SetupUpgradeSettingsFile();
+
+    //
     // Convert the settings file.
+    //
+
+    SetupSetProgressText(context, L"Converting settings...", NULL);
     SetupConvertSettingsFile();
 
-    // Remove the previous installation.
-    //if (Context->SetupResetSettings)
-    //    PhDeleteDirectory(Context->SetupInstallPath);
+    //
+    // Create the ARP uninstall config.
+    //
 
-    // Create the uninstaller.
-    if (!NT_SUCCESS(status = SetupCreateUninstallFile(Context)))
+    SetupSetProgressText(context, L"Updating uninstall registration...", NULL);
+    if (!NT_SUCCESS(status = SetupCreateUninstallKey(Context)))
     {
-        Context->LastStatus = status;
+        context->LastStatus = status;
         goto CleanupExit;
     }
 
-    // Create the ARP uninstall entries.
-    SetupCreateUninstallKey(Context);
+    SetupDeleteAppCompatFlagsLayersEntry();
 
-    // Create autorun.
+    //
+    // Create Windows Error Reporting config.
+    //
+
+    SetupSetProgressText(context, L"Updating LocalDumps configuration...", NULL);
+    SetupCreateLocalDumpsKey();
+
+    //
+    // Create the application path config.
+    //
+
+    SetupSetProgressText(context, L"Updating Windows integration...", NULL);
     SetupCreateWindowsOptions(Context);
 
-    // Create shortcuts.
-    //SetupCreateShortcuts(Context);
+    //
+    // Repair the startup entry.
+    //
+    // An entry written for a previous installation directory starts an executable that is no
+    // longer the installed one.
 
-    // Set the default image execution options.
-    //SetupCreateImageFileExecutionOptions();
+    SetupRepairAutoRunEntry(Context);
 
-    // Extract the updated files.
-    if (!NT_SUCCESS(status = SetupExtractBuild(Context)))
-    {
-        Context->LastStatus = status;
-        goto CleanupExit;
-    }
+    //
+    // The update succeeded: remove the backups, then the lock (last).
+    //
 
-    PostMessage(Context->DialogHandle, SETUP_SHOWUPDATEFINAL, 0, 0);
+    SetupFinalizeStagedFiles(context);
+    SetupDeleteUpdateLock(context);
+
+    //
+    // Show the update success page.
+    //
+
+    SetupSetProgressText(context, L"Update complete.", NULL);
+    SetupSetProgressValue(context, 100);
+    context->SetupProgressActive = FALSE;
+    SetupDeleteBuildZip(context);
+    PostMessage(context->DialogHandle, SETUP_SHOWUPDATEFINAL, 0, 0);
     return STATUS_SUCCESS;
 
 CleanupExit:
 
-    PostMessage(Context->DialogHandle, SETUP_SHOWUPDATEERROR, 0, 0);
+    //
+    // Restore the previous version. The lock is removed only after the rollback.
+    //
+
+    SetupRollbackStagedFiles(context);
+
+    if (lockCreated)
+        SetupDeleteUpdateLock(context);
+
+    SetupSetProgressText(context, L"Update failed.", NULL);
+    context->SetupProgressActive = FALSE;
+    SetupDeleteBuildZip(context);
+    PostMessage(context->DialogHandle, SETUP_SHOWUPDATEERROR, 0, 0);
     return STATUS_UNSUCCESSFUL;
 }
 
+/**
+ * Callback for the update progress task dialog.
+ *
+ * \param hwndDlg The task dialog window handle.
+ * \param uMsg The notification message.
+ * \param wParam Additional message information.
+ * \param lParam Additional message information.
+ * \param dwRefData The setup context.
+ * \return S_OK to continue, otherwise an HRESULT value.
+ */
 HRESULT CALLBACK SetupUpdatingTaskDialogCallbackProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -96,8 +234,8 @@ HRESULT CALLBACK SetupUpdatingTaskDialogCallbackProc(
     {
     case TDN_NAVIGATED:
         {
-            SendMessage(hwndDlg, TDM_SET_MARQUEE_PROGRESS_BAR, TRUE, 0);
-            SendMessage(hwndDlg, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 1);
+            SetupApplyDarkModeToPage(hwndDlg);
+            SetupSetProgressMarquee(context, TRUE);
 
             PhCreateThread2(SetupUpdateBuild, context);
         }
@@ -107,6 +245,16 @@ HRESULT CALLBACK SetupUpdatingTaskDialogCallbackProc(
     return S_OK;
 }
 
+/**
+ * Callback for the update completed task dialog.
+ *
+ * \param hwndDlg The task dialog window handle.
+ * \param uMsg The notification message.
+ * \param wParam Additional message information.
+ * \param lParam Additional message information.
+ * \param dwRefData The setup context.
+ * \return S_OK to continue, otherwise an HRESULT value.
+ */
 HRESULT CALLBACK SetupCompletedTaskDialogCallbackProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -116,22 +264,49 @@ HRESULT CALLBACK SetupCompletedTaskDialogCallbackProc(
 )
 {
     PPH_SETUP_CONTEXT context = (PPH_SETUP_CONTEXT)dwRefData;
+    NTSTATUS status;
 
     switch (uMsg)
     {
-    case TDN_BUTTON_CLICKED:
+    case TDN_NAVIGATED:
         {
-            if ((INT)wParam == IDCLOSE)
+            SetupApplyDarkModeToPage(hwndDlg);
+
+            //
+            // Launch System Informer and close the setup. If the launch fails, show the
+            // error page (with Retry) instead of reporting success.
+            //
+
+            status = SetupExecuteApplication(context);
+
+            if (NT_SUCCESS(status))
             {
-                SetupExecuteApplication(context);
+                PostMessage(hwndDlg, TDM_CLICK_BUTTON, IDCLOSE, 0);
+            }
+            else
+            {
+                context->LastStatus = status;
+                PostMessage(hwndDlg, SETUP_SHOWUPDATEERROR, 0, 0);
             }
         }
+        break;
+    case TDN_BUTTON_CLICKED:
         break;
     }
 
     return S_OK;
 }
 
+/**
+ * Callback for the update error task dialog.
+ *
+ * \param hwndDlg The task dialog window handle.
+ * \param uMsg The notification message.
+ * \param wParam Additional message information.
+ * \param lParam Additional message information.
+ * \param dwRefData The setup context.
+ * \return S_OK to continue, otherwise an HRESULT value.
+ */
 HRESULT CALLBACK SetupErrorTaskDialogCallbackProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -144,6 +319,9 @@ HRESULT CALLBACK SetupErrorTaskDialogCallbackProc(
 
     switch (uMsg)
     {
+    case TDN_NAVIGATED:
+        SetupApplyDarkModeToPage(hwndDlg);
+        break;
     case TDN_BUTTON_CLICKED:
         {
             if ((INT)wParam == IDYES)
@@ -151,6 +329,13 @@ HRESULT CALLBACK SetupErrorTaskDialogCallbackProc(
                 ShowUpdatePageDialog(context);
                 return S_FALSE;
             }
+
+            //
+            // The user closed the error page: the failed update was rolled back, so start the
+            // restored previous version.
+            //
+
+            SetupExecuteApplication(context);
         }
         break;
     }
@@ -158,6 +343,11 @@ HRESULT CALLBACK SetupErrorTaskDialogCallbackProc(
     return S_OK;
 }
 
+/**
+ * Shows the update progress page.
+ *
+ * \param Context The setup context.
+ */
 VOID ShowUpdatePageDialog(
     _In_ PPH_SETUP_CONTEXT Context
     )
@@ -186,6 +376,11 @@ VOID ShowUpdatePageDialog(
     PhTaskDialogNavigatePage(Context->DialogHandle, &config);
 }
 
+/**
+ * Shows the update completed page.
+ *
+ * \param Context The setup context.
+ */
 VOID ShowUpdateCompletedPageDialog(
     _In_ PPH_SETUP_CONTEXT Context
     )
@@ -208,6 +403,11 @@ VOID ShowUpdateCompletedPageDialog(
     PhTaskDialogNavigatePage(Context->DialogHandle, &config);
 }
 
+/**
+ * Shows the update error page.
+ *
+ * \param Context The setup context.
+ */
 VOID ShowUpdateErrorPageDialog(
     _In_ PPH_SETUP_CONTEXT Context
     )

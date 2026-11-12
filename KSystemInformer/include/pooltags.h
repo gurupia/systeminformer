@@ -23,8 +23,8 @@
 #define KPH_TAG_NPAGED_MESSAGE                  '2CpK'
 #define KPH_TAG_QUEUE_ITEM                      '3CpK'
 #define KPH_TAG_THREAD_POOL                     '4CpK'
-#define KPH_TAG_CLIENT_RATE_LIMITS              '5CpK'
-#define KPH_TAG_MESSAGE_SETTINGS                '6CpK'
+#define KPH_TAG_CLIENT_INFORMER_STATE           '5CpK'
+#define KPH_TAG_CLIENT_INFORMER_SETTINGS        '6CpK'
 
 // dyndata
 
@@ -64,8 +64,7 @@
 // hash
 
 #define KPH_TAG_HASHING_CONTEXT                 '0HpK'
-#define KPH_TAG_HASHING_INFRA                   '1HpK'
-#define KPH_TAG_CAPTURED_HASHES                 '2HpK'
+#define KPH_TAG_CAPTURED_HASHES                 '1HpK'
 
 // verify
 
@@ -85,6 +84,7 @@
 #define KPH_TAG_OB_CALL_CONTEXT                 '9IpK'
 #define KPH_TAG_INFORMER_STATE                  'SIpK'
 #define KPH_TAG_INFORMER_SETTINGS               'sIpK'
+#define KPH_TAG_SILO_NAME                       'aIpK'
 
 // cid_tracking
 

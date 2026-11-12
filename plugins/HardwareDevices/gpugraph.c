@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2022-2024
+ *     dmex    2022-2026
  *
  */
 
@@ -14,6 +14,15 @@
 
 PPH_OBJECT_TYPE GraphicsSysinfoEntryType = NULL;
 BOOLEAN GraphicsEnableAvxSupport = FALSE;
+
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN GraphicsDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    );
 
 PPH_STRING GraphicsDeviceGetAdapterDescription(
     _In_ PPH_STRING DevicePath
@@ -25,14 +34,14 @@ PPH_STRING GraphicsDeviceGetAdapterDescription(
 
     if (NT_SUCCESS(GraphicsOpenAdapterFromDeviceName(&adapterHandle, NULL, PhGetString(DevicePath))))
     {
-        GX_ADAPTER_ATTRIBUTES adapterSttributes;
+        GX_ADAPTER_ATTRIBUTES adapterAttributes;
 
         if (NT_SUCCESS(GraphicsQueryAdapterAttributes(
             adapterHandle,
-            &adapterSttributes
+            &adapterAttributes
             )))
         {
-            npuDevice = !!adapterSttributes.TypeNpu;
+            npuDevice = !!adapterAttributes.TypeNpu;
         }
 
         GraphicsCloseAdapterHandle(adapterHandle);
@@ -86,6 +95,7 @@ VOID GraphicsDeviceSysInfoInitializing(
     }
 
     context = PhCreateObjectZero(sizeof(DV_GPU_SYSINFO_CONTEXT), GraphicsSysinfoEntryType);
+    PhInitializeEvent(&context->NodeWindowInitializedEvent);
     context->DeviceEntry = PhReferenceObject(DeviceEntry);
 
     memset(&section, 0, sizeof(PH_SYSINFO_SECTION));
@@ -124,7 +134,7 @@ VOID GraphicsDeviceInitializeDialogDpi(
     _In_ PDV_GPU_SYSINFO_CONTEXT Context
     )
 {
-    Context->SysInfoGraphPadding = PhGetDpi(GPU_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
+    Context->SysInfoGraphPadding = PhScaleToDisplay(GPU_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
 }
 
 VOID GraphicsDeviceTickDialog(
@@ -135,99 +145,151 @@ VOID GraphicsDeviceTickDialog(
     GraphicsDeviceUpdatePanel(Context);
 }
 
+VOID GraphicsDeviceGetGraphRects(
+    _In_ PDV_GPU_SYSINFO_CONTEXT Context,
+    _Out_writes_(6) RECT LabelRects[6],
+    _Out_writes_(6) RECT GraphRects[6]
+    )
+{
+    RECT clientRect;
+    RECT labelRect;
+    RECT marginRect;
+    LONG graphWidth;
+    LONG graphHeight;
+    LONG graphPadding;
+    LONG y;
+
+    marginRect = Context->GpuGraphMarginScaled;
+    graphPadding = Context->SysInfoGraphPadding;
+
+    PhGetClientRect(Context->GpuDialog, &clientRect);
+    PhGetClientRect(GetDlgItem(Context->GpuDialog, IDC_GPU_L), &labelRect);
+    graphWidth = clientRect.right - marginRect.left - marginRect.right;
+    graphHeight = (clientRect.bottom - marginRect.top - marginRect.bottom - labelRect.bottom * 6 - graphPadding * 8) / 6;
+    y = marginRect.top;
+
+    for (ULONG i = 0; i < 6; i++)
+    {
+        LabelRects[i].left = marginRect.left;
+        LabelRects[i].top = y;
+        LabelRects[i].right = marginRect.left + labelRect.right;
+        LabelRects[i].bottom = y + labelRect.bottom;
+        y += labelRect.bottom + graphPadding;
+
+        GraphRects[i].left = marginRect.left;
+        GraphRects[i].top = y;
+        GraphRects[i].right = marginRect.left + graphWidth;
+        GraphRects[i].bottom = y + graphHeight;
+        y += graphHeight + graphPadding;
+    }
+
+    GraphRects[5].bottom = clientRect.bottom - marginRect.bottom;
+}
+
 VOID GraphicsDeviceCreateGraphs(
     _In_ PDV_GPU_SYSINFO_CONTEXT Context
     )
 {
-    Context->GpuGraphHandle = CreateWindow(
+    PH_GRAPH_CREATEPARAMS graphCreateParams;
+    RECT labelRects[6];
+    RECT graphRects[6];
+
+    GraphicsDeviceGetGraphRects(Context, labelRects, graphRects);
+
+    memset(&graphCreateParams, 0, sizeof(PH_GRAPH_CREATEPARAMS));
+    graphCreateParams.Size = sizeof(PH_GRAPH_CREATEPARAMS);
+    graphCreateParams.Callback = GraphicsDeviceGraphMessageCallback;
+    graphCreateParams.Context = Context;
+
+    Context->GpuGraphHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[0].left,
+        graphRects[0].top,
+        graphRects[0].right - graphRects[0].left,
+        graphRects[0].bottom - graphRects[0].top,
         Context->GpuDialog,
         NULL,
         NULL,
-        NULL
+        &graphCreateParams
         );
     Graph_SetTooltip(Context->GpuGraphHandle, TRUE);
 
-    Context->DedicatedGraphHandle = CreateWindow(
+    Context->DedicatedGraphHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[1].left,
+        graphRects[1].top,
+        graphRects[1].right - graphRects[1].left,
+        graphRects[1].bottom - graphRects[1].top,
         Context->GpuDialog,
         NULL,
         NULL,
-        NULL
+        &graphCreateParams
         );
     Graph_SetTooltip(Context->DedicatedGraphHandle, TRUE);
 
-    Context->SharedGraphHandle = CreateWindow(
+    Context->SharedGraphHandle = PhCreateWindow(
         PH_GRAPH_CLASSNAME,
         NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[2].left,
+        graphRects[2].top,
+        graphRects[2].right - graphRects[2].left,
+        graphRects[2].bottom - graphRects[2].top,
         Context->GpuDialog,
         NULL,
         NULL,
-        NULL
+        &graphCreateParams
         );
     Graph_SetTooltip(Context->SharedGraphHandle, TRUE);
 
     //if (Context->EtGpuSupported)
     {
-        Context->PowerUsageGraphHandle = CreateWindow(
+        Context->PowerUsageGraphHandle = PhCreateWindow(
             PH_GRAPH_CLASSNAME,
             NULL,
-            WS_VISIBLE | WS_CHILD | WS_BORDER,
-            0,
-            0,
-            0,
-            0,
+            WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+            graphRects[3].left,
+            graphRects[3].top,
+            graphRects[3].right - graphRects[3].left,
+            graphRects[3].bottom - graphRects[3].top,
             Context->GpuDialog,
             NULL,
             NULL,
-            NULL
+            &graphCreateParams
             );
         Graph_SetTooltip(Context->PowerUsageGraphHandle, TRUE);
 
-        Context->TemperatureGraphHandle = CreateWindow(
+        Context->TemperatureGraphHandle = PhCreateWindow(
             PH_GRAPH_CLASSNAME,
             NULL,
-            WS_VISIBLE | WS_CHILD | WS_BORDER,
-            0,
-            0,
-            0,
-            0,
+            WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+            graphRects[4].left,
+            graphRects[4].top,
+            graphRects[4].right - graphRects[4].left,
+            graphRects[4].bottom - graphRects[4].top,
             Context->GpuDialog,
             NULL,
             NULL,
-            NULL
+            &graphCreateParams
             );
         Graph_SetTooltip(Context->TemperatureGraphHandle, TRUE);
 
-        Context->FanRpmGraphHandle = CreateWindow(
+        Context->FanRpmGraphHandle = PhCreateWindow(
             PH_GRAPH_CLASSNAME,
             NULL,
-            WS_VISIBLE | WS_CHILD | WS_BORDER,
-            0,
-            0,
-            0,
-            0,
+            WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+            graphRects[5].left,
+            graphRects[5].top,
+            graphRects[5].right - graphRects[5].left,
+            graphRects[5].bottom - graphRects[5].top,
             Context->GpuDialog,
             NULL,
             NULL,
-            NULL
+            &graphCreateParams
             );
         Graph_SetTooltip(Context->FanRpmGraphHandle, TRUE);
     }
@@ -237,13 +299,9 @@ VOID GraphicsDeviceLayoutGraphs(
     _In_ PDV_GPU_SYSINFO_CONTEXT Context
     )
 {
-    RECT clientRect;
-    RECT labelRect;
-    RECT marginRect;
-    ULONG graphWidth;
-    ULONG graphHeight;
+    RECT labelRects[6];
+    RECT graphRects[6];
     HDWP deferHandle;
-    ULONG y;
 
     Context->GpuGraphState.Valid = FALSE;
     Context->GpuGraphState.TooltipIndex = ULONG_MAX;
@@ -251,177 +309,142 @@ VOID GraphicsDeviceLayoutGraphs(
     Context->DedicatedGraphState.TooltipIndex = ULONG_MAX;
     Context->SharedGraphState.Valid = FALSE;
     Context->SharedGraphState.TooltipIndex = ULONG_MAX;
+    Context->PowerUsageGraphState.Valid = FALSE;
+    Context->PowerUsageGraphState.TooltipIndex = ULONG_MAX;
+    Context->TemperatureGraphState.Valid = FALSE;
+    Context->TemperatureGraphState.TooltipIndex = ULONG_MAX;
+    Context->FanRpmGraphState.Valid = FALSE;
+    Context->FanRpmGraphState.TooltipIndex = ULONG_MAX;
 
-    //if (EtGpuSupported)
-    {
-        Context->PowerUsageGraphState.Valid = FALSE;
-        Context->PowerUsageGraphState.TooltipIndex = ULONG_MAX;
-        Context->TemperatureGraphState.Valid = FALSE;
-        Context->TemperatureGraphState.TooltipIndex = ULONG_MAX;
-        Context->FanRpmGraphState.Valid = FALSE;
-        Context->FanRpmGraphState.TooltipIndex = ULONG_MAX;
-    }
-
-    marginRect = Context->GpuGraphMargin;
-    PhGetSizeDpiValue(&marginRect, Context->SysinfoSection->Parameters->WindowDpi, TRUE);
-
-    PhGetClientRect(Context->GpuDialog, &clientRect);
-    PhGetClientRect(GetDlgItem(Context->GpuDialog, IDC_GPU_L), &labelRect);
-    graphWidth = clientRect.right - marginRect.left - marginRect.right;
-
-    //if (EtGpuSupported)
-        graphHeight = (clientRect.bottom - marginRect.top - marginRect.bottom - labelRect.bottom * 6 - Context->SysInfoGraphPadding * 8) / 6;
-    //else
-    //    graphHeight = (clientRect.bottom - marginRect.top - marginRect.bottom - labelRect.bottom * 3 - ET_GPU_PADDING * 5) / 3;
+    GraphicsDeviceGetGraphRects(Context, labelRects, graphRects);
 
     deferHandle = BeginDeferWindowPos(12);
-    y = marginRect.top;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         GetDlgItem(Context->GpuDialog, IDC_GPU_L),
         NULL,
-        marginRect.left,
-        y,
+        labelRects[0].left,
+        labelRects[0].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->SysInfoGraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->GpuGraphHandle,
         NULL,
-        marginRect.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[0].left,
+        graphRects[0].top,
+        graphRects[0].right - graphRects[0].left,
+        graphRects[0].bottom - graphRects[0].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->SysInfoGraphPadding;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         GetDlgItem(Context->GpuDialog, IDC_DEDICATED_L),
         NULL,
-        marginRect.left,
-        y,
+        labelRects[1].left,
+        labelRects[1].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->SysInfoGraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->DedicatedGraphHandle,
         NULL,
-        marginRect.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[1].left,
+        graphRects[1].top,
+        graphRects[1].right - graphRects[1].left,
+        graphRects[1].bottom - graphRects[1].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->SysInfoGraphPadding;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         GetDlgItem(Context->GpuDialog, IDC_SHARED_L),
         NULL,
-        marginRect.left,
-        y,
+        labelRects[2].left,
+        labelRects[2].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->SysInfoGraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->SharedGraphHandle,
         NULL,
-        marginRect.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[2].left,
+        graphRects[2].top,
+        graphRects[2].right - graphRects[2].left,
+        graphRects[2].bottom - graphRects[2].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->SysInfoGraphPadding;
 
-    //if (EtGpuSupported)
-    {
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            GetDlgItem(Context->GpuDialog, IDC_POWER_USAGE_L),
-            NULL,
-            marginRect.left,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
-            );
-        y += labelRect.bottom + Context->SysInfoGraphPadding;
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        GetDlgItem(Context->GpuDialog, IDC_POWER_USAGE_L),
+        NULL,
+        labelRects[3].left,
+        labelRects[3].top,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
+        );
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        Context->PowerUsageGraphHandle,
+        NULL,
+        graphRects[3].left,
+        graphRects[3].top,
+        graphRects[3].right - graphRects[3].left,
+        graphRects[3].bottom - graphRects[3].top,
+        SWP_NOACTIVATE | SWP_NOZORDER
+        );
 
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            Context->PowerUsageGraphHandle,
-            NULL,
-            marginRect.left,
-            y,
-            graphWidth,
-            graphHeight,
-            SWP_NOACTIVATE | SWP_NOZORDER
-            );
-        y += graphHeight + Context->SysInfoGraphPadding;
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        GetDlgItem(Context->GpuDialog, IDC_TEMPERATURE_L),
+        NULL,
+        labelRects[4].left,
+        labelRects[4].top,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
+        );
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        Context->TemperatureGraphHandle,
+        NULL,
+        graphRects[4].left,
+        graphRects[4].top,
+        graphRects[4].right - graphRects[4].left,
+        graphRects[4].bottom - graphRects[4].top,
+        SWP_NOACTIVATE | SWP_NOZORDER
+        );
 
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            GetDlgItem(Context->GpuDialog, IDC_TEMPERATURE_L),
-            NULL,
-            marginRect.left,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
-            );
-        y += labelRect.bottom + Context->SysInfoGraphPadding;
-
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            Context->TemperatureGraphHandle,
-            NULL,
-            marginRect.left,
-            y,
-            graphWidth,
-            graphHeight,
-            SWP_NOACTIVATE | SWP_NOZORDER
-            );
-        y += graphHeight + Context->SysInfoGraphPadding;
-
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            GetDlgItem(Context->GpuDialog, IDC_FAN_RPM_L),
-            NULL,
-            marginRect.left,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
-            );
-        y += labelRect.bottom + Context->SysInfoGraphPadding;
-
-        deferHandle = DeferWindowPos(
-            deferHandle,
-            Context->FanRpmGraphHandle,
-            NULL,
-            marginRect.left,
-            y,
-            graphWidth,
-            clientRect.bottom - marginRect.bottom - y,
-            SWP_NOACTIVATE | SWP_NOZORDER
-            );
-    }
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        GetDlgItem(Context->GpuDialog, IDC_FAN_RPM_L),
+        NULL,
+        labelRects[5].left,
+        labelRects[5].top,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
+        );
+    deferHandle = DeferWindowPos(
+        deferHandle,
+        Context->FanRpmGraphHandle,
+        NULL,
+        graphRects[5].left,
+        graphRects[5].top,
+        graphRects[5].right - graphRects[5].left,
+        graphRects[5].bottom - graphRects[5].top,
+        SWP_NOACTIVATE | SWP_NOZORDER
+        );
 
     EndDeferWindowPos(deferHandle);
 }
@@ -526,7 +549,6 @@ VOID GraphicsDeviceNotifyDedicatedGraph(
         {
             PPH_GRAPH_GETDRAWINFO getDrawInfo = (PPH_GRAPH_GETDRAWINFO)Header;
             PPH_GRAPH_DRAW_INFO drawInfo = getDrawInfo->DrawInfo;
-            ULONG i;
 
             drawInfo->Flags = PH_GRAPH_USE_GRID_X | PH_GRAPH_USE_GRID_Y | (GraphicsEnableScaleText ? PH_GRAPH_LABEL_MAX_Y : 0);
             Context->SysinfoSection->Parameters->ColorSetupFunction(drawInfo, PhGetIntegerSetting(SETTING_COLOR_PRIVATE), 0, Context->SysinfoSection->Parameters->WindowDpi);
@@ -546,12 +568,15 @@ VOID GraphicsDeviceNotifyDedicatedGraph(
                     max = (FLOAT)Context->DeviceEntry->DedicatedLimit;
                 }
 
-                for (i = 0; i < drawInfo->LineDataCount; i++)
                 {
-                    FLOAT data = Context->DedicatedGraphState.Data1[i] = (FLOAT)PhGetItemCircularBuffer_ULONG64(&Context->DeviceEntry->DedicatedHistory, i);
+                    FLOAT dataMax;
 
-                    if (max < data)
-                        max = data;
+                    PhCopyConvertCircularBufferULONG64(&Context->DeviceEntry->DedicatedHistory, Context->DedicatedGraphState.Data1, drawInfo->LineDataCount);
+
+                    dataMax = PhMaxMemorySingles(Context->DedicatedGraphState.Data1, drawInfo->LineDataCount);
+
+                    if (max < dataMax)
+                        max = dataMax;
                 }
 
                 if (max != 0)
@@ -608,7 +633,6 @@ VOID GraphicsDeviceNotifySharedGraph(
         {
             PPH_GRAPH_GETDRAWINFO getDrawInfo = (PPH_GRAPH_GETDRAWINFO)Header;
             PPH_GRAPH_DRAW_INFO drawInfo = getDrawInfo->DrawInfo;
-            ULONG i;
 
             drawInfo->Flags = PH_GRAPH_USE_GRID_X | PH_GRAPH_USE_GRID_Y | PH_GRAPH_USE_LINE_2 | (GraphicsEnableScaleText ? PH_GRAPH_LABEL_MAX_Y : 0);
             Context->SysinfoSection->Parameters->ColorSetupFunction(drawInfo, PhGetIntegerSetting(SETTING_COLOR_PHYSICAL), PhGetIntegerSetting(SETTING_COLOR_CPU_KERNEL), Context->SysinfoSection->Parameters->WindowDpi);
@@ -623,15 +647,20 @@ VOID GraphicsDeviceNotifySharedGraph(
             {
                 FLOAT max = 1024 * 1024;
 
-                for (i = 0; i < drawInfo->LineDataCount; i++)
                 {
-                    FLOAT data1 = Context->SharedGraphState.Data1[i] = (FLOAT)PhGetItemCircularBuffer_ULONG64(&Context->DeviceEntry->SharedHistory, i);
-                    FLOAT data2 = Context->SharedGraphState.Data2[i] = (FLOAT)PhGetItemCircularBuffer_ULONG64(&Context->DeviceEntry->CommitHistory, i);
+                    FLOAT max1;
+                    FLOAT max2;
 
-                    if (max < data1)
-                        max = data1;
-                    if (max < data2)
-                        max = data2;
+                    PhCopyConvertCircularBufferULONG64(&Context->DeviceEntry->SharedHistory, Context->SharedGraphState.Data1, drawInfo->LineDataCount);
+                    PhCopyConvertCircularBufferULONG64(&Context->DeviceEntry->CommitHistory, Context->SharedGraphState.Data2, drawInfo->LineDataCount);
+
+                    max1 = PhMaxMemorySingles(Context->SharedGraphState.Data1, drawInfo->LineDataCount);
+                    max2 = PhMaxMemorySingles(Context->SharedGraphState.Data2, drawInfo->LineDataCount);
+
+                    if (max < max1)
+                        max = max1;
+                    if (max < max2)
+                        max = max2;
                 }
 
                 max = max * 2;
@@ -1303,64 +1332,108 @@ BOOLEAN GraphicsDeviceSectionCallback(
     return FALSE;
 }
 
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN GraphicsDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    )
+{
+    PDV_GPU_SYSINFO_CONTEXT context = (PDV_GPU_SYSINFO_CONTEXT)Context;
+    NMHDR *header = (NMHDR *)Parameter1;
+
+    if (WindowHandle == context->GpuGraphHandle)
+    {
+        GraphicsDeviceNotifyGpuGraph(context, header);
+    }
+    else if (WindowHandle == context->DedicatedGraphHandle)
+    {
+        GraphicsDeviceNotifyDedicatedGraph(context, header);
+    }
+    else if (WindowHandle == context->SharedGraphHandle)
+    {
+        GraphicsDeviceNotifySharedGraph(context, header);
+    }
+    else if (WindowHandle == context->PowerUsageGraphHandle)
+    {
+        GraphicsDeviceNotifyPowerUsageGraph(context, header);
+    }
+    else if (WindowHandle == context->TemperatureGraphHandle)
+    {
+        GraphicsDeviceNotifyTemperatureGraph(context, header);
+    }
+    else if (WindowHandle == context->FanRpmGraphHandle)
+    {
+        GraphicsDeviceNotifyFanRpmGraph(context, header);
+    }
+
+    return TRUE;
+}
+
 INT_PTR CALLBACK GraphicsDeviceDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_GPU_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_GPU_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
             PPH_LAYOUT_ITEM graphItem;
             PPH_LAYOUT_ITEM panelItem;
             PPH_STRING adapterDescription;
-            PPH_STRING description;
+            PPH_STRING deviceName;
 
-            context->GpuDialog = hwndDlg;
+            context->GpuDialog = WindowHandle;
 
-            PhInitializeLayoutManager(&context->GpuLayoutManager, hwndDlg);
-            PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(hwndDlg, IDC_GPUNAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
-            graphItem = PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(hwndDlg, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
-            panelItem = PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(hwndDlg, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+            PhInitializeLayoutManager(&context->GpuLayoutManager, WindowHandle);
+            PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(WindowHandle, IDC_GPUNAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
+            graphItem = PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(WindowHandle, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
+            panelItem = PhAddLayoutItem(&context->GpuLayoutManager, GetDlgItem(WindowHandle, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             context->GpuGraphMargin = graphItem->Margin;
+            context->GpuGraphMarginScaled = context->GpuGraphMargin;
+            PhGetMarginDpiValue(&context->GpuGraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
 
             GraphicsDeviceInitializeDialog(context);
             GraphicsDeviceInitializeDialogDpi(context);
 
-            SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
-            SetWindowFont(GetDlgItem(hwndDlg, IDC_GPUNAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
+            SetWindowFont(GetDlgItem(WindowHandle, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
+            SetWindowFont(GetDlgItem(WindowHandle, IDC_GPUNAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
 
             adapterDescription = PH_AUTO_T(PH_STRING, GraphicsDeviceGetAdapterDescription(context->DeviceEntry->Id.DevicePath));
 
-            PhSetDialogItemText(hwndDlg, IDC_TITLE, PhGetString(adapterDescription));
+            PhSetDialogItemText(WindowHandle, IDC_TITLE, PhGetString(adapterDescription));
 
-            if (GraphicsQueryDeviceProperties(PhGetString(context->DeviceEntry->Id.DevicePath), &description, NULL, NULL, NULL, NULL, NULL))
-                PhSetDialogItemText(hwndDlg, IDC_GPUNAME, PhGetString(PH_AUTO_T(PH_STRING, description)));
+            // Show the adapter name below the title. Leave it blank when the device cannot be
+            // resolved rather than echoing the title text, which would show "GPU N" twice. (dmex)
+            if (deviceName = PH_AUTO_T(PH_STRING, GraphicsDeviceGetName(context->DeviceEntry)))
+                PhSetDialogItemText(WindowHandle, IDC_GPUNAME, PhGetString(deviceName));
             else
-                PhSetDialogItemText(hwndDlg, IDC_GPUNAME, PhGetString(adapterDescription));
+                PhSetDialogItemText(WindowHandle, IDC_GPUNAME, L"Unknown");
 
-            context->GpuPanel = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_GPUDEVICE_PANEL), hwndDlg, GraphicsDevicePanelDialogProc, context);
+            context->GpuPanel = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_GPUDEVICE_PANEL), WindowHandle, GraphicsDevicePanelDialogProc, context);
             ShowWindow(context->GpuPanel, SW_SHOW);
-            PhAddLayoutItemEx(&context->GpuLayoutManager, context->GpuPanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
+            PhAddLayoutItemExLogical(&context->GpuLayoutManager, context->GpuPanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
 
             GraphicsDeviceCreateGraphs(context);
             GraphicsDeviceUpdateGraphs(context);
@@ -1374,21 +1447,24 @@ INT_PTR CALLBACK GraphicsDeviceDialogProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
             GraphicsDeviceInitializeDialogDpi(context);
 
+            context->GpuGraphMarginScaled = context->GpuGraphMargin;
+            PhGetMarginDpiValue(&context->GpuGraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
+
             if (context->SysinfoSection->Parameters->LargeFont)
             {
-                SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
+                SetWindowFont(GetDlgItem(WindowHandle, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
             }
 
             if (context->SysinfoSection->Parameters->MediumFont)
             {
-                SetWindowFont(GetDlgItem(hwndDlg, IDC_GPUNAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
+                SetWindowFont(GetDlgItem(WindowHandle, IDC_GPUNAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
             }
 
             PhLayoutManagerUpdate(&context->GpuLayoutManager, context->SysinfoSection->Parameters->WindowDpi);
@@ -1403,83 +1479,55 @@ INT_PTR CALLBACK GraphicsDeviceDialogProc(
             GraphicsDeviceLayoutGraphs(context);
         }
         break;
-    case WM_NOTIFY:
-        {
-            NMHDR *header = (NMHDR *)lParam;
-
-            if (header->hwndFrom == context->GpuGraphHandle)
-            {
-                GraphicsDeviceNotifyGpuGraph(context, header);
-            }
-            else if (header->hwndFrom == context->DedicatedGraphHandle)
-            {
-                GraphicsDeviceNotifyDedicatedGraph(context, header);
-            }
-            else if (header->hwndFrom == context->SharedGraphHandle)
-            {
-                GraphicsDeviceNotifySharedGraph(context, header);
-            }
-            else if (header->hwndFrom == context->PowerUsageGraphHandle)
-            {
-                GraphicsDeviceNotifyPowerUsageGraph(context, header);
-            }
-            else if (header->hwndFrom == context->TemperatureGraphHandle)
-            {
-                GraphicsDeviceNotifyTemperatureGraph(context, header);
-            }
-            else if (header->hwndFrom == context->FanRpmGraphHandle)
-            {
-                GraphicsDeviceNotifyFanRpmGraph(context, header);
-            }
-        }
-        break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
 INT_PTR CALLBACK GraphicsDevicePanelDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_GPU_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_GPU_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->GpuPanelDedicatedUsageLabel = GetDlgItem(hwndDlg, IDC_ZDEDICATEDCURRENT_V);
-            context->GpuPanelDedicatedLimitLabel = GetDlgItem(hwndDlg, IDC_ZDEDICATEDLIMIT_V);
-            context->GpuPanelSharedUsageLabel = GetDlgItem(hwndDlg, IDC_ZSHAREDCURRENT_V);
-            context->GpuPanelSharedLimitLabel = GetDlgItem(hwndDlg, IDC_ZSHAREDLIMIT_V);
+            PhInitializeThemeWindowGroupBoxes(WindowHandle);
+
+            context->GpuPanelDedicatedUsageLabel = GetDlgItem(WindowHandle, IDC_ZDEDICATEDCURRENT_V);
+            context->GpuPanelDedicatedLimitLabel = GetDlgItem(WindowHandle, IDC_ZDEDICATEDLIMIT_V);
+            context->GpuPanelSharedUsageLabel = GetDlgItem(WindowHandle, IDC_ZSHAREDCURRENT_V);
+            context->GpuPanelSharedLimitLabel = GetDlgItem(WindowHandle, IDC_ZSHAREDLIMIT_V);
         }
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_COMMAND:
@@ -1496,11 +1544,11 @@ INT_PTR CALLBACK GraphicsDevicePanelDialogProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

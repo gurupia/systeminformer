@@ -28,7 +28,7 @@ struct json_object;
 #include <unistd.h>
 #endif /* HAVE_UNISTD_H */
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && !defined(ssize_t)
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
 #endif
@@ -47,7 +47,10 @@ struct json_object
     json_object_to_json_string_fn *_to_json_string;
     struct printbuf *_pb;
     json_object_delete_fn *_user_delete;
-    void *_userdata;
+    union {
+        void *_userdata;
+        void *_delete_parent;  // Used during json_object_put
+    };
     // Actually longer, always malloc'd as some more-specific type.
     // The rest of a struct json_object_${o_type} follows
 };
@@ -91,14 +94,14 @@ struct json_object_string
     // to expand the length of a string are common operations to perform.
     union
     {
-        char idata[1]; // Immediate data.  Actually longer
-        char *pdata;   // Only when len < 0
+        unsigned char idata[1]; // Immediate data.  Actually longer
+        unsigned char *pdata;   // Only when len < 0
     } c_string;
 };
 
-void _json_c_set_last_err(const char *err_fmt, ...);
+void _json_c_set_last_err(const unsigned char *err_fmt, ...);
 
-extern const char *json_hex_chars;
+extern const unsigned char *json_hex_chars;
 
 #ifdef __cplusplus
 }

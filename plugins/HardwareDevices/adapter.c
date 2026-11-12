@@ -6,12 +6,19 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *
  */
 
 #include "devices.h"
 
+/**
+ * Deletes a network adapter entry and releases its resources.
+ *
+ * \param Object Network adapter entry object.
+ * \param Flags Object deletion flags.
+ */
+_Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID NetworkEntryDeleteProcedure(
     _In_ PVOID Object,
     _In_ ULONG Flags
@@ -31,6 +38,9 @@ VOID NetworkEntryDeleteProcedure(
     PhDeleteCircularBuffer_ULONG64(&entry->OutboundBuffer);
 }
 
+/**
+ * Initializes the network adapter device list and object type.
+ */
 VOID NetworkDevicesInitialize(
     VOID
     )
@@ -39,6 +49,11 @@ VOID NetworkDevicesInitialize(
     NetworkDeviceEntryType = PhCreateObjectType(L"NetworkDeviceEntry", 0, NetworkEntryDeleteProcedure);
 }
 
+/**
+ * Refreshes all tracked network adapters and samples traffic counters.
+ *
+ * \param RunCount Current provider update count.
+ */
 VOID NetworkDevicesUpdate(
     _In_ ULONG RunCount
     )
@@ -52,7 +67,7 @@ VOID NetworkDevicesUpdate(
         ULONG64 networkInOctets = 0;
         ULONG64 networkOutOctets = 0;
 
-        entry = PhReferenceObjectSafe(NetworkDevicesList->Items[i]);
+        entry = PhReferenceObjectUnsafe(NetworkDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -154,6 +169,9 @@ VOID NetworkDevicesUpdate(
             entry->NetworkSendRaw = 0;
             PhInitializeDelta(&entry->NetworkSendDelta);
             PhInitializeDelta(&entry->NetworkReceiveDelta);
+            // Re-arm the first sample, otherwise the counters of the device we reconnect to are
+            // reported as a single tick's delta. (dmex)
+            entry->HaveFirstSample = FALSE;
         }
         else
         {
@@ -162,26 +180,31 @@ VOID NetworkDevicesUpdate(
             //if (entry->NetworkSendRaw < networkOutOctets)
             entry->NetworkSendRaw = networkOutOctets;
 
-            PhUpdateDelta(&entry->NetworkSendDelta, entry->NetworkSendRaw);
-            PhUpdateDelta(&entry->NetworkReceiveDelta, entry->NetworkReceiveRaw);
+            // Clamped: the adapter counters restart when the device is reset. (dmex)
+            PhUpdateDeltaClamped(&entry->NetworkSendDelta, entry->NetworkSendRaw);
+            PhUpdateDeltaClamped(&entry->NetworkReceiveDelta, entry->NetworkReceiveRaw);
         }
 
-        if (!entry->HaveFirstSample)
+        // Note: the DevicePresent check keeps the first sample armed across the ticks where the
+        // device is missing, so the counters of the device we reconnect to are not reported as a
+        // single tick's delta. (dmex)
+
+        if (entry->DevicePresent && !entry->HaveFirstSample)
         {
             entry->NetworkSendDelta.Delta = 0;
             entry->NetworkReceiveDelta.Delta = 0;
             entry->HaveFirstSample = TRUE;
         }
 
-        if (RunCount != 0)
+        if (RunCount != 0 && NetRateIntervalMs != 0)
         {
             entry->CurrentNetworkSend = entry->NetworkSendDelta.Delta;
             entry->CurrentNetworkReceive = entry->NetworkReceiveDelta.Delta;
 
             entry->CurrentNetworkSend *= 1000;
-            entry->CurrentNetworkSend /= NetUpdateInterval;
+            entry->CurrentNetworkSend /= NetRateIntervalMs;
             entry->CurrentNetworkReceive *= 1000;
-            entry->CurrentNetworkReceive /= NetUpdateInterval;
+            entry->CurrentNetworkReceive /= NetRateIntervalMs;
 
             PhAddItemCircularBuffer_ULONG64(&entry->OutboundBuffer, entry->CurrentNetworkSend);
             PhAddItemCircularBuffer_ULONG64(&entry->InboundBuffer, entry->CurrentNetworkReceive);
@@ -193,6 +216,12 @@ VOID NetworkDevicesUpdate(
     PhReleaseQueuedLockShared(&NetworkDevicesListLock);
 }
 
+/**
+ * Updates cached display information for a network adapter entry.
+ *
+ * \param DeviceHandle Optional adapter device handle.
+ * \param AdapterEntry Target network adapter entry.
+ */
 VOID NetworkDeviceUpdateDeviceInfo(
     _In_opt_ HANDLE DeviceHandle,
     _In_ PDV_NETADAPTER_ENTRY AdapterEntry
@@ -286,6 +315,14 @@ VOID NetworkDeviceUpdateDeviceInfo(
     }
 }
 
+/**
+ * Initializes a network adapter identifier.
+ *
+ * \param Id Destination identifier.
+ * \param InterfaceIndex Interface index.
+ * \param InterfaceLuid Interface LUID.
+ * \param InterfaceGuidString Interface GUID string.
+ */
 VOID InitializeNetAdapterId(
     _Out_ PDV_NETADAPTER_ID Id,
     _In_ NET_IFINDEX InterfaceIndex,
@@ -304,6 +341,12 @@ VOID InitializeNetAdapterId(
     }
 }
 
+/**
+ * Copies a network adapter identifier.
+ *
+ * \param Destination Destination identifier.
+ * \param Source Source identifier.
+ */
 VOID CopyNetAdapterId(
     _Out_ PDV_NETADAPTER_ID Destination,
     _In_ PDV_NETADAPTER_ID Source
@@ -317,6 +360,11 @@ VOID CopyNetAdapterId(
         );
 }
 
+/**
+ * Releases references held by a network adapter identifier.
+ *
+ * \param Id Identifier to release.
+ */
 VOID DeleteNetAdapterId(
     _Inout_ PDV_NETADAPTER_ID Id
     )
@@ -325,6 +373,13 @@ VOID DeleteNetAdapterId(
     PhClearReference(&Id->InterfacePath);
 }
 
+/**
+ * Compares two network adapter identifiers.
+ *
+ * \param Id1 First identifier.
+ * \param Id2 Second identifier.
+ * \return TRUE if both identifiers refer to the same adapter.
+ */
 BOOLEAN EquivalentNetAdapterId(
     _In_ PDV_NETADAPTER_ID Id1,
     _In_ PDV_NETADAPTER_ID Id2
@@ -336,6 +391,12 @@ BOOLEAN EquivalentNetAdapterId(
     return FALSE;
 }
 
+/**
+ * Creates and registers a network adapter entry.
+ *
+ * \param Id Network adapter identifier.
+ * \return Newly created network adapter entry.
+ */
 PDV_NETADAPTER_ENTRY CreateNetAdapterEntry(
     _In_ PDV_NETADAPTER_ID Id
     )

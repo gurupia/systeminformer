@@ -107,7 +107,7 @@ NTSTATUS PhQueuedLockInitialization(
         0
         );
 
-    if (NT_SUCCESS(status))
+    if (!NT_SUCCESS(status))
         return status;
 
     if (PhSystemBasicInformation.NumberOfProcessors > 1)
@@ -231,9 +231,7 @@ FORCEINLINE BOOLEAN PhpPushQueuedWaitBlock(
  * Finds the last wait block in the waiters list.
  *
  * \param Value The current value of the queued lock.
- *
  * \return A pointer to the last wait block.
- *
  * \remarks The function assumes the following flags are set:
  * \ref PH_QUEUED_LOCK_WAITERS,
  * \ref PH_QUEUED_LOCK_MULTIPLE_SHARED or
@@ -373,7 +371,7 @@ FORCEINLINE VOID PhpOptimizeQueuedLockListEx(
     PPH_QUEUED_WAIT_BLOCK lastWaitBlock;
     PPH_QUEUED_WAIT_BLOCK previousWaitBlock;
 
-    value = ReadULongPtrAcquire(&Value);
+    value = Value;
 
     while (TRUE)
     {
@@ -469,7 +467,7 @@ FORCEINLINE PPH_QUEUED_WAIT_BLOCK PhpPrepareToWakeQueuedLock(
     PPH_QUEUED_WAIT_BLOCK lastWaitBlock;
     PPH_QUEUED_WAIT_BLOCK previousWaitBlock;
 
-    value = ReadULongPtrAcquire(&Value);
+    value = Value;
 
     while (TRUE)
     {
@@ -638,6 +636,7 @@ VOID FASTCALL PhpfWakeQueuedLockEx(
  *
  * \param QueuedLock A queued lock.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfAcquireQueuedLockExclusive(
     _Inout_ PPH_QUEUED_LOCK QueuedLock
     )
@@ -690,6 +689,7 @@ VOID FASTCALL PhfAcquireQueuedLockExclusive(
  *
  * \param QueuedLock A queued lock.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfAcquireQueuedLockShared(
     _Inout_ PPH_QUEUED_LOCK QueuedLock
     )
@@ -751,6 +751,7 @@ VOID FASTCALL PhfAcquireQueuedLockShared(
  *
  * \param QueuedLock A queued lock.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfReleaseQueuedLockExclusive(
     _Inout_ PPH_QUEUED_LOCK QueuedLock
     )
@@ -815,6 +816,7 @@ VOID FASTCALL PhfReleaseQueuedLockExclusive(
  * \ref PH_QUEUED_LOCK_WAITERS. The function assumes the following flags are not set:
  * \ref PH_QUEUED_LOCK_MULTIPLE_SHARED, \ref PH_QUEUED_LOCK_TRAVERSING.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfWakeForReleaseQueuedLock(
     _Inout_ PPH_QUEUED_LOCK QueuedLock,
     _In_ ULONG_PTR Value
@@ -839,6 +841,7 @@ VOID FASTCALL PhfWakeForReleaseQueuedLock(
  *
  * \param QueuedLock A queued lock.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfReleaseQueuedLockShared(
     _Inout_ PPH_QUEUED_LOCK QueuedLock
     )
@@ -917,30 +920,34 @@ VOID FASTCALL PhfReleaseQueuedLockShared(
  * Wakes one thread sleeping on a condition variable.
  *
  * \param Condition A condition variable.
- *
  * \remarks The associated lock must be acquired before calling the function.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfPulseCondition(
     _Inout_ PPH_CONDITION Condition
     )
 {
-    if (Condition->Value & PH_QUEUED_LOCK_WAITERS)
-        PhpfWakeQueuedLockEx(Condition, Condition->Value, TRUE, FALSE);
+    ULONG_PTR value = ReadULongPtrAcquire(&Condition->Value);
+
+    if (value & PH_QUEUED_LOCK_WAITERS)
+        PhpfWakeQueuedLockEx(Condition, value, TRUE, FALSE);
 }
 
 /**
  * Wakes all threads sleeping on a condition variable.
  *
  * \param Condition A condition variable.
- *
  * \remarks The associated lock must be acquired before calling the function.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfPulseAllCondition(
     _Inout_ PPH_CONDITION Condition
     )
 {
-    if (Condition->Value & PH_QUEUED_LOCK_WAITERS)
-        PhpfWakeQueuedLockEx(Condition, Condition->Value, TRUE, TRUE);
+    ULONG_PTR value = ReadULongPtrAcquire(&Condition->Value);
+
+    if (value & PH_QUEUED_LOCK_WAITERS)
+        PhpfWakeQueuedLockEx(Condition, value, TRUE, TRUE);
 }
 
 /**
@@ -949,7 +956,6 @@ VOID FASTCALL PhfPulseAllCondition(
  * \param Condition A condition variable.
  * \param Lock A queued lock to release/acquire in exclusive mode.
  * \param Timeout Not implemented.
- *
  * \remarks The associated lock must be acquired before calling the function.
  */
 _Use_decl_annotations_
@@ -982,6 +988,8 @@ VOID FASTCALL PhfWaitForCondition(
             {
                 PhpOptimizeQueuedLockListEx(Condition, currentValue, TRUE);
             }
+
+            _Analysis_assume_lock_acquired_(*(PPH_FAST_LOCK)Lock);
 
             PhReleaseQueuedLockExclusive(Lock);
 
@@ -1037,22 +1045,31 @@ VOID FASTCALL PhfWaitForConditionEx(
             switch (Flags & PH_CONDITION_WAIT_LOCK_TYPE_MASK)
             {
             case PH_CONDITION_WAIT_QUEUED_LOCK:
-                __analysis_assume_lock_acquired(*(PPH_QUEUED_LOCK)Lock);
-                if (!(Flags & PH_CONDITION_WAIT_SHARED))
-                    PhReleaseQueuedLockExclusive((PPH_QUEUED_LOCK)Lock);
-                else
-                    PhReleaseQueuedLockShared((PPH_QUEUED_LOCK)Lock);
+                {
+                    _Analysis_assume_lock_acquired_(*(PPH_QUEUED_LOCK)Lock);
+
+                    if (!(Flags & PH_CONDITION_WAIT_SHARED))
+                        PhReleaseQueuedLockExclusive((PPH_QUEUED_LOCK)Lock);
+                    else
+                        PhReleaseQueuedLockShared((PPH_QUEUED_LOCK)Lock);
+                }
                 break;
             case PH_CONDITION_WAIT_CRITICAL_SECTION:
-                __analysis_assume_lock_acquired(*(PRTL_CRITICAL_SECTION)Lock);
-                RtlLeaveCriticalSection((PRTL_CRITICAL_SECTION)Lock);
+                {
+                    _Analysis_assume_lock_acquired_(*(PRTL_CRITICAL_SECTION)Lock);
+
+                    RtlLeaveCriticalSection((PRTL_CRITICAL_SECTION)Lock);
+                }
                 break;
             case PH_CONDITION_WAIT_FAST_LOCK:
-                __analysis_assume_lock_acquired(*(PPH_FAST_LOCK)Lock);
-                if (!(Flags & PH_CONDITION_WAIT_SHARED))
-                    PhReleaseFastLockExclusive((PPH_FAST_LOCK)Lock);
-                else
-                    PhReleaseFastLockShared((PPH_FAST_LOCK)Lock);
+                {
+                    _Analysis_assume_lock_acquired_(*(PPH_FAST_LOCK)Lock);
+
+                    if (!(Flags & PH_CONDITION_WAIT_SHARED))
+                        PhReleaseFastLockExclusive((PPH_FAST_LOCK)Lock);
+                    else
+                        PhReleaseFastLockShared((PPH_FAST_LOCK)Lock);
+                }
                 break;
             }
 
@@ -1068,19 +1085,25 @@ VOID FASTCALL PhfWaitForConditionEx(
             switch (Flags & PH_CONDITION_WAIT_LOCK_TYPE_MASK)
             {
             case PH_CONDITION_WAIT_QUEUED_LOCK:
-                if (!(Flags & PH_CONDITION_WAIT_SHARED))
-                    PhfAcquireQueuedLockExclusive((PPH_QUEUED_LOCK)Lock);
-                else
-                    PhfAcquireQueuedLockShared((PPH_QUEUED_LOCK)Lock);
+                {
+                    if (!(Flags & PH_CONDITION_WAIT_SHARED))
+                        PhfAcquireQueuedLockExclusive((PPH_QUEUED_LOCK)Lock);
+                    else
+                        PhfAcquireQueuedLockShared((PPH_QUEUED_LOCK)Lock);
+                }
                 break;
             case PH_CONDITION_WAIT_CRITICAL_SECTION:
-                RtlEnterCriticalSection((PRTL_CRITICAL_SECTION)Lock);
+                {
+                    RtlEnterCriticalSection((PRTL_CRITICAL_SECTION)Lock);
+                }
                 break;
             case PH_CONDITION_WAIT_FAST_LOCK:
-                if (!(Flags & PH_CONDITION_WAIT_SHARED))
-                    PhAcquireFastLockExclusive((PPH_FAST_LOCK)Lock);
-                else
-                    PhAcquireFastLockShared((PPH_FAST_LOCK)Lock);
+                {
+                    if (!(Flags & PH_CONDITION_WAIT_SHARED))
+                        PhAcquireFastLockExclusive((PPH_FAST_LOCK)Lock);
+                    else
+                        PhAcquireFastLockShared((PPH_FAST_LOCK)Lock);
+                }
                 break;
             }
 
@@ -1098,6 +1121,7 @@ VOID FASTCALL PhfWaitForConditionEx(
  * \remarks If you later determine that the wait should not occur, you must call PhfSetWakeEvent()
  * to dequeue the wait block.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfQueueWakeEvent(
     _Inout_ PPH_WAKE_EVENT WakeEvent,
     _Out_ PPH_QUEUED_WAIT_BLOCK WaitBlock
@@ -1131,6 +1155,7 @@ VOID FASTCALL PhfQueueWakeEvent(
  * \param WakeEvent A wake event.
  * \param WaitBlock A wait block for a cancelled wait, otherwise NULL.
  */
+_Use_decl_annotations_
 VOID FASTCALL PhfSetWakeEvent(
     _Inout_ PPH_WAKE_EVENT WakeEvent,
     _Inout_opt_ PPH_QUEUED_WAIT_BLOCK WaitBlock
@@ -1182,10 +1207,10 @@ VOID FASTCALL PhfSetWakeEvent(
  * \param WaitBlock A wait block previously queued to the wake event using PhfQueueWakeEvent().
  * \param Spin TRUE to spin on the wake event before blocking, FALSE to block immediately.
  * \param Timeout A timeout value.
- *
  * \remarks Wake events are subject to spurious wakeups. You should call this function in a loop
  * which checks a predicate.
  */
+_Use_decl_annotations_
 NTSTATUS FASTCALL PhfWaitForWakeEvent(
     _Inout_ PPH_WAKE_EVENT WakeEvent,
     _Inout_ PPH_QUEUED_WAIT_BLOCK WaitBlock,
@@ -1203,6 +1228,6 @@ NTSTATUS FASTCALL PhfWaitForWakeEvent(
         // everyone.
         PhSetWakeEvent(WakeEvent, WaitBlock);
     }
-
+    
     return status;
 }

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011
- *     dmex    2011-2024
+ *     dmex    2011-2026
  *
  */
 
@@ -43,6 +43,7 @@ typedef struct _COLUMN_INFO
 
 static ULONG ProcessTreeListSortColumn;
 static PH_SORT_ORDER ProcessTreeListSortOrder;
+static PPH_LIST EtGpuNodeColumnTextList;
 
 VOID EtpAddTreeNewColumn(
     _In_ PPH_PLUGIN_TREENEW_INFORMATION TreeNewInfo,
@@ -63,6 +64,9 @@ VOID EtpAddTreeNewColumn(
     column.Width = Width;
     column.Alignment = Alignment;
     column.TextFlags = TextFlags;
+
+    if (SortFunction == EtpProcessTreeNewSortFunction)
+        column.HeaderTextCache = PhAllocateZero(sizeof(PH_TREENEW_HEADER_TEXT_CACHE));
 
     PhPluginAddTreeNewColumn(
         PluginInstance,
@@ -103,9 +107,8 @@ VOID EtProcessTreeNewInitializing(
         { ETPRTNC_HARDFAULTS, L"Hard faults", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_HARDFAULTSDELTA, L"Hard faults delta", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_PEAKTHREADS, L"Peak threads", 45, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
-        { ETPRTNC_GPU, L"GPU", 45, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
-        { ETPRTNC_GPUDEDICATEDBYTES, L"GPU dedicated bytes", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
-        { ETPRTNC_GPUSHAREDBYTES, L"GPU shared bytes", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_GPUDEDICATEDBYTES, L"GPU dedicated bytes (resident)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_GPUSHAREDBYTES, L"GPU shared bytes (resident)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_DISKREADRATE, L"Disk read rate", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_DISKWRITERATE, L"Disk write rate", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_DISKTOTALRATE, L"Disk total rate", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
@@ -114,8 +117,16 @@ VOID EtProcessTreeNewInitializing(
         { ETPRTNC_NETWORKTOTALRATE, L"Network total rate", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_FPS, L"FPS", 50, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
         { ETPRTNC_NPU, L"NPU", 45, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
-        { ETPRTNC_NPUDEDICATEDBYTES, L"NPU dedicated bytes", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
-        { ETPRTNC_NPUSHAREDBYTES, L"NPU shared bytes", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_NPUDEDICATEDBYTES, L"NPU dedicated bytes (resident)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_NPUSHAREDBYTES, L"NPU shared bytes (resident)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES, L"GPU dedicated bytes (committed)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_GPUSHAREDCOMMITTEDBYTES, L"GPU shared bytes (committed)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES, L"NPU dedicated bytes (committed)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_NPUSHAREDCOMMITTEDBYTES, L"NPU shared bytes (committed)", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_FIREWALLALLOWS, L"Firewall allows", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_FIREWALLBLOCKS, L"Firewall blocks", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_FIREWALLALLOWSDELTA, L"Firewall allows delta", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
+        { ETPRTNC_FIREWALLBLOCKSDELTA, L"Firewall blocks delta", 70, PH_ALIGN_RIGHT, DT_RIGHT, TRUE },
     };
 
     PPH_PLUGIN_TREENEW_INFORMATION treeNewInfo = Parameter;
@@ -125,6 +136,67 @@ VOID EtProcessTreeNewInitializing(
     {
         EtpAddTreeNewColumn(treeNewInfo, columns[i].SubId, columns[i].Text, columns[i].Width, columns[i].Alignment,
             columns[i].TextFlags, columns[i].SortDescending, EtpProcessTreeNewSortFunction);
+    }
+
+    if (EtGpuEnabled && EtGpuTotalNodeCount)
+    {
+        ULONG adapterCount = EtGetGpuAdapterCount();
+        ULONG previousAdapterIndex = ULONG_MAX;
+        ULONG adapterNodeIndex = 0;
+
+        EtGpuNodeColumnTextList = PhCreateList(adapterCount + EtGpuTotalNodeCount);
+
+        for (i = 0; i < adapterCount; i++)
+        {
+            PPH_STRING columnText;
+
+            columnText = PhFormatString(L"GPU %lu", i);
+            PhAddItemList(EtGpuNodeColumnTextList, columnText);
+            EtpAddTreeNewColumn(
+                treeNewInfo,
+                ETPRTNC_GPUADAPTER_FIRST + i,
+                columnText->Buffer,
+                55,
+                PH_ALIGN_RIGHT,
+                DT_RIGHT,
+                TRUE,
+                EtpProcessTreeNewSortFunction
+                );
+        }
+
+        for (i = 0; i < EtGpuTotalNodeCount; i++)
+        {
+            ULONG adapterIndex;
+            PPH_STRING nodeName;
+            PPH_STRING columnText;
+
+            adapterIndex = EtGetGpuAdapterIndexFromNodeIndex(i);
+            nodeName = EtGetGpuAdapterNodeDescription(adapterIndex, i);
+
+            if (adapterIndex == previousAdapterIndex)
+                adapterNodeIndex++;
+            else
+                adapterNodeIndex = 0;
+
+            previousAdapterIndex = adapterIndex;
+
+            if (nodeName && nodeName->Length)
+                columnText = PhFormatString(L"GPU %lu node %lu (%s)", adapterIndex, adapterNodeIndex, nodeName->Buffer);
+            else
+                columnText = PhFormatString(L"GPU %lu node %lu", adapterIndex, adapterNodeIndex);
+
+            PhAddItemList(EtGpuNodeColumnTextList, columnText);
+            EtpAddTreeNewColumn(
+                treeNewInfo,
+                ETPRTNC_GPUNODE_FIRST + i,
+                columnText->Buffer,
+                75,
+                PH_ALIGN_RIGHT,
+                DT_RIGHT,
+                TRUE,
+                EtpProcessTreeNewSortFunction
+                );
+        }
     }
 
     PhPluginEnableTreeNewNotify(PluginInstance, treeNewInfo->CmData);
@@ -141,6 +213,102 @@ static VOID PhpAggregateFieldIfNeeded(
     PhAggregateProcessFieldIfNeeded(ProcessNode, Type, AggregateProcessItem, BaseAddress, FieldOffset, AggregatedValue);
 }
 
+static VOID EtpAggregateGpuNode(
+    _In_ PPH_PROCESS_NODE ProcessNode,
+    _In_ ULONG NodeIndex,
+    _Inout_ PFLOAT Value
+    )
+{
+    PET_PROCESS_BLOCK block;
+
+    block = EtGetProcessBlock(ProcessNode->ProcessItem);
+
+    if (block && block->GpuNodesUtilization)
+        *Value += block->GpuNodesUtilization[NodeIndex];
+
+    for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
+        EtpAggregateGpuNode(ProcessNode->Children->Items[i], NodeIndex, Value);
+}
+
+static FLOAT EtpGetGpuNodeValue(
+    _In_ PPH_PROCESS_NODE ProcessNode,
+    _In_ PET_PROCESS_BLOCK Block,
+    _In_ ULONG NodeIndex
+    )
+{
+    FLOAT value = 0;
+
+    if (!EtPropagateCpuUsage || ProcessNode->Node.Expanded ||
+        ProcessTreeListSortOrder != NoSortOrder)
+    {
+        if (Block->GpuNodesUtilization)
+            value = Block->GpuNodesUtilization[NodeIndex];
+    }
+    else
+    {
+        EtpAggregateGpuNode(ProcessNode, NodeIndex, &value);
+    }
+
+    return min(value, 1.f);
+}
+
+static FLOAT EtpGetGpuAdapterOwnValue(
+    _In_ PET_PROCESS_BLOCK Block,
+    _In_ ULONG AdapterIndex
+    )
+{
+    FLOAT value = 0;
+
+    if (!Block->GpuNodesUtilization)
+        return 0;
+
+    for (ULONG i = 0; i < EtGpuTotalNodeCount; i++)
+    {
+        if (EtGetGpuAdapterIndexFromNodeIndex(i) == AdapterIndex)
+            value += Block->GpuNodesUtilization[i];
+    }
+
+    return value;
+}
+
+static VOID EtpAggregateGpuAdapter(
+    _In_ PPH_PROCESS_NODE ProcessNode,
+    _In_ ULONG AdapterIndex,
+    _Inout_ PFLOAT Value
+    )
+{
+    PET_PROCESS_BLOCK block;
+
+    block = EtGetProcessBlock(ProcessNode->ProcessItem);
+
+    if (block)
+        *Value += EtpGetGpuAdapterOwnValue(block, AdapterIndex);
+
+    for (ULONG i = 0; i < ProcessNode->Children->Count; i++)
+        EtpAggregateGpuAdapter(ProcessNode->Children->Items[i], AdapterIndex, Value);
+}
+
+static FLOAT EtpGetGpuAdapterValue(
+    _In_ PPH_PROCESS_NODE ProcessNode,
+    _In_ PET_PROCESS_BLOCK Block,
+    _In_ ULONG AdapterIndex
+    )
+{
+    FLOAT value = 0;
+
+    if (!EtPropagateCpuUsage || ProcessNode->Node.Expanded ||
+        ProcessTreeListSortOrder != NoSortOrder)
+    {
+        value = EtpGetGpuAdapterOwnValue(Block, AdapterIndex);
+    }
+    else
+    {
+        EtpAggregateGpuAdapter(ProcessNode, AdapterIndex, &value);
+    }
+
+    return value;
+}
+
 VOID EtProcessTreeNewMessage(
     _In_ PVOID Parameter
     )
@@ -154,6 +322,62 @@ VOID EtProcessTreeNewMessage(
         PPH_TREENEW_GET_CELL_TEXT getCellText = message->Parameter1;
         processNode = (PPH_PROCESS_NODE)getCellText->Node;
         block = EtGetProcessBlock(processNode->ProcessItem);
+
+        if ((message->SubId >= ETPRTNC_GPUADAPTER_FIRST &&
+            message->SubId < ETPRTNC_GPUADAPTER_FIRST + EtGetGpuAdapterCount()) ||
+            (message->SubId >= ETPRTNC_GPUNODE_FIRST &&
+            message->SubId < ETPRTNC_GPUNODE_FIRST + EtGpuTotalNodeCount))
+        {
+            ULONG cacheIndex;
+            FLOAT gpuUsage;
+            PWCHAR textBuffer;
+
+            if (message->SubId >= ETPRTNC_GPUNODE_FIRST)
+            {
+                ULONG nodeIndex = message->SubId - ETPRTNC_GPUNODE_FIRST;
+
+                cacheIndex = EtGetGpuAdapterCount() + nodeIndex;
+                gpuUsage = EtpGetGpuNodeValue(processNode, block, nodeIndex) * 100;
+            }
+            else
+            {
+                ULONG adapterIndex = message->SubId - ETPRTNC_GPUADAPTER_FIRST;
+
+                cacheIndex = adapterIndex;
+                gpuUsage = EtpGetGpuAdapterValue(processNode, block, adapterIndex) * 100;
+            }
+
+            PhAcquireQueuedLockExclusive(&block->TextCacheLock);
+
+            textBuffer = block->GpuNodesTextCache + cacheIndex * 64;
+
+            if (!block->GpuNodesTextCacheValid[cacheIndex])
+            {
+                block->GpuNodesTextCacheLength[cacheIndex] = 0;
+
+                if (gpuUsage >= 0.01f)
+                {
+                    PH_FORMAT format;
+                    SIZE_T returnLength;
+
+                    PhInitFormatF(&format, gpuUsage, 2);
+
+                    if (PhFormatToBuffer(&format, 1, textBuffer, sizeof(WCHAR) * 64, &returnLength))
+                        block->GpuNodesTextCacheLength[cacheIndex] = returnLength - sizeof(UNICODE_NULL);
+                }
+
+                block->GpuNodesTextCacheValid[cacheIndex] = TRUE;
+            }
+
+            if (block->GpuNodesTextCacheLength[cacheIndex])
+            {
+                getCellText->Text.Buffer = textBuffer;
+                getCellText->Text.Length = block->GpuNodesTextCacheLength[cacheIndex];
+            }
+
+            PhReleaseQueuedLockExclusive(&block->TextCacheLock);
+            return;
+        }
 
         PhAcquireQueuedLockExclusive(&block->TextCacheLock);
 
@@ -409,6 +633,36 @@ VOID EtProcessTreeNewMessage(
                     EtFormatSize(gpuSharedUsage, block, message);
                 }
                 break;
+            case ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES:
+                {
+                    ULONG64 gpuDedicatedCommitted = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, GpuDedicatedCommitted),
+                        &gpuDedicatedCommitted
+                        );
+
+                    EtFormatSize(gpuDedicatedCommitted, block, message);
+                }
+                break;
+            case ETPRTNC_GPUSHAREDCOMMITTEDBYTES:
+                {
+                    ULONG64 gpuSharedCommitted = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, GpuSharedCommitted),
+                        &gpuSharedCommitted
+                        );
+
+                    EtFormatSize(gpuSharedCommitted, block, message);
+                }
+                break;
             case ETPRTNC_DISKREADRATE:
                 {
                     ULONG64 number = 0;
@@ -526,6 +780,84 @@ VOID EtProcessTreeNewMessage(
                     EtFormatSize(npuSharedUsage, block, message);
                 }
                 break;
+            case ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES:
+                {
+                    ULONG64 npuDedicatedCommitted = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, NpuDedicatedCommitted),
+                        &npuDedicatedCommitted
+                        );
+
+                    EtFormatSize(npuDedicatedCommitted, block, message);
+                }
+                break;
+            case ETPRTNC_NPUSHAREDCOMMITTEDBYTES:
+                {
+                    ULONG64 npuSharedCommitted = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, NpuSharedCommitted),
+                        &npuSharedCommitted
+                        );
+
+                    EtFormatSize(npuSharedCommitted, block, message);
+                }
+                break;
+            case ETPRTNC_FIREWALLALLOWS:
+                {
+                    ULONG64 firewallAllowCount = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, FirewallAllowCount),
+                        &firewallAllowCount
+                        );
+
+                    EtFormatInt64(firewallAllowCount, block, message);
+                }
+                break;
+            case ETPRTNC_FIREWALLBLOCKS:
+                {
+                    ULONG64 firewallBlockCount = 0;
+
+                    PhpAggregateFieldIfNeeded(
+                        processNode,
+                        AggregateTypeInt64,
+                        block,
+                        FIELD_OFFSET(ET_PROCESS_BLOCK, FirewallBlockCount),
+                        &firewallBlockCount
+                        );
+
+                    EtFormatInt64(firewallBlockCount, block, message);
+                }
+                break;
+            case ETPRTNC_FIREWALLALLOWSDELTA:
+                {
+                    ULONG64 number = 0;
+
+                    PhpAggregateFieldIfNeeded(processNode, AggregateTypeInt64, block, FIELD_OFFSET(ET_PROCESS_BLOCK, FirewallAllowDelta.Delta), &number);
+
+                    EtFormatInt64(number, block, message);
+                }
+                break;
+            case ETPRTNC_FIREWALLBLOCKSDELTA:
+                {
+                    ULONG64 number = 0;
+
+                    PhpAggregateFieldIfNeeded(processNode, AggregateTypeInt64, block, FIELD_OFFSET(ET_PROCESS_BLOCK, FirewallBlockDelta.Delta), &number);
+
+                    EtFormatInt64(number, block, message);
+                }
+                break;
             }
 
             if (block->TextCacheLength[message->SubId])
@@ -553,6 +885,9 @@ VOID EtProcessTreeNewMessage(
 
         if (EtPropagateCpuUsage)
         {
+            if (block->GpuNodesTextCacheValid)
+                memset(block->GpuNodesTextCacheValid, 0, sizeof(BOOLEAN) * (EtGetGpuAdapterCount() + EtGpuTotalNodeCount));
+
             block->TextCacheValid[ETPRTNC_DISKTOTALBYTES] = FALSE;
             block->TextCacheValid[ETPRTNC_NETWORKTOTALBYTES] = FALSE;
 
@@ -562,6 +897,8 @@ VOID EtProcessTreeNewMessage(
             block->TextCacheValid[ETPRTNC_GPU] = FALSE;
             block->TextCacheValid[ETPRTNC_GPUDEDICATEDBYTES] = FALSE;
             block->TextCacheValid[ETPRTNC_GPUSHAREDBYTES] = FALSE;
+            block->TextCacheValid[ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES] = FALSE;
+            block->TextCacheValid[ETPRTNC_GPUSHAREDCOMMITTEDBYTES] = FALSE;
 
             block->TextCacheValid[ETPRTNC_DISKTOTALRATE] = FALSE;
             block->TextCacheValid[ETPRTNC_NETWORKTOTALRATE] = FALSE;
@@ -571,6 +908,11 @@ VOID EtProcessTreeNewMessage(
             block->TextCacheValid[ETPRTNC_NPU] = FALSE;
             block->TextCacheValid[ETPRTNC_NPUDEDICATEDBYTES] = FALSE;
             block->TextCacheValid[ETPRTNC_NPUSHAREDBYTES] = FALSE;
+            block->TextCacheValid[ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES] = FALSE;
+            block->TextCacheValid[ETPRTNC_NPUSHAREDCOMMITTEDBYTES] = FALSE;
+
+            block->TextCacheValid[ETPRTNC_FIREWALLALLOWS] = FALSE;
+            block->TextCacheValid[ETPRTNC_FIREWALLBLOCKS] = FALSE;
         }
     }
     else if (message->Message == TreeNewGetHeaderText)
@@ -581,6 +923,60 @@ VOID EtProcessTreeNewMessage(
         SIZE_T returnLength;
         FLOAT decimal = 0;
         ULONG64 number = 0;
+
+        getHeaderText->Flags = TN_CACHE;
+
+        if (!getHeaderText->TextCache)
+            return;
+
+        if ((message->SubId >= ETPRTNC_GPUADAPTER_FIRST &&
+            message->SubId < ETPRTNC_GPUADAPTER_FIRST + EtGetGpuAdapterCount()) ||
+            (message->SubId >= ETPRTNC_GPUNODE_FIRST &&
+            message->SubId < ETPRTNC_GPUNODE_FIRST + EtGpuTotalNodeCount))
+        {
+            BOOLEAN nodeColumn = message->SubId >= ETPRTNC_GPUNODE_FIRST;
+            ULONG valueIndex = nodeColumn ?
+                message->SubId - ETPRTNC_GPUNODE_FIRST :
+                message->SubId - ETPRTNC_GPUADAPTER_FIRST;
+
+            listEntry = EtProcessBlockListHead.Flink;
+
+            while (listEntry != &EtProcessBlockListHead)
+            {
+                block = CONTAINING_RECORD(listEntry, ET_PROCESS_BLOCK, ListEntry);
+
+                if (!(block->ProcessItem->State & PH_PROCESS_ITEM_REMOVED) &&
+                    block->ProcessNode && block->ProcessNode->Node.Visible &&
+                    block->GpuNodesUtilization)
+                {
+                    if (nodeColumn)
+                        decimal += block->GpuNodesUtilization[valueIndex];
+                    else
+                        decimal += EtpGetGpuAdapterOwnValue(block, valueIndex);
+                }
+
+                listEntry = listEntry->Flink;
+            }
+
+            if (decimal != 0.f)
+            {
+                PH_FORMAT format[2];
+
+                if (nodeColumn)
+                    decimal = min(decimal, 1.f);
+
+                PhInitFormatF(&format[0], decimal * 100.f, 2);
+                PhInitFormatC(&format[1], L'%');
+
+                if (PhFormatToBuffer(format, RTL_NUMBER_OF(format), getHeaderText->TextCache, getHeaderText->TextCacheSize, &returnLength))
+                {
+                    getHeaderText->Text.Buffer = getHeaderText->TextCache;
+                    getHeaderText->Text.Length = returnLength - sizeof(UNICODE_NULL);
+                }
+            }
+
+            return;
+        }
 
         switch (message->SubId)
         {
@@ -610,6 +1006,8 @@ VOID EtProcessTreeNewMessage(
         case ETPRTNC_GPU:
         case ETPRTNC_GPUDEDICATEDBYTES:
         case ETPRTNC_GPUSHAREDBYTES:
+        case ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES:
+        case ETPRTNC_GPUSHAREDCOMMITTEDBYTES:
         case ETPRTNC_DISKREADRATE:
         case ETPRTNC_DISKWRITERATE:
         case ETPRTNC_DISKTOTALRATE:
@@ -620,6 +1018,12 @@ VOID EtProcessTreeNewMessage(
         case ETPRTNC_NPU:
         case ETPRTNC_NPUDEDICATEDBYTES:
         case ETPRTNC_NPUSHAREDBYTES:
+        case ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES:
+        case ETPRTNC_NPUSHAREDCOMMITTEDBYTES:
+        case ETPRTNC_FIREWALLALLOWS:
+        case ETPRTNC_FIREWALLBLOCKS:
+        case ETPRTNC_FIREWALLALLOWSDELTA:
+        case ETPRTNC_FIREWALLBLOCKSDELTA:
             break;
         default:
             return;
@@ -731,6 +1135,12 @@ VOID EtProcessTreeNewMessage(
             case ETPRTNC_GPUSHAREDBYTES:
                 number += block->GpuSharedUsage;
                 break;
+            case ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES:
+                number += block->GpuDedicatedCommitted;
+                break;
+            case ETPRTNC_GPUSHAREDCOMMITTEDBYTES:
+                number += block->GpuSharedCommitted;
+                break;
             case ETPRTNC_DISKREADRATE:
                 number += block->DiskReadRawDelta.Delta;
                 break;
@@ -761,6 +1171,24 @@ VOID EtProcessTreeNewMessage(
             case ETPRTNC_NPUSHAREDBYTES:
                 number += block->NpuSharedUsage;
                 break;
+            case ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES:
+                number += block->NpuDedicatedCommitted;
+                break;
+            case ETPRTNC_NPUSHAREDCOMMITTEDBYTES:
+                number += block->NpuSharedCommitted;
+                break;
+            case ETPRTNC_FIREWALLALLOWS:
+                number += block->FirewallAllowCount;
+                break;
+            case ETPRTNC_FIREWALLBLOCKS:
+                number += block->FirewallBlockCount;
+                break;
+            case ETPRTNC_FIREWALLALLOWSDELTA:
+                number += block->FirewallAllowDelta.Delta;
+                break;
+            case ETPRTNC_FIREWALLBLOCKSDELTA:
+                number += block->FirewallBlockDelta.Delta;
+                break;
             }
 
             listEntry = listEntry->Flink;
@@ -779,6 +1207,8 @@ VOID EtProcessTreeNewMessage(
         case ETPRTNC_NETWORKSENDS:
         case ETPRTNC_NETWORKSENDSDELTA:
         case ETPRTNC_PEAKTHREADS:
+        case ETPRTNC_FIREWALLALLOWS:
+        case ETPRTNC_FIREWALLBLOCKS:
             {
                 PH_FORMAT format[1];
 
@@ -808,8 +1238,12 @@ VOID EtProcessTreeNewMessage(
         case ETPRTNC_NETWORKTOTALBYTESDELTA:
         case ETPRTNC_GPUDEDICATEDBYTES:
         case ETPRTNC_GPUSHAREDBYTES:
+        case ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES:
+        case ETPRTNC_GPUSHAREDCOMMITTEDBYTES:
         case ETPRTNC_NPUDEDICATEDBYTES:
         case ETPRTNC_NPUSHAREDBYTES:
+        case ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES:
+        case ETPRTNC_NPUSHAREDCOMMITTEDBYTES:
             {
                 PH_FORMAT format[1];
 
@@ -838,9 +1272,7 @@ VOID EtProcessTreeNewMessage(
                 if (number == 0)
                     break;
 
-                value = number;
-                value *= 1000;
-                value /= EtUpdateInterval;
+                value = EtCalculateRate(number);
 
                 PhInitFormatSize(&format[0], value);
                 PhInitFormatS(&format[1], L"/s");
@@ -949,7 +1381,7 @@ FORCEINLINE LONG EtpSortAggregateIfNeeded2(
     PhpAggregateFieldIfNeeded(ProcessNode1, AggregateTypeInt64, Block1, FieldOffset1, &number1);
     PhpAggregateFieldIfNeeded(ProcessNode1, AggregateTypeInt64, Block1, FieldOffset2, &number1);
 
-    PhpAggregateFieldIfNeeded(ProcessNode2, AggregateTypeInt64, Block2, FieldOffset2, &number2);
+    PhpAggregateFieldIfNeeded(ProcessNode2, AggregateTypeInt64, Block2, FieldOffset1, &number2);
     PhpAggregateFieldIfNeeded(ProcessNode2, AggregateTypeInt64, Block2, FieldOffset2, &number2);
 
     return uint64cmp(number1, number2);
@@ -984,6 +1416,26 @@ LONG EtpProcessTreeNewSortFunction(
     block2 = EtGetProcessBlock(node2->ProcessItem);
 
     result = 0;
+
+    if (SubId >= ETPRTNC_GPUADAPTER_FIRST &&
+        SubId < ETPRTNC_GPUADAPTER_FIRST + EtGetGpuAdapterCount())
+    {
+        ULONG adapterIndex = SubId - ETPRTNC_GPUADAPTER_FIRST;
+        FLOAT value1 = EtpGetGpuAdapterValue(node1, block1, adapterIndex);
+        FLOAT value2 = EtpGetGpuAdapterValue(node2, block2, adapterIndex);
+
+        return singlecmp(value1, value2);
+    }
+
+    if (SubId >= ETPRTNC_GPUNODE_FIRST &&
+        SubId < ETPRTNC_GPUNODE_FIRST + EtGpuTotalNodeCount)
+    {
+        ULONG nodeIndex = SubId - ETPRTNC_GPUNODE_FIRST;
+        FLOAT value1 = EtpGetGpuNodeValue(node1, block1, nodeIndex);
+        FLOAT value2 = EtpGetGpuNodeValue(node2, block2, nodeIndex);
+
+        return singlecmp(value1, value2);
+    }
 
     switch (SubId)
     {
@@ -1065,6 +1517,12 @@ LONG EtpProcessTreeNewSortFunction(
     case ETPRTNC_GPUSHAREDBYTES:
         result = ET_SORT_AGGREGATE_IF_NEEDED(GpuSharedUsage);
         break;
+    case ETPRTNC_GPUDEDICATEDCOMMITTEDBYTES:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(GpuDedicatedCommitted);
+        break;
+    case ETPRTNC_GPUSHAREDCOMMITTEDBYTES:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(GpuSharedCommitted);
+        break;
     case ETPRTNC_DISKREADRATE:
         result = ET_SORT_AGGREGATE_IF_NEEDED(DiskReadRawDelta.Delta);
         break;
@@ -1094,6 +1552,24 @@ LONG EtpProcessTreeNewSortFunction(
         break;
     case ETPRTNC_NPUSHAREDBYTES:
         result = ET_SORT_AGGREGATE_IF_NEEDED(NpuSharedUsage);
+        break;
+    case ETPRTNC_NPUDEDICATEDCOMMITTEDBYTES:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(NpuDedicatedCommitted);
+        break;
+    case ETPRTNC_NPUSHAREDCOMMITTEDBYTES:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(NpuSharedCommitted);
+        break;
+    case ETPRTNC_FIREWALLALLOWS:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(FirewallAllowCount);
+        break;
+    case ETPRTNC_FIREWALLBLOCKS:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(FirewallBlockCount);
+        break;
+    case ETPRTNC_FIREWALLALLOWSDELTA:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(FirewallAllowDelta.Delta);
+        break;
+    case ETPRTNC_FIREWALLBLOCKSDELTA:
+        result = ET_SORT_AGGREGATE_IF_NEEDED(FirewallBlockDelta.Delta);
         break;
     }
 

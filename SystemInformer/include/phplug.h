@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -29,7 +29,7 @@ typedef enum _PH_GENERAL_CALLBACK
     GeneralCallbackProcessPropertiesInitializing = 4, // PPH_PLUGIN_PROCESS_PROPCONTEXT Data [properties thread]
     GeneralCallbackMainMenuInitializing = 5, // PPH_PLUGIN_MENU_INFORMATION Data [main thread]
     GeneralCallbackNotifyEvent = 6, // PPH_PLUGIN_NOTIFY_EVENT Data [main thread]
-    GeneralCallbackServicePropertiesInitializing = 7, // PPH_PLUGIN_OBJECT_PROPERTIES Data [properties thread]
+    GeneralCallbackServicePropertiesInitializing = 7, // PPH_PLUGIN_SERVICE_PROPCONTEXT Data [properties thread]
     GeneralCallbackHandlePropertiesInitializing = 8, // PPH_PLUGIN_OBJECT_PROPERTIES Data [properties thread]
     GeneralCallbackProcessMenuInitializing = 9, // PPH_PLUGIN_MENU_INFORMATION Data [main thread]
     GeneralCallbackServiceMenuInitializing = 10, // PPH_PLUGIN_MENU_INFORMATION Data [main thread]
@@ -63,15 +63,15 @@ typedef enum _PH_GENERAL_CALLBACK
     GeneralCallbackProcessProviderAddedEvent, // [process provider thread]
     GeneralCallbackProcessProviderModifiedEvent, // [process provider thread]
     GeneralCallbackProcessProviderRemovedEvent, // [process provider thread]
-    GeneralCallbackProcessProviderUpdatedEvent, // PPH_PROCESS_PROVIDER_UPDATED_EVENT [process provider thread]
+    GeneralCallbackProcessProviderUpdatedEvent, // PPH_PROVIDER_UPDATED_EVENT [process provider thread]
     GeneralCallbackServiceProviderAddedEvent, // [service provider thread]
     GeneralCallbackServiceProviderModifiedEvent, // [service provider thread]
     GeneralCallbackServiceProviderRemovedEvent, // [service provider thread]
-    GeneralCallbackServiceProviderUpdatedEvent, // [service provider thread]
+    GeneralCallbackServiceProviderUpdatedEvent, // PPH_PROVIDER_UPDATED_EVENT [service provider thread]
     GeneralCallbackNetworkProviderAddedEvent, // [network provider thread]
     GeneralCallbackNetworkProviderModifiedEvent, // [network provider thread]
     GeneralCallbackNetworkProviderRemovedEvent, // [network provider thread]
-    GeneralCallbackNetworkProviderUpdatedEvent, // [network provider thread]
+    GeneralCallbackNetworkProviderUpdatedEvent, // PPH_PROVIDER_UPDATED_EVENT [network provider thread]
 
     GeneralCallbackLoggedEvent, // [multiple provider threads]
 
@@ -103,10 +103,16 @@ typedef enum _PH_PLUGIN_CALLBACK
 
 // Provider events
 
-typedef struct _PH_PROCESS_PROVIDER_UPDATED_EVENT
+typedef struct _PH_PROVIDER_UPDATED_EVENT
 {
     ULONG RunCount;
-} PH_PROCESS_PROVIDER_UPDATED_EVENT, *PPH_PROCESS_PROVIDER_UPDATED_EVENT;
+    ULONG UpdateInterval; // nominal interval (setting), in milliseconds
+    ULONG ElapsedMilliseconds; // time actually spanned by this run, in milliseconds
+    PH_PROVIDER_ELAPSED Elapsed; // time actually spanned by this run, in performance counter ticks (zero on first run)
+} PH_PROVIDER_UPDATED_EVENT, *PPH_PROVIDER_UPDATED_EVENT;
+
+typedef PH_PROVIDER_UPDATED_EVENT PH_PROCESS_PROVIDER_UPDATED_EVENT;
+typedef PPH_PROVIDER_UPDATED_EVENT PPH_PROCESS_PROVIDER_UPDATED_EVENT;
 
 // Plugin events
 
@@ -137,6 +143,12 @@ typedef struct _PH_PLUGIN_PROCESS_PROPCONTEXT
     PPH_PROCESS_PROPCONTEXT PropContext;
     PPH_PROCESS_ITEM ProcessItem;
 } PH_PLUGIN_PROCESS_PROPCONTEXT, *PPH_PLUGIN_PROCESS_PROPCONTEXT;
+
+typedef struct _PH_PLUGIN_SERVICE_PROPCONTEXT
+{
+    PPH_SERVICE_PROPCONTEXT PropContext;
+    PPH_SERVICE_ITEM ServiceItem;
+} PH_PLUGIN_SERVICE_PROPCONTEXT, *PPH_PLUGIN_SERVICE_PROPCONTEXT;
 
 typedef struct _PH_PLUGIN_NOTIFY_EVENT
 {
@@ -477,11 +489,13 @@ typedef PH_MINIINFO_FIND_SECTION *PPH_MINIINFO_FIND_SECTION;
 
 typedef struct _PH_MINIINFO_LIST_SECTION PH_MINIINFO_LIST_SECTION, *PPH_MINIINFO_LIST_SECTION;
 
-typedef PPH_MINIINFO_LIST_SECTION (NTAPI *PPH_MINIINFO_CREATE_LIST_SECTION)(
+typedef _Function_class_(PH_MINIINFO_CREATE_LIST_SECTION)
+PPH_MINIINFO_LIST_SECTION NTAPI PH_MINIINFO_CREATE_LIST_SECTION(
     _In_ PCWSTR Name,
     _In_ ULONG Flags,
     _In_ PPH_MINIINFO_LIST_SECTION Template
     );
+typedef PH_MINIINFO_CREATE_LIST_SECTION* PPH_MINIINFO_CREATE_LIST_SECTION;
 
 typedef struct _PH_PLUGIN_MINIINFO_POINTERS
 {
@@ -513,7 +527,7 @@ typedef _Function_class_(PH_REGISTER_TRAY_ICON)
 PPH_PLUGIN NTAPI PH_REGISTER_TRAY_ICON(
     _In_ PPH_PLUGIN Plugin,
     _In_ ULONG SubId,
-    _In_ GUID Guid,
+    _In_ PCGUID Guid,
     _In_opt_ PVOID Context,
     _In_ PCWSTR Text,
     _In_ ULONG Flags,
@@ -698,6 +712,7 @@ typedef struct _PH_PLUGIN
 // begin_phapppub
 // Plugin API
 
+_Success_(return != NULL)
 PHAPPAPI
 PPH_PLUGIN
 NTAPI

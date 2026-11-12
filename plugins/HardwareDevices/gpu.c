@@ -5,19 +5,24 @@
  *
  * Authors:
  *
- *     dmex    2022
+ *     dmex    2022-2026
  *
  */
 
 #include "devices.h"
-#include "../ExtendedTools/extension/plugin.h"
+#include <extendedtoolsintf.h>
 
-static LARGE_INTEGER GraphicsTotalRunningTimeFrequency = { 0 };
 BOOLEAN GraphicsGraphShowText = FALSE;
 BOOLEAN GraphicsEnableScaleGraph = FALSE;
 BOOLEAN GraphicsEnableScaleText = FALSE;
 BOOLEAN GraphicsPropagateCpuUsage = FALSE;
 
+/**
+ * Deletes a graphics device entry and releases its resources.
+ *
+ * \param Object Graphics device entry object.
+ * \param Flags Object deletion flags.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID GraphicsDeviceEntryDeleteProcedure(
     _In_ PVOID Object,
@@ -31,6 +36,7 @@ VOID GraphicsDeviceEntryDeleteProcedure(
     PhReleaseQueuedLockExclusive(&GraphicsDevicesListLock);
 
     DeleteGraphicsDeviceId(&entry->Id);
+    PhClearReference(&entry->DeviceName);
 
     PhDeleteCircularBuffer_FLOAT(&entry->GpuUsageHistory);
     PhDeleteCircularBuffer_ULONG64(&entry->DedicatedHistory);
@@ -39,8 +45,23 @@ VOID GraphicsDeviceEntryDeleteProcedure(
     PhDeleteCircularBuffer_FLOAT(&entry->PowerHistory);
     PhDeleteCircularBuffer_FLOAT(&entry->TemperatureHistory);
     PhDeleteCircularBuffer_ULONG(&entry->FanHistory);
+
+    if (entry->GpuNodesHistory)
+    {
+        for (ULONG node = 0; node < entry->NumberOfNodes; node++)
+            PhDeleteCircularBuffer_FLOAT(&entry->GpuNodesHistory[node]);
+        PhFree(entry->GpuNodesHistory);
+    }
+
+    if (entry->TotalRunningTimeNodesDelta)
+        PhFree(entry->TotalRunningTimeNodesDelta);
+    if (entry->SystemRunningTimeNodesDelta)
+        PhFree(entry->SystemRunningTimeNodesDelta);
 }
 
+/**
+ * Initializes the graphics device list and related settings.
+ */
 VOID GraphicsDeviceInitialize(
     VOID
     )
@@ -52,9 +73,65 @@ VOID GraphicsDeviceInitialize(
     GraphicsEnableScaleGraph = !!PhGetIntegerSetting(SETTING_ENABLE_GRAPH_MAX_SCALE);
     GraphicsEnableScaleText = !!PhGetIntegerSetting(SETTING_ENABLE_GRAPH_MAX_TEXT);
     GraphicsPropagateCpuUsage = !!PhGetIntegerSetting(SETTING_PROPAGATE_CPU_USAGE);
-    PhQueryPerformanceFrequency(&GraphicsTotalRunningTimeFrequency);
 }
 
+/**
+ * Returns the friendly name of a graphics device.
+ *
+ * \param Entry Graphics device entry.
+ * \return Referenced name string, or NULL when the adapter could not be resolved.
+ * \remarks The name is resolved once and cached on the entry. Entries restored from
+ * settings are created before the device has been enumerated, so an unresolved name
+ * is retried on the next call. (dmex)
+ */
+_Success_(return != NULL)
+PPH_STRING GraphicsDeviceGetName(
+    _In_ PDV_GPU_ENTRY Entry
+    )
+{
+    PPH_STRING deviceName;
+
+    deviceName = ReadPointerAcquire(&Entry->DeviceName);
+
+    if (!deviceName)
+    {
+        PPH_STRING newDeviceName;
+
+        newDeviceName = GraphicsQueryAdapterName(PhGetString(Entry->Id.DevicePath));
+
+        if (newDeviceName)
+        {
+            // Try to install the resolved name. (dmex)
+            deviceName = InterlockedCompareExchangePointer(
+                &Entry->DeviceName,
+                newDeviceName,
+                NULL
+                );
+
+            if (!deviceName)
+            {
+                // We stored the name; the cache now owns our reference.
+                deviceName = newDeviceName;
+            }
+            else
+            {
+                // Another thread won the race; discard our copy.
+                PhDereferenceObject(newDeviceName);
+            }
+        }
+    }
+
+    if (deviceName)
+        PhReferenceObject(deviceName);
+
+    return deviceName;
+}
+
+/**
+ * Refreshes all tracked graphics devices and samples current counters.
+ *
+ * \param RunCount Current provider update count.
+ */
 VOID GraphicsDevicesUpdate(
     _In_ ULONG RunCount
     )
@@ -65,15 +142,16 @@ VOID GraphicsDevicesUpdate(
     {
         PDV_GPU_ENTRY entry;
 
-        entry = PhReferenceObjectSafe(GraphicsDevicesList->Items[i]);
+        entry = PhReferenceObjectUnsafe(GraphicsDevicesList->Items[i]);
 
         if (!entry)
             continue;
 
         if (!entry->DeviceSupported)
         {
+            BOOLEAN initialized = FALSE;
             D3DKMT_HANDLE adapterHandle;
-            LUID adapterLuid;
+            LUID adapterLuid = { 0 };
             ULONG numberOfSegments;
             ULONG numberOfNodes;
             ULONG64 sharedTotal;
@@ -107,6 +185,11 @@ VOID GraphicsDevicesUpdate(
                             PhFree(entry->TotalRunningTimeNodesDelta);
                             entry->TotalRunningTimeNodesDelta = NULL;
                         }
+                        if (entry->SystemRunningTimeNodesDelta)
+                        {
+                            PhFree(entry->SystemRunningTimeNodesDelta);
+                            entry->SystemRunningTimeNodesDelta = NULL;
+                        }
                         if (entry->GpuNodesHistory)
                         {
                             PhFree(entry->GpuNodesHistory);
@@ -114,6 +197,7 @@ VOID GraphicsDevicesUpdate(
                         }
 
                         entry->TotalRunningTimeNodesDelta = PhAllocateZero(sizeof(PH_UINT64_DELTA) * numberOfNodes);
+                        entry->SystemRunningTimeNodesDelta = PhAllocateZero(sizeof(PH_UINT64_DELTA) * numberOfNodes);
                         entry->GpuNodesHistory = PhAllocateZero(sizeof(PH_CIRCULAR_BUFFER_FLOAT) * numberOfNodes);
 
                         {
@@ -125,20 +209,21 @@ VOID GraphicsDevicesUpdate(
                                 PhInitializeCircularBuffer_FLOAT(&entry->GpuNodesHistory[node], sampleCount);
                             }
                         }
+
+                        initialized = TRUE;
                     }
                 }
 
                 GraphicsCloseAdapterHandle(adapterHandle);
             }
 
-            entry->DeviceSupported = TRUE;
+            entry->DeviceSupported = initialized;
         }
 
         if (entry->DeviceSupported)
         {
             D3DKMT_HANDLE adapterHandle;
-            LUID adapterLuid;
-            LARGE_INTEGER performanceCounter = { 0 };
+            LUID adapterLuid = { 0 };
             ULONG64 sharedUsage = 0;
             ULONG64 sharedCommit = 0;
             ULONG64 sharedLimit = 0;
@@ -218,9 +303,10 @@ VOID GraphicsDevicesUpdate(
                 entry->CurrentTemperature = 0;
                 entry->CurrentFanRPM = 0;
                 entry->DeviceSupported = FALSE;
+                entry->DevicePresent = FALSE;
             }
 
-            if (entry->TotalRunningTimeNodesDelta)
+            if (entry->DeviceSupported && entry->TotalRunningTimeNodesDelta)
             {
                 FLOAT value;
 
@@ -236,17 +322,22 @@ VOID GraphicsDevicesUpdate(
                 }
                 else
                 {
+                    ULONG64 maxSystemDelta = 0;
+
                     for (ULONG n = 0; n < entry->NumberOfNodes; n++)
                     {
                         ULONG64 runningTime = 0;
-                        GraphicsQueryAdapterNodeRunningTime(adapterLuid, n, &runningTime);
+                        ULONG64 systemRunningTime = 0;
+
+                        GraphicsQueryAdapterNodeRunningTime(adapterLuid, n, &runningTime, &systemRunningTime);
                         PhUpdateDelta(&entry->TotalRunningTimeNodesDelta[n], runningTime);
+                        PhUpdateDelta(&entry->SystemRunningTimeNodesDelta[n], systemRunningTime);
+
+                        if (entry->SystemRunningTimeNodesDelta[n].Delta > maxSystemDelta)
+                            maxSystemDelta = entry->SystemRunningTimeNodesDelta[n].Delta;
                     }
 
-                    PhQueryPerformanceCounter(&performanceCounter);
-                    PhUpdateDelta(&entry->TotalRunningTimeDelta, performanceCounter.QuadPart);
-
-                    FLOAT elapsedTime = (FLOAT)entry->TotalRunningTimeDelta.Delta * 10000000 / GraphicsTotalRunningTimeFrequency.QuadPart;
+                    FLOAT elapsedTime = (FLOAT)maxSystemDelta;
                     FLOAT tempValue = 0.0f;
 
                     if (elapsedTime != 0)
@@ -283,7 +374,7 @@ VOID GraphicsDevicesUpdate(
                 }
             }
 
-            entry->DevicePresent = TRUE;
+            entry->DevicePresent = entry->DeviceSupported;
         }
         else
         {
@@ -322,6 +413,12 @@ VOID GraphicsDevicesUpdate(
     PhReleaseQueuedLockShared(&GraphicsDevicesListLock);
 }
 
+/**
+ * Initializes a graphics device identifier.
+ *
+ * \param Id Destination identifier.
+ * \param DevicePath Device interface path.
+ */
 VOID InitializeGraphicsDeviceId(
     _Out_ PDV_GPU_ID Id,
     _In_ PPH_STRING DevicePath
@@ -330,6 +427,12 @@ VOID InitializeGraphicsDeviceId(
     PhSetReference(&Id->DevicePath, DevicePath);
 }
 
+/**
+ * Copies a graphics device identifier.
+ *
+ * \param Destination Destination identifier.
+ * \param Source Source identifier.
+ */
 VOID CopyGraphicsDeviceId(
     _Out_ PDV_GPU_ID Destination,
     _In_ PDV_GPU_ID Source
@@ -341,6 +444,11 @@ VOID CopyGraphicsDeviceId(
         );
 }
 
+/**
+ * Releases references held by a graphics device identifier.
+ *
+ * \param Id Identifier to release.
+ */
 VOID DeleteGraphicsDeviceId(
     _Inout_ PDV_GPU_ID Id
     )
@@ -348,6 +456,13 @@ VOID DeleteGraphicsDeviceId(
     PhClearReference(&Id->DevicePath);
 }
 
+/**
+ * Compares two graphics device identifiers.
+ *
+ * \param Id1 First identifier.
+ * \param Id2 Second identifier.
+ * \return TRUE if both identifiers refer to the same device.
+ */
 BOOLEAN EquivalentGraphicsDeviceId(
     _In_ PDV_GPU_ID Id1,
     _In_ PDV_GPU_ID Id2
@@ -356,6 +471,12 @@ BOOLEAN EquivalentGraphicsDeviceId(
     return PhEqualString(Id1->DevicePath, Id2->DevicePath, TRUE);
 }
 
+/**
+ * Creates and registers a graphics device entry.
+ *
+ * \param Id Graphics device identifier.
+ * \return Newly created graphics device entry.
+ */
 PDV_GPU_ENTRY CreateGraphicsDeviceEntry(
     _In_ PDV_GPU_ID Id
     )
@@ -383,6 +504,11 @@ PDV_GPU_ENTRY CreateGraphicsDeviceEntry(
     return entry;
 }
 
+/**
+ * Gets the ExtendedTools plugin interface used for GPU data.
+ *
+ * \return Cached ExtendedTools interface, or NULL if unavailable.
+ */
 PEXTENDEDTOOLS_INTERFACE GraphicsDeviceGetPluginInterface(
     VOID
     )
@@ -398,7 +524,8 @@ PEXTENDEDTOOLS_INTERFACE GraphicsDeviceGetPluginInterface(
         {
             pluginInterface = PhGetPluginInformation(toolStatusPlugin)->Interface;
 
-            if (pluginInterface->Version < EXTENDEDTOOLS_INTERFACE_VERSION)
+            // A plugin that is loaded need not publish an interface.
+            if (pluginInterface && pluginInterface->Version < EXTENDEDTOOLS_INTERFACE_VERSION)
                 pluginInterface = NULL;
         }
 
@@ -408,6 +535,12 @@ PEXTENDEDTOOLS_INTERFACE GraphicsDeviceGetPluginInterface(
     return pluginInterface;
 }
 
+/**
+ * Queries GPU utilization from the ExtendedTools plugin interface.
+ *
+ * \param AdapterLuid Adapter LUID.
+ * \return GPU utilization value.
+ */
 FLOAT GraphicsDevicePluginInterfaceGetGpuAdapterUtilization(
     _In_ LUID AdapterLuid
     )
@@ -420,6 +553,12 @@ FLOAT GraphicsDevicePluginInterfaceGetGpuAdapterUtilization(
     return 0.0f;
 }
 
+/**
+ * Queries dedicated GPU memory usage from the ExtendedTools plugin interface.
+ *
+ * \param AdapterLuid Adapter LUID.
+ * \return Dedicated memory usage.
+ */
 ULONG64 GraphicsDevicePluginInterfaceGetGpuAdapterDedicated(
     _In_ LUID AdapterLuid
     )
@@ -432,6 +571,12 @@ ULONG64 GraphicsDevicePluginInterfaceGetGpuAdapterDedicated(
     return 0;
 }
 
+/**
+ * Queries shared GPU memory usage from the ExtendedTools plugin interface.
+ *
+ * \param AdapterLuid Adapter LUID.
+ * \return Shared memory usage.
+ */
 ULONG64 GraphicsDevicePluginInterfaceGetGpuAdapterShared(
     _In_ LUID AdapterLuid
     )
@@ -444,6 +589,13 @@ ULONG64 GraphicsDevicePluginInterfaceGetGpuAdapterShared(
     return 0;
 }
 
+/**
+ * Queries per-engine GPU utilization from the ExtendedTools plugin interface.
+ *
+ * \param AdapterLuid Adapter LUID.
+ * \param EngineId Engine ordinal.
+ * \return Engine utilization value.
+ */
 FLOAT GraphicsDevicePluginInterfaceGetGpuAdapterEngineUtilization(
     _In_ LUID AdapterLuid,
     _In_ ULONG EngineId

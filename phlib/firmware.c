@@ -947,7 +947,7 @@ NTSTATUS PhEnumSMBIOS(
     _In_opt_ PVOID Context
     )
 {
-    static volatile ULONG cachedLength = sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION) + 64;
+    static ULONG cachedLength = sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION) + 64;
     NTSTATUS status;
     ULONG length;
     PSYSTEM_FIRMWARE_TABLE_INFORMATION info;
@@ -1030,7 +1030,8 @@ NTSTATUS PhGetSMBIOSString(
     if (!string->Buffer)
         return STATUS_INVALID_PARAMETER;
 
-    *String = PhConvertUtf8ToUtf16Ex(string->Buffer, string->Length);
+    if (!(*String = PhConvertUtf8ToUtf16Ex(string->Buffer, string->Length)))
+        return STATUS_UNSUCCESSFUL;
 
     return STATUS_SUCCESS;
 }

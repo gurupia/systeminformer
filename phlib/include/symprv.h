@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -16,7 +16,7 @@
 EXTERN_C_START
 
 extern PPH_OBJECT_TYPE PhSymbolProviderType;
-extern PH_CALLBACK PhSymbolEventCallback;
+PHLIBAPI extern PH_CALLBACK PhSymbolEventCallback;
 
 #define PH_MAX_SYMBOL_NAME_LEN MAX_SYM_NAME
 
@@ -169,7 +169,7 @@ PhLoadSymbolProviderModules(
     );
 
 PHLIBAPI
-VOID
+NTSTATUS
 NTAPI
 PhLoadModulesForVirtualSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
@@ -178,6 +178,7 @@ PhLoadModulesForVirtualSymbolProvider(
     );
 
 #define PH_SYMOPT_UNDNAME 0x1
+#define PH_SYMOPT_VERIFY_MICROSOFT_CHAIN 0x2
 
 PHLIBAPI
 VOID
@@ -294,6 +295,7 @@ PhWriteMiniDumpProcess(
 
 #define PH_THREAD_STACK_FRAME_KERNEL           0x0001
 #define PH_THREAD_STACK_FRAME_FPO_DATA_PRESENT 0x0002
+#define PH_THREAD_STACK_FRAME_CONTEXT_PRESENT  0x0004
 
 /** Contains information about a thread stack frame. */
 typedef struct _PH_THREAD_STACK_FRAME
@@ -307,11 +309,20 @@ typedef struct _PH_THREAD_STACK_FRAME
     USHORT Machine;
     USHORT Flags;
     ULONG InlineFrameContext;
+    // Unwound register context for this frame (CONTEXT, WOW64_CONTEXT, ARM_NT_CONTEXT or
+    // ARM64EC_NT_CONTEXT depending on Machine). Only valid for the duration of the callback.
+    PVOID ContextRecord;
 } PH_THREAD_STACK_FRAME, *PPH_THREAD_STACK_FRAME;
 
 #define PH_WALK_USER_STACK 0x1
 #define PH_WALK_USER_WOW64_STACK 0x2
 #define PH_WALK_KERNEL_STACK 0x10
+// When set, PhWalkThreadStack will avoid registering/loading symbols via the
+// supplied symbol provider. The returned PH_THREAD_STACK_FRAME records contain
+// the raw frame information only; the caller is responsible for resolving
+// symbol names, file names and line numbers in a later pass (typically on a
+// background thread) to avoid blocking on PDB downloads. (dmex)
+#define PH_WALK_NO_SYMBOL_LOOKUP 0x100
 
 /**
  * A callback function passed to PhWalkThreadStack() and called for each stack frame.
@@ -424,8 +435,8 @@ PhSymbolProviderFreeDiaString(
     );
 
 // Inline stack support
-
-typedef union _INLINE_FRAME_CONTEXT
+//
+typedef union _STACK_FRAME_CONTEXT
 {
     ULONG ContextValue;
     struct
@@ -434,7 +445,7 @@ typedef union _INLINE_FRAME_CONTEXT
         UCHAR FrameType;
         USHORT FrameSignature;
     };
-} INLINE_FRAME_CONTEXT, *PINLINE_FRAME_CONTEXT;
+} STACK_FRAME_CONTEXT, *PSTACK_FRAME_CONTEXT;
 
 #define STACK_FRAME_TYPE_INIT 0x00
 #define STACK_FRAME_TYPE_STACK 0x01
@@ -456,12 +467,12 @@ PhIsStackFrameTypeInline(
     _In_ ULONG InlineFrameContext
     )
 {
-    INLINE_FRAME_CONTEXT frameContext = { InlineFrameContext };
+    PSTACK_FRAME_CONTEXT frameContext = (PSTACK_FRAME_CONTEXT)&InlineFrameContext;
 
-    if (frameContext.ContextValue == INLINE_FRAME_CONTEXT_IGNORE)
+    if (frameContext->ContextValue == STACK_FRAME_TYPE_IGNORE)
         return FALSE;
 
-    if (frameContext.FrameType & STACK_FRAME_TYPE_INLINE)
+    if (frameContext->FrameType & STACK_FRAME_TYPE_INLINE)
         return TRUE;
 
     return FALSE;
@@ -535,11 +546,41 @@ BOOLEAN PhGetDiaSymbolInformation(
     _Out_ PPH_DIA_SYMBOL_INFORMATION SymbolInformation
     );
 
+_Success_(return)
+BOOLEAN PhGetSymbolProviderSourceLink(
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
+    _In_ PVOID BaseOfDll,
+    _Out_ PPH_BYTES* SourceLink
+    );
+
+_Success_(return)
+BOOLEAN PhResolveSourceLinkUrl(
+    _In_ PPH_BYTES SourceLink,
+    _In_ PCPH_STRINGREF LocalPath,
+    _In_ ULONG LineNumber,
+    _Out_ PPH_STRING* Url
+    );
+
+_Success_(return)
+BOOLEAN PhGetSourceLinkUrlFromAddress(
+    _In_ PPH_SYMBOL_PROVIDER SymbolProvider,
+    _In_ PVOID Address,
+    _Out_ PPH_STRING* Url
+    );
+
 PHLIBAPI
 VOID
 NTAPI
 PhUnregisterSymbolProvider(
     _In_ PPH_SYMBOL_PROVIDER SymbolProvider
+    );
+
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhGetKitsDebuggersDirectory(
+    VOID
     );
 
 // symprv_std.cpp (dmex)
@@ -558,6 +599,27 @@ EXTERN_C PPH_STRING PhGetStacktraceSymbolFromAddress(
 
 EXTERN_C PPH_STRING PhGetObjectTypeStacktraceToString(
     _In_ PVOID Object
+    );
+
+typedef struct _PH_SYMBOL_NODE
+{
+    ULONG Index;
+    ULONG64 Offset;
+    PPH_STRING Name;
+    PPH_STRING Value;
+    PPH_LIST Children;
+} PH_SYMBOL_NODE, *PPH_SYMBOL_NODE;
+
+EXTERN_C PPH_LIST PhSymbolsForAddress(
+    _In_ PCWSTR TypeName,
+    _In_ PVOID Address,
+    _In_ HANDLE ProcessId,
+    _In_opt_ PCWSTR SearchPath,
+    _Out_opt_ PPH_STRING* ErrorText
+    );
+
+EXTERN_C VOID PhFreeSymbolNodeList(
+    _In_opt_ PPH_LIST List
     );
 
 EXTERN_C_END

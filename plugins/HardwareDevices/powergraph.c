@@ -5,70 +5,100 @@
  *
  * Authors:
  *
- *     dmex    2021-2023
+ *     dmex    2021-2026
  *
  */
 
 #include "devices.h"
 
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN RaplDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    );
+
+/**
+ * Handles the embedded RAPL summary panel dialog.
+ *
+ * \param WindowHandle Dialog window handle.
+ * \param WindowMessage Window message identifier.
+ * \param wParam Message-specific wParam value.
+ * \param lParam Message-specific lParam value.
+ *
+ * \return Dialog procedure result.
+ */
 INT_PTR CALLBACK RaplDevicePanelDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_RAPL_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_RAPL_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->RaplDeviceProcessorUsageLabel = GetDlgItem(hwndDlg, IDC_PACKAGE_L);
-            context->RaplDeviceCoreUsageLabel = GetDlgItem(hwndDlg, IDC_CORE_L);
-            context->RaplDeviceDimmUsageLabel = GetDlgItem(hwndDlg, IDC_DIMM_L);
-            context->RaplDeviceGpuLimitLabel = GetDlgItem(hwndDlg, IDC_GPUDISCRETE_L);
-            context->RaplDeviceComponentUsageLabel = GetDlgItem(hwndDlg, IDC_CPUCOMP_L);
-            context->RaplDeviceTotalUsageLabel = GetDlgItem(hwndDlg, IDC_TOTALPOWER_L);
+            PhInitializeThemeWindowGroupBoxes(WindowHandle);
+            context->RaplDeviceProcessorUsageLabel = GetDlgItem(WindowHandle, IDC_PACKAGE_L);
+            context->RaplDeviceCoreUsageLabel = GetDlgItem(WindowHandle, IDC_CORE_L);
+            context->RaplDeviceDimmUsageLabel = GetDlgItem(WindowHandle, IDC_DIMM_L);
+            context->RaplDeviceGpuLimitLabel = GetDlgItem(WindowHandle, IDC_GPUDISCRETE_L);
+            context->RaplDeviceComponentUsageLabel = GetDlgItem(WindowHandle, IDC_CPUCOMP_L);
+            context->RaplDeviceTotalUsageLabel = GetDlgItem(WindowHandle, IDC_TOTALPOWER_L);
         }
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
+/**
+ * Initializes DPI-dependent layout values for the RAPL dialog.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceInitializeDialogDpi(
     _In_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
 {
-    Context->GraphPadding = PhGetDpi(RAPL_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
+    Context->GraphPadding = PhScaleToDisplay(RAPL_GRAPH_PADDING, Context->SysinfoSection->Parameters->WindowDpi);
 }
 
+/**
+ * Initializes graph state objects for all RAPL graphs.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceInitializeGraphStates(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
@@ -79,76 +109,138 @@ VOID RaplDeviceInitializeGraphStates(
     PhInitializeGraphState(&Context->TotalGraphState);
 }
 
+/**
+ * Creates the graph controls used by the RAPL device dialog.
+ *
+ * \param Context RAPL sysinfo context.
+ */
+VOID RaplDeviceGetGraphRects(
+    _In_ PDV_RAPL_SYSINFO_CONTEXT Context,
+    _Out_writes_(4) RECT LabelRects[4],
+    _Out_writes_(4) RECT GraphRects[4]
+    )
+{
+    RECT clientRect;
+    RECT labelRect;
+    RECT marginRect;
+    LONG graphWidth;
+    LONG graphHeight;
+    LONG graphPadding;
+    LONG y;
+
+    marginRect = Context->GraphMarginScaled;
+    graphPadding = Context->GraphPadding;
+
+    PhGetClientRect(Context->WindowHandle, &clientRect);
+    PhGetClientRect(Context->PackageGraphLabelHandle, &labelRect);
+    graphWidth = clientRect.right - marginRect.left - marginRect.right;
+    graphHeight = (clientRect.bottom - marginRect.top - marginRect.bottom - labelRect.bottom * 4 - graphPadding * 5) / 4;
+    y = marginRect.top;
+
+    for (ULONG i = 0; i < 4; i++)
+    {
+        LabelRects[i].left = marginRect.left;
+        LabelRects[i].top = y;
+        LabelRects[i].right = marginRect.left + labelRect.right;
+        LabelRects[i].bottom = y + labelRect.bottom;
+        y += labelRect.bottom + graphPadding;
+
+        GraphRects[i].left = marginRect.left;
+        GraphRects[i].top = y;
+        GraphRects[i].right = marginRect.left + graphWidth;
+        GraphRects[i].bottom = y + graphHeight;
+        y += graphHeight + graphPadding;
+    }
+
+    GraphRects[3].bottom = clientRect.bottom - marginRect.bottom;
+}
+
 VOID RaplDeviceCreateGraphs(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
 {
-    Context->ProcessorGraphHandle = CreateWindow(
-        PH_GRAPH_CLASSNAME,
-        NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
-        Context->WindowHandle,
-        NULL,
-        NULL,
-        NULL
-        );
-    Graph_SetTooltip(Context->ProcessorGraphHandle, TRUE);
-
-    Context->CoreGraphHandle = CreateWindow(
-        PH_GRAPH_CLASSNAME,
-        NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
-        Context->WindowHandle,
-        NULL,
-        NULL,
-        NULL
-        );
-    Graph_SetTooltip(Context->CoreGraphHandle, TRUE);
-
-    Context->DimmGraphHandle = CreateWindow(
-        PH_GRAPH_CLASSNAME,
-        NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
-        Context->WindowHandle,
-        NULL,
-        NULL,
-        NULL
-        );
-    Graph_SetTooltip(Context->DimmGraphHandle, TRUE);
-
-    Context->TotalGraphHandle = CreateWindow(
-        PH_GRAPH_CLASSNAME,
-        NULL,
-        WS_VISIBLE | WS_CHILD | WS_BORDER,
-        0,
-        0,
-        0,
-        0,
-        Context->WindowHandle,
-        NULL,
-        NULL,
-        NULL
-        );
-    Graph_SetTooltip(Context->TotalGraphHandle, TRUE);
+    PH_GRAPH_CREATEPARAMS graphCreateParams;
+    RECT labelRects[4];
+    RECT graphRects[4];
 
     Context->PackageGraphLabelHandle = GetDlgItem(Context->WindowHandle, IDC_PACKAGE_L);
     Context->CoreGraphLabelHandle = GetDlgItem(Context->WindowHandle, IDC_CORE_L);
     Context->DimmGraphLabelHandle = GetDlgItem(Context->WindowHandle, IDC_DIMM_L);
     Context->TotalGraphLabelHandle = GetDlgItem(Context->WindowHandle, IDC_TOTAL_L);
+
+    RaplDeviceGetGraphRects(Context, labelRects, graphRects);
+
+    memset(&graphCreateParams, 0, sizeof(PH_GRAPH_CREATEPARAMS));
+    graphCreateParams.Size = sizeof(PH_GRAPH_CREATEPARAMS);
+    graphCreateParams.Callback = RaplDeviceGraphMessageCallback;
+    graphCreateParams.Context = Context;
+
+    Context->ProcessorGraphHandle = PhCreateWindow(
+        PH_GRAPH_CLASSNAME,
+        NULL,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[0].left,
+        graphRects[0].top,
+        graphRects[0].right - graphRects[0].left,
+        graphRects[0].bottom - graphRects[0].top,
+        Context->WindowHandle,
+        NULL,
+        NULL,
+        &graphCreateParams
+        );
+    Graph_SetTooltip(Context->ProcessorGraphHandle, TRUE);
+
+    Context->CoreGraphHandle = PhCreateWindow(
+        PH_GRAPH_CLASSNAME,
+        NULL,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[1].left,
+        graphRects[1].top,
+        graphRects[1].right - graphRects[1].left,
+        graphRects[1].bottom - graphRects[1].top,
+        Context->WindowHandle,
+        NULL,
+        NULL,
+        &graphCreateParams
+        );
+    Graph_SetTooltip(Context->CoreGraphHandle, TRUE);
+
+    Context->DimmGraphHandle = PhCreateWindow(
+        PH_GRAPH_CLASSNAME,
+        NULL,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[2].left,
+        graphRects[2].top,
+        graphRects[2].right - graphRects[2].left,
+        graphRects[2].bottom - graphRects[2].top,
+        Context->WindowHandle,
+        NULL,
+        NULL,
+        &graphCreateParams
+        );
+    Graph_SetTooltip(Context->DimmGraphHandle, TRUE);
+
+    Context->TotalGraphHandle = PhCreateWindow(
+        PH_GRAPH_CLASSNAME,
+        NULL,
+        WS_VISIBLE | WS_CHILD | WS_BORDER | WS_CLIPSIBLINGS,
+        graphRects[3].left,
+        graphRects[3].top,
+        graphRects[3].right - graphRects[3].left,
+        graphRects[3].bottom - graphRects[3].top,
+        Context->WindowHandle,
+        NULL,
+        NULL,
+        &graphCreateParams
+        );
+    Graph_SetTooltip(Context->TotalGraphHandle, TRUE);
 }
 
+/**
+ * Invalidates all RAPL graph states and requests redraws.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceUpdateGraphs(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
@@ -170,6 +262,11 @@ VOID RaplDeviceUpdateGraphs(
     Graph_Update(Context->TotalGraphHandle);
 }
 
+/**
+ * Updates the text labels shown in the RAPL device panel.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceUpdatePanel(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
@@ -226,17 +323,18 @@ VOID RaplDeviceUpdatePanel(
         PhSetWindowText(Context->RaplDeviceTotalUsageLabel, L"N/A");
 }
 
+/**
+ * Lays out the RAPL graph controls inside the dialog.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceLayoutGraphs(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
 {
-    RECT clientRect;
-    RECT labelRect;
-    RECT margin;
-    ULONG graphWidth;
-    ULONG graphHeight;
+    RECT labelRects[4];
+    RECT graphRects[4];
     HDWP deferHandle;
-    ULONG y;
 
     Context->ProcessorGraphState.Valid = FALSE;
     Context->ProcessorGraphState.TooltipIndex = ULONG_MAX;
@@ -247,116 +345,108 @@ VOID RaplDeviceLayoutGraphs(
     Context->TotalGraphState.Valid = FALSE;
     Context->TotalGraphState.TooltipIndex = ULONG_MAX;
 
-    margin = Context->GraphMargin;
-    PhGetSizeDpiValue(&margin, Context->SysinfoSection->Parameters->WindowDpi, TRUE);
-
-    PhGetClientRect(Context->WindowHandle, &clientRect);
-    PhGetClientRect(Context->PackageGraphLabelHandle, &labelRect);
-    graphWidth = clientRect.right - margin.left - margin.right;
-    graphHeight = (clientRect.bottom - margin.top - margin.bottom - labelRect.bottom * 4 - Context->GraphPadding * 5) / 4;
+    RaplDeviceGetGraphRects(Context, labelRects, graphRects);
 
     deferHandle = BeginDeferWindowPos(8);
-    y = margin.top;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->PackageGraphLabelHandle,
         NULL,
-        margin.left,
-        y,
+        labelRects[0].left,
+        labelRects[0].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->GraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->ProcessorGraphHandle,
         NULL,
-        margin.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[0].left,
+        graphRects[0].top,
+        graphRects[0].right - graphRects[0].left,
+        graphRects[0].bottom - graphRects[0].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->GraphPadding;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->CoreGraphLabelHandle,
         NULL,
-        margin.left,
-        y,
+        labelRects[1].left,
+        labelRects[1].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->GraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->CoreGraphHandle,
         NULL,
-        margin.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[1].left,
+        graphRects[1].top,
+        graphRects[1].right - graphRects[1].left,
+        graphRects[1].bottom - graphRects[1].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->GraphPadding;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->DimmGraphLabelHandle,
         NULL,
-        margin.left,
-        y,
+        labelRects[2].left,
+        labelRects[2].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->GraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->DimmGraphHandle,
         NULL,
-        margin.left,
-        y,
-        graphWidth,
-        graphHeight,
+        graphRects[2].left,
+        graphRects[2].top,
+        graphRects[2].right - graphRects[2].left,
+        graphRects[2].bottom - graphRects[2].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->GraphPadding;
 
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->TotalGraphLabelHandle,
         NULL,
-        margin.left,
-        y,
+        labelRects[3].left,
+        labelRects[3].top,
         0,
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += labelRect.bottom + Context->GraphPadding;
-
     deferHandle = DeferWindowPos(
         deferHandle,
         Context->TotalGraphHandle,
         NULL,
-        margin.left,
-        y,
-        graphWidth,
-        clientRect.bottom - margin.bottom - y,
+        graphRects[3].left,
+        graphRects[3].top,
+        graphRects[3].right - graphRects[3].left,
+        graphRects[3].bottom - graphRects[3].top,
         SWP_NOACTIVATE | SWP_NOZORDER
         );
-    y += graphHeight + Context->GraphPadding;
 
     EndDeferWindowPos(deferHandle);
 }
 
+/**
+ * Formats a graph Y-axis label for a single power series.
+ *
+ * \param DrawInfo Graph draw information.
+ * \param DataIndex Data point index.
+ * \param Value Normalized graph value.
+ * \param Parameter Scale factor used to denormalize the value.
+ *
+ * \return Formatted label string.
+ */
+_Function_class_(PH_GRAPH_LABEL_Y_FUNCTION)
 PPH_STRING RaplGraphSingleLabelYFunction(
     _In_ PPH_GRAPH_DRAW_INFO DrawInfo,
     _In_ ULONG DataIndex,
@@ -381,6 +471,12 @@ PPH_STRING RaplGraphSingleLabelYFunction(
     }
 }
 
+/**
+ * Handles notifications for the package power graph.
+ *
+ * \param Context RAPL sysinfo context.
+ * \param Header Notification header.
+ */
 VOID RaplDeviceNotifyProcessorGraph(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context,
     _In_ NMHDR *Header
@@ -451,6 +547,12 @@ VOID RaplDeviceNotifyProcessorGraph(
     }
 }
 
+/**
+ * Handles notifications for the core power graph.
+ *
+ * \param Context RAPL sysinfo context.
+ * \param Header Notification header.
+ */
 VOID RaplDeviceNotifyPackageGraph(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context,
     _In_ NMHDR *Header
@@ -519,6 +621,12 @@ VOID RaplDeviceNotifyPackageGraph(
     }
 }
 
+/**
+ * Handles notifications for the DRAM power graph.
+ *
+ * \param Context RAPL sysinfo context.
+ * \param Header Notification header.
+ */
 VOID RaplDeviceNotifyDimmGraph(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context,
     _In_ NMHDR *Header
@@ -589,6 +697,12 @@ VOID RaplDeviceNotifyDimmGraph(
     }
 }
 
+/**
+ * Handles notifications for the total power graph.
+ *
+ * \param Context RAPL sysinfo context.
+ * \param Header Notification header.
+ */
 VOID RaplDeviceNotifyTotalGraph(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context,
     _In_ NMHDR* Header
@@ -659,6 +773,54 @@ VOID RaplDeviceNotifyTotalGraph(
     }
 }
 
+/**
+ * Dispatches graph messages to the correct RAPL graph handler.
+ *
+ * \param WindowHandle Graph window handle.
+ * \param Message Graph callback message.
+ * \param Parameter1 Message parameter 1.
+ * \param Parameter2 Message parameter 2.
+ * \param Context RAPL sysinfo context.
+ *
+ * \return TRUE after processing the graph message.
+ */
+_Function_class_(PH_GRAPH_MESSAGE_CALLBACK)
+BOOLEAN RaplDeviceGraphMessageCallback(
+    _In_ HWND WindowHandle,
+    _In_ ULONG Message,
+    _In_ PVOID Parameter1,
+    _In_ PVOID Parameter2,
+    _In_ PVOID Context
+    )
+{
+    PDV_RAPL_SYSINFO_CONTEXT context = (PDV_RAPL_SYSINFO_CONTEXT)Context;
+    NMHDR *header = (NMHDR *)Parameter1;
+
+    if (WindowHandle == context->ProcessorGraphHandle)
+    {
+        RaplDeviceNotifyProcessorGraph(context, header);
+    }
+    else if (WindowHandle == context->CoreGraphHandle)
+    {
+        RaplDeviceNotifyPackageGraph(context, header);
+    }
+    else if (WindowHandle == context->DimmGraphHandle)
+    {
+        RaplDeviceNotifyDimmGraph(context, header);
+    }
+    else if (WindowHandle == context->TotalGraphHandle)
+    {
+        RaplDeviceNotifyTotalGraph(context, header);
+    }
+
+    return TRUE;
+}
+
+/**
+ * Refreshes the RAPL device dialog contents for the current sample.
+ *
+ * \param Context RAPL sysinfo context.
+ */
 VOID RaplDeviceTickDialog(
     _Inout_ PDV_RAPL_SYSINFO_CONTEXT Context
     )
@@ -667,52 +829,64 @@ VOID RaplDeviceTickDialog(
     RaplDeviceUpdatePanel(Context);
 }
 
+/**
+ * Handles the main RAPL device dialog.
+ *
+ * \param WindowHandle Dialog window handle.
+ * \param WindowMessage Window message identifier.
+ * \param wParam Message-specific wParam value.
+ * \param lParam Message-specific lParam value.
+ *
+ * \return Dialog procedure result.
+ */
 INT_PTR CALLBACK RaplDeviceDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PDV_RAPL_SYSINFO_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PDV_RAPL_SYSINFO_CONTEXT)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
             PPH_LAYOUT_ITEM graphItem;
             PPH_LAYOUT_ITEM panelItem;
 
-            context->WindowHandle = hwndDlg;
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_DEVICENAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
-            graphItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
-            panelItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+            context->WindowHandle = WindowHandle;
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_DEVICENAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT | PH_LAYOUT_FORCE_INVALIDATE);
+            graphItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_GRAPH_LAYOUT), NULL, PH_ANCHOR_ALL);
+            panelItem = PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDC_PANEL_LAYOUT), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             context->GraphMargin = graphItem->Margin;
+            context->GraphMarginScaled = context->GraphMargin;
+            PhGetMarginDpiValue(&context->GraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
 
             RaplDeviceInitializeDialogDpi(context);
 
-            SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
-            SetWindowFont(GetDlgItem(hwndDlg, IDC_DEVICENAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
-            PhSetDialogItemText(hwndDlg, IDC_DEVICENAME, PhGetStringOrDefault(context->DeviceEntry->DeviceName, L"Unknown"));
+            SetWindowFont(GetDlgItem(WindowHandle, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
+            SetWindowFont(GetDlgItem(WindowHandle, IDC_DEVICENAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
+            PhSetDialogItemText(WindowHandle, IDC_DEVICENAME, PhGetStringOrDefault(context->DeviceEntry->DeviceName, L"Unknown"));
 
-            context->RaplDevicePanel = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_RAPLDEVICE_PANEL), hwndDlg, RaplDevicePanelDialogProc, context);
+            context->RaplDevicePanel = PhCreateDialog(PluginInstance->DllBase, MAKEINTRESOURCE(IDD_RAPLDEVICE_PANEL), WindowHandle, RaplDevicePanelDialogProc, context);
             ShowWindow(context->RaplDevicePanel, SW_SHOW);
-            PhAddLayoutItemEx(&context->LayoutManager, context->RaplDevicePanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
+            PhAddLayoutItemExLogical(&context->LayoutManager, context->RaplDevicePanel, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM, &panelItem->Margin);
 
             RaplDeviceInitializeGraphStates(context);
             RaplDeviceCreateGraphs(context);
@@ -743,21 +917,24 @@ INT_PTR CALLBACK RaplDeviceDialogProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
         }
         break;
     case WM_DPICHANGED_AFTERPARENT:
         {
             RaplDeviceInitializeDialogDpi(context);
 
+            context->GraphMarginScaled = context->GraphMargin;
+            PhGetMarginDpiValue(&context->GraphMarginScaled, context->SysinfoSection->Parameters->WindowDpi, TRUE);
+
             if (context->SysinfoSection->Parameters->LargeFont)
             {
-                SetWindowFont(GetDlgItem(hwndDlg, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
+                SetWindowFont(GetDlgItem(WindowHandle, IDC_TITLE), context->SysinfoSection->Parameters->LargeFont, FALSE);
             }
 
             if (context->SysinfoSection->Parameters->MediumFont)
             {
-                SetWindowFont(GetDlgItem(hwndDlg, IDC_DEVICENAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
+                SetWindowFont(GetDlgItem(WindowHandle, IDC_DEVICENAME), context->SysinfoSection->Parameters->MediumFont, FALSE);
             }
 
             PhLayoutManagerUpdate(&context->LayoutManager, context->SysinfoSection->Parameters->WindowDpi);
@@ -771,39 +948,27 @@ INT_PTR CALLBACK RaplDeviceDialogProc(
             RaplDeviceLayoutGraphs(context);
         }
         break;
-    case WM_NOTIFY:
-        {
-            NMHDR* header = (NMHDR*)lParam;
-
-            if (header->hwndFrom == context->ProcessorGraphHandle)
-            {
-                RaplDeviceNotifyProcessorGraph(context, header);
-            }
-            else if (header->hwndFrom == context->CoreGraphHandle)
-            {
-                RaplDeviceNotifyPackageGraph(context, header);
-            }
-            else if (header->hwndFrom == context->DimmGraphHandle)
-            {
-                RaplDeviceNotifyDimmGraph(context, header);
-            }
-            else if (header->hwndFrom == context->TotalGraphHandle)
-            {
-                RaplDeviceNotifyTotalGraph(context, header);
-            }
-        }
-        break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
+/**
+ * Handles sysinfo section callbacks for a RAPL device section.
+ *
+ * \param Section Sysinfo section.
+ * \param Message Sysinfo callback message.
+ * \param Parameter1 Message parameter 1.
+ * \param Parameter2 Message parameter 2.
+ *
+ * \return TRUE if the message was handled.
+ */
 _Function_class_(PH_SYSINFO_SECTION_CALLBACK)
 BOOLEAN RaplDeviceSectionCallback(
     _In_ PPH_SYSINFO_SECTION Section,
@@ -822,7 +987,7 @@ BOOLEAN RaplDeviceSectionCallback(
             {
                 PPH_STRING deviceName;
 
-                if (QueryRaplDeviceInterfaceDescription(PhGetString(context->DeviceEntry->Id.DevicePath), &deviceName))
+                if (QueryRaplDeviceInterfaceInfo(PhGetString(context->DeviceEntry->Id.DevicePath), NULL, &deviceName))
                 {
                     PhMoveReference(&context->DeviceEntry->DeviceName, deviceName);
                 }
@@ -960,6 +1125,12 @@ BOOLEAN RaplDeviceSectionCallback(
     return FALSE;
 }
 
+/**
+ * Registers a RAPL device as a sysinfo section.
+ *
+ * \param Pointers Plugin sysinfo callback table.
+ * \param DeviceEntry RAPL device entry.
+ */
 VOID RaplDeviceSysInfoInitializing(
     _In_ PPH_PLUGIN_SYSINFO_POINTERS Pointers,
     _In_ _Assume_refs_(1) PDV_RAPL_ENTRY DeviceEntry

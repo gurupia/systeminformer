@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2013
- *     dmex    2019-2023
+ *     dmex    2019-2026
  *
  */
 
@@ -67,8 +67,19 @@ NTSTATUS PhpCreateProcessItemForZombieProcess(
     _Out_ PPH_PROCESS_ITEM* ProcessItem
     );
 
+VOID PhpInitializeZombieProcessEntry(
+    _Out_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessId
+    );
+
+VOID PhpSetZombieProcessHandleCount(
+    _Inout_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessHandle
+    );
+
 static HWND PhZombieProcessesWindowHandle = NULL;
 static HWND PhZombieProcessesListViewHandle = NULL;
+static HFONT PhZombieProcessesWindowFont = NULL;
 static PH_LAYOUT_MANAGER WindowLayoutManager;
 static RECT MinimumSize;
 
@@ -77,6 +88,9 @@ static PPH_LIST ProcessesList = NULL;
 static ULONG NumberOfZombieProcesses;
 static ULONG NumberOfTerminatedProcesses;
 
+/**
+ * Displays the hidden and zombie processes detection window.
+ */
 VOID PhShowZombieProcessesDialog(
     VOID
     )
@@ -98,6 +112,11 @@ VOID PhShowZombieProcessesDialog(
         SetForegroundWindow(PhZombieProcessesWindowHandle);
 }
 
+/**
+ * Frees the zombie process entry list and updates the status description.
+ *
+ * \param UpdateList An optional pointer to the list of PH_ZOMBIE_PROCESS_ENTRY items to clean up.
+ */
 VOID PhZombieProcessesCleanupList(
     _In_opt_ PPH_LIST UpdateList
     )
@@ -123,6 +142,12 @@ VOID PhZombieProcessesCleanupList(
     }
 }
 
+/**
+ * Background thread routine that executes the selected zombie process scan.
+ *
+ * \param Context User-defined context pointer.
+ * \return NTSTATUS Successful or errant status.
+ */
 _Function_class_(USER_THREAD_START_ROUTINE)
  NTSTATUS PhZombieProcessesThread(
     _In_ PVOID Context
@@ -130,10 +155,7 @@ _Function_class_(USER_THREAD_START_ROUTINE)
 {
     NTSTATUS status;
     PPH_LIST processList;
-
-    ExtendedListView_SetRedraw(PhZombieProcessesListViewHandle, FALSE);
-    ListView_DeleteAllItems(PhZombieProcessesListViewHandle);
-    ExtendedListView_SetRedraw(PhZombieProcessesListViewHandle, TRUE);
+    HWND windowHandle = Context;
 
     processList = PhCreateList(100);
 
@@ -143,14 +165,23 @@ _Function_class_(USER_THREAD_START_ROUTINE)
         processList
         );
 
-    if (PhZombieProcessesWindowHandle)
-        PostMessage(PhZombieProcessesWindowHandle, WM_PH_UPDATE_DIALOG, status, (LPARAM)processList);
-    else
+    // The window handle is captured when the scan starts. The global is cleared by WM_DESTROY
+    // and may be read concurrently, so it is never used here; a dead window fails the post.
+    if (!PostMessage(windowHandle, WM_PH_UPDATE_DIALOG, status, (LPARAM)processList))
         PhZombieProcessesCleanupList(processList);
 
     return STATUS_SUCCESS;
 }
 
+/**
+ * Dialog procedure for the hidden and zombie processes window.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param uMsg The window message.
+ * \param wParam The message parameter.
+ * \param lParam The message parameter.
+ * \return INT_PTR Dialog procedure result.
+ */
 INT_PTR CALLBACK PhpZombieProcessesDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -180,15 +211,20 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
             PhAddLayoutItem(&WindowLayoutManager, GetDlgItem(hwndDlg, IDC_SCAN), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             PhAddLayoutItem(&WindowLayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
+            PhZombieProcessesWindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+
             PhSetListViewStyle(lvHandle, TRUE, TRUE);
             PhSetControlTheme(lvHandle, L"explorer");
+            SetWindowFont(lvHandle, PhZombieProcessesWindowFont, FALSE);
             PhAddListViewColumn(lvHandle, 0, 0, 0, LVCFMT_LEFT, 320, L"Process");
             PhAddListViewColumn(lvHandle, 1, 1, 1, LVCFMT_LEFT, 60, L"PID");
+            PhAddListViewColumn(lvHandle, 2, 2, 2, LVCFMT_RIGHT, 70, L"Handles");
 
             PhSetExtendedListView(lvHandle);
             PhLoadListViewColumnsFromSetting(SETTING_ZOMBIE_PROCESSES_LIST_VIEW_COLUMNS, lvHandle);
             ExtendedListView_AddFallbackColumn(lvHandle, 0);
             ExtendedListView_AddFallbackColumn(lvHandle, 1);
+            ExtendedListView_AddFallbackColumn(lvHandle, 2);
             ExtendedListView_SetItemColorFunction(lvHandle, PhpZombieProcessesColorFunction);
 
             ComboBox_AddString(methodHandle, L"Brute force");
@@ -221,6 +257,13 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
             PhSaveListViewColumnsToSetting(SETTING_ZOMBIE_PROCESSES_LIST_VIEW_COLUMNS, PhZombieProcessesListViewHandle);
 
             PhZombieProcessesCleanupList(ProcessesList);
+            ProcessesList = NULL;
+
+            if (PhZombieProcessesWindowFont)
+            {
+                DeleteFont(PhZombieProcessesWindowFont);
+                PhZombieProcessesWindowFont = NULL;
+            }
 
             PhZombieProcessesWindowHandle = NULL;
         }
@@ -241,7 +284,12 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
 
                     method = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_METHOD)));
 
-                    PhZombieProcessesCleanupList(NULL);
+                    // The list view items reference the entries, remove them before freeing the list.
+                    ExtendedListView_SetRedraw(PhZombieProcessesListViewHandle, FALSE);
+                    ListView_DeleteAllItems(PhZombieProcessesListViewHandle);
+                    ExtendedListView_SetRedraw(PhZombieProcessesListViewHandle, TRUE);
+
+                    PhZombieProcessesCleanupList(ProcessesList);
 
                     ProcessesList = PhCreateList(40);
 
@@ -261,9 +309,15 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                     NumberOfZombieProcesses = 0;
                     NumberOfTerminatedProcesses = 0;
 
+                    PhSetDialogItemText(hwndDlg, IDC_DESCRIPTION, PhaFormatString(
+                        L"Scanning (%s)...",
+                        PhGetStringOrEmpty(method)
+                        )->Buffer);
+                    InvalidateRect(GetDlgItem(hwndDlg, IDC_DESCRIPTION), NULL, TRUE);
+
                     EnableWindow(GetDlgItem(hwndDlg, IDC_SCAN), FALSE);
 
-                    PhCreateThread2(PhZombieProcessesThread, NULL);
+                    PhCreateThread2(PhZombieProcessesThread, hwndDlg);
                 }
                 break;
             case IDC_TERMINATE:
@@ -272,9 +326,7 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                     ULONG numberOfEntries;
                     ULONG i;
 
-                    PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &entries, &numberOfEntries);
-
-                    if (numberOfEntries != 0)
+                    if (PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &entries, &numberOfEntries))
                     {
                         if (!PhGetIntegerSetting(SETTING_ENABLE_WARNINGS) ||
                             PhShowConfirmMessage(
@@ -334,9 +386,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                                 SendMessage(hwndDlg, WM_COMMAND, IDC_SCAN, 0);
                             }
                         }
-                    }
 
-                    PhFree(entries);
+                        PhFree(entries);
+                    }
                 }
                 break;
             case IDC_SAVE:
@@ -397,12 +449,25 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                                     else if (entry->Type != NormalProcess)
                                         continue;
 
-                                    PhWriteStringFormatAsUtf8FileStream(
-                                        fileStream,
-                                        L"%s (%u)\r\n",
-                                        entry->FileName->Buffer,
-                                        HandleToUlong(entry->ProcessId)
-                                        );
+                                    if (entry->HasHandleCount)
+                                    {
+                                        PhWriteStringFormatAsUtf8FileStream(
+                                            fileStream,
+                                            L"%s (%u) Handles: %u\r\n",
+                                            entry->FileName->Buffer,
+                                            HandleToUlong(entry->ProcessId),
+                                            entry->HandleCount
+                                            );
+                                    }
+                                    else
+                                    {
+                                        PhWriteStringFormatAsUtf8FileStream(
+                                            fileStream,
+                                            L"%s (%u)\r\n",
+                                            entry->FileName->Buffer,
+                                            HandleToUlong(entry->ProcessId)
+                                            );
+                                    }
                                 }
                             }
 
@@ -473,6 +538,11 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
         break;
     case WM_DPICHANGED:
         {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&PhZombieProcessesWindowFont, PhZombieProcessesListViewHandle, windowFont, TRUE);
+
             PhLayoutManagerUpdate(&WindowLayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&WindowLayoutManager);
         }
@@ -503,9 +573,7 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(PhZombieProcessesListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(PhZombieProcessesListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -541,9 +609,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
@@ -558,6 +626,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
             ExtendedListView_SortItems(PhZombieProcessesListViewHandle);
             ExtendedListView_SetRedraw(PhZombieProcessesListViewHandle, TRUE);
 
+            // The entries are now owned by ProcessesList.
+            PhDereferenceObject(list);
+
             if (NT_SUCCESS(status))
             {
                 PhSetDialogItemText(hwndDlg, IDC_DESCRIPTION, PhaFormatString(
@@ -569,6 +640,9 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
             }
             else
             {
+                PhSetDialogItemText(hwndDlg, IDC_DESCRIPTION, L"Scan failed.");
+                InvalidateRect(GetDlgItem(hwndDlg, IDC_DESCRIPTION), NULL, TRUE);
+
                 PhShowStatus(hwndDlg, L"Unable to perform the scan", status, 0);
             }
 
@@ -600,6 +674,14 @@ INT_PTR CALLBACK PhpZombieProcessesDlgProc(
     return FALSE;
 }
 
+/**
+ * Determines the background color for a zombie process list item based on its status.
+ *
+ * \param Index The index of the item.
+ * \param Param A pointer to the PH_ZOMBIE_PROCESS_ENTRY structure.
+ * \param Context User-defined context pointer.
+ * \return COLORREF The RGB color value for the item.
+ */
 COLORREF NTAPI PhpZombieProcessesColorFunction(
     _In_ INT Index,
     _In_ PVOID Param,
@@ -620,13 +702,63 @@ COLORREF NTAPI PhpZombieProcessesColorFunction(
     return PhEnableThemeSupport ? PhThemeWindowBackgroundColor : GetSysColor(COLOR_WINDOW);
 }
 
+/**
+ * Initializes a zombie process entry structure with default values.
+ *
+ * \param Entry Receives the initialized zombie process entry.
+ * \param ProcessId The identifier of the process.
+ */
+VOID PhpInitializeZombieProcessEntry(
+    _Out_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessId
+    )
+{
+    Entry->ProcessId = ProcessId;
+    Entry->FileName = NULL;
+    Entry->Type = UnknownProcess;
+    Entry->HandleCount = 0;
+    Entry->HasHandleCount = FALSE;
+}
+
+/**
+ * Queries and sets the handle count for a zombie process entry.
+ *
+ * \param Entry A pointer to the zombie process entry to update.
+ * \param ProcessHandle A handle to the target process.
+ */
+VOID PhpSetZombieProcessHandleCount(
+    _Inout_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
+    _In_ HANDLE ProcessHandle
+    )
+{
+    OBJECT_BASIC_INFORMATION basicInfo;
+
+    if (NT_SUCCESS(PhQueryObjectBasicInformation(ProcessHandle, &basicInfo)))
+    {
+        Entry->HandleCount = basicInfo.HandleCount ? basicInfo.HandleCount - 1 : 0;
+        Entry->HasHandleCount = TRUE;
+    }
+}
+
+/**
+ * Callback routine invoked during zombie process scanning to add discovered entries.
+ *
+ * \param Process A pointer to the detected zombie process entry.
+ * \param Context An optional pointer to the destination PH_LIST of process entries.
+ * \return TRUE to continue enumeration, FALSE to stop.
+ */
 BOOLEAN NTAPI PhpZombieProcessesCallback(
     _In_ PPH_ZOMBIE_PROCESS_ENTRY Process,
-    _In_ PVOID Context
+    _In_opt_ PVOID Context
     )
 {
     PPH_ZOMBIE_PROCESS_ENTRY entry;
-    ULONG count = ((PPH_LIST)Context)->Count;
+    ULONG count;
+
+    if (!Context)
+        return FALSE;
+
+    count = ((PPH_LIST)Context)->Count;
 
     for (ULONG i = 0; i < count; i++)
     {
@@ -653,6 +785,11 @@ BOOLEAN NTAPI PhpZombieProcessesCallback(
     return TRUE;
 }
 
+/**
+ * Populates the list view control with newly scanned zombie process items.
+ *
+ * \param UpdateList A pointer to the list of PH_ZOMBIE_PROCESS_ENTRY items.
+ */
 VOID PhZombieProcessesUpdateListView(
     _In_ PPH_LIST UpdateList
     )
@@ -662,6 +799,7 @@ VOID PhZombieProcessesUpdateListView(
         PPH_ZOMBIE_PROCESS_ENTRY entry = UpdateList->Items[i];
         INT lvItemIndex;
         WCHAR pidString[PH_INT32_STR_LEN_1];
+        WCHAR handleCountString[PH_INT32_STR_LEN_1];
 
         if (entry->FileName)
         {
@@ -677,10 +815,25 @@ VOID PhZombieProcessesUpdateListView(
         PhPrintUInt32(pidString, HandleToUlong(entry->ProcessId));
         PhSetListViewSubItem(PhZombieProcessesListViewHandle, lvItemIndex, 1, pidString);
 
+        if (entry->HasHandleCount)
+        {
+            PhPrintUInt32(handleCountString, entry->HandleCount);
+            PhSetListViewSubItem(PhZombieProcessesListViewHandle, lvItemIndex, 2, handleCountString);
+        }
+
         PhAddItemList(ProcessesList, entry);
     }
 }
 
+/**
+ * Creates or retrieves a process item for a detected zombie process.
+ *
+ * \param WindowHandle A handle to the window for user notifications.
+ * \param Entry A pointer to the zombie process entry.
+ * \param ProcessItem Receives a pointer to the created process item object.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Success_(NT_SUCCESS(return))
 NTSTATUS PhpCreateProcessItemForZombieProcess(
     _In_ HWND WindowHandle,
     _In_ PPH_ZOMBIE_PROCESS_ENTRY Entry,
@@ -729,12 +882,24 @@ NTSTATUS PhpCreateProcessItemForZombieProcess(
             return STATUS_SUCCESS;
         }
 
-        NtClose(processHandle);
+        // N.B. PhCreateProcessItemFromHandle always takes ownership of processHandle.
+        status = STATUS_UNSUCCESSFUL;
     }
 
     return status;
 }
 
+#define PH_ZOMBIE_LIMIT_PID_MIN 65536
+#define PH_ZOMBIE_LIMIT_PID_MAX 0xffff0000
+#define PH_ZOMBIE_SCAN_HEADROOM 0x10000
+
+/**
+ * Detects zombie processes by brute-force opening all potential process IDs.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumZombieProcessesBruteForce(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -744,6 +909,7 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
     PVOID processes;
     PSYSTEM_PROCESS_INFORMATION process;
     PPH_LIST pids;
+    ULONG maximumPid;
     ULONG pid;
     BOOLEAN stop = FALSE;
 
@@ -752,16 +918,22 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
 
     pids = PhCreateList(40);
 
+    maximumPid = PH_ZOMBIE_LIMIT_PID_MIN;
     process = PH_FIRST_PROCESS(processes);
-
     do
     {
         PhAddItemList(pids, process->UniqueProcessId);
+
+        if (HandleToUlong(process->UniqueProcessId) > maximumPid)
+            maximumPid = HandleToUlong(process->UniqueProcessId);
     } while (process = PH_NEXT_PROCESS(process));
 
     PhFree(processes);
 
-    for (pid = 8; pid <= 65536; pid += 4)
+    if (!NT_SUCCESS(RtlULongAdd(maximumPid, PH_ZOMBIE_SCAN_HEADROOM, &maximumPid)))
+        maximumPid = PH_ZOMBIE_LIMIT_PID_MAX;
+
+    for (pid = 8; pid <= maximumPid; pid += 4)
     {
         NTSTATUS status2;
         HANDLE processHandle;
@@ -777,7 +949,8 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
 
         if (NT_SUCCESS(status2))
         {
-            entry.ProcessId = UlongToHandle(pid);
+            PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
+            PhpSetZombieProcessHandleCount(&entry, processHandle);
 
             if (NT_SUCCESS(status2 = PhGetProcessTimes(
                 processHandle,
@@ -811,7 +984,7 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
         {
             if (NT_SUCCESS(status2 = PhGetProcessImageFileNameByProcessId(UlongToHandle(pid), &fileName)))
             {
-                entry.ProcessId = UlongToHandle(pid);
+                PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
                 entry.FileName = fileName;
 
                 if (PhFindItemList(pids, UlongToHandle(pid)) != ULONG_MAX)
@@ -831,9 +1004,7 @@ NTSTATUS PhpEnumZombieProcessesBruteForce(
 
         if (!NT_SUCCESS(status2))
         {
-            entry.ProcessId = UlongToHandle(pid);
-            entry.FileName = NULL;
-            entry.Type = UnknownProcess;
+            PhpInitializeZombieProcessEntry(&entry, UlongToHandle(pid));
 
             if (!Callback(&entry, Context))
                 stop = TRUE;
@@ -855,6 +1026,13 @@ typedef struct _CSR_HANDLES_CONTEXT
     PPH_LIST Pids;
 } CSR_HANDLES_CONTEXT, *PCSR_HANDLES_CONTEXT;
 
+/**
+ * Callback routine invoked for each handle in CSRSS to inspect associated process state.
+ *
+ * \param Handle A pointer to the CSR handle info.
+ * \param Context An optional pointer to the CSR_HANDLES_CONTEXT structure.
+ * \return TRUE to continue enumeration, FALSE to stop.
+ */
 static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
     _In_ PPH_CSR_HANDLE_INFO Handle,
     _In_opt_ PVOID Context
@@ -868,7 +1046,7 @@ static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
     PPH_STRING fileName;
     PH_ZOMBIE_PROCESS_ENTRY entry;
 
-    entry.ProcessId = Handle->ProcessId;
+    PhpInitializeZombieProcessEntry(&entry, Handle->ProcessId);
 
     if (NT_SUCCESS(status = PhOpenProcessByCsrHandle(
         &processHandle,
@@ -876,6 +1054,8 @@ static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
         Handle
         )))
     {
+        PhpSetZombieProcessHandleCount(&entry, processHandle);
+
         if (NT_SUCCESS(status = PhGetProcessTimes(
             processHandle,
             &times
@@ -915,6 +1095,13 @@ static BOOLEAN NTAPI PhpCsrProcessHandlesCallback(
     return cont;
 }
 
+/**
+ * Detects zombie processes by scanning handle tables of CSR processes.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumZombieProcessesCsrHandles(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -957,6 +1144,14 @@ typedef struct _PH_ENUM_NEXT_PROCESS_CONTEXT
     PVOID Context;
 } PH_ENUM_NEXT_PROCESS_CONTEXT, *PPH_ENUM_NEXT_PROCESS_CONTEXT;
 
+/**
+ * Callback routine for scanning processes via NtGetNextProcess.
+ *
+ * \param ProcessHandle A handle to the opened process.
+ * \param Context User-defined context pointer.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Function_class_(PH_ENUM_NEXT_PROCESS)
 NTSTATUS NTAPI PhpEnumNextProcessHandles(
     _In_ HANDLE ProcessHandle,
     _In_ PVOID Context
@@ -980,7 +1175,8 @@ NTSTATUS NTAPI PhpEnumNextProcessHandles(
                 PH_ZOMBIE_PROCESS_ENTRY entry;
                 PPH_STRING fileName;
 
-                entry.ProcessId = basicInfo.BasicInfo.UniqueProcessId;
+                PhpInitializeZombieProcessEntry(&entry, basicInfo.BasicInfo.UniqueProcessId);
+                PhpSetZombieProcessHandleCount(&entry, ProcessHandle);
 
                 if (NT_SUCCESS(PhGetProcessImageFileName(ProcessHandle, &fileName)))
                 {
@@ -1016,6 +1212,13 @@ CleanupExit:
     return STATUS_SUCCESS;
 }
 
+/**
+ * Detects zombie processes using the NtGetNextProcess kernel enumeration.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumZombieProcessHandles(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -1037,6 +1240,13 @@ NTSTATUS PhpEnumZombieProcessHandles(
     return status;
 }
 
+/**
+ * Detects zombie processes by inspecting open registry subkey process handles.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumZombieSubKeyHandles(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -1099,7 +1309,8 @@ NTSTATUS PhpEnumZombieSubKeyHandles(
                         PH_ZOMBIE_PROCESS_ENTRY process;
                         PPH_STRING fileName;
 
-                        process.ProcessId = entry.ProcessId;
+                        PhpInitializeZombieProcessEntry(&process, entry.ProcessId);
+                        PhpSetZombieProcessHandleCount(&process, processHandle);
 
                         if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                         {
@@ -1139,7 +1350,7 @@ NTSTATUS PhpEnumZombieSubKeyHandles(
                 PH_ZOMBIE_PROCESS_ENTRY process;
                 PPH_STRING fileName;
 
-                process.ProcessId = entry.ProcessId;
+                PhpInitializeZombieProcessEntry(&process, entry.ProcessId);
 
                 if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                 {
@@ -1179,6 +1390,13 @@ NTSTATUS PhpEnumZombieSubKeyHandles(
     (PETW_TRACE_PROVIDER_INSTANCE_INFO)PTR_ADD_OFFSET((TraceGuid), \
     ((PETW_TRACE_PROVIDER_INSTANCE_INFO)(TraceGuid))->NextOffset) : NULL)
 
+/**
+ * Detects zombie processes by enumerating ETW trace registration GUIDs.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumEtwGuidHandles(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -1229,7 +1447,7 @@ NTSTATUS PhpEnumEtwGuidHandles(
                         PPH_PROCESS_ITEM processItem;
 
                         processItem = PhReferenceProcessItem(UlongToHandle(instance->Pid));
-         
+
                         //if (NT_SUCCESS(PhEnumProcesses(&processes)))
                         {
                             //if (!PhFindProcessInformation(processes, UlongToHandle(instance->Pid)))
@@ -1238,7 +1456,8 @@ NTSTATUS PhpEnumEtwGuidHandles(
                                 PH_ZOMBIE_PROCESS_ENTRY process;
                                 PPH_STRING fileName;
 
-                                process.ProcessId = UlongToHandle(instance->Pid);
+                                PhpInitializeZombieProcessEntry(&process, UlongToHandle(instance->Pid));
+                                PhpSetZombieProcessHandleCount(&process, processHandle);
 
                                 if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                                 {
@@ -1280,7 +1499,7 @@ NTSTATUS PhpEnumEtwGuidHandles(
                         PH_ZOMBIE_PROCESS_ENTRY process;
                         PPH_STRING fileName;
 
-                        process.ProcessId = UlongToHandle(instance->Pid);
+                        PhpInitializeZombieProcessEntry(&process, UlongToHandle(instance->Pid));
 
                         if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                         {
@@ -1313,6 +1532,13 @@ NTSTATUS PhpEnumEtwGuidHandles(
     return status;
 }
 
+/**
+ * Detects zombie processes by querying processes with open handles to system binary files.
+ *
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpEnumNtdllHandles(
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -1375,7 +1601,8 @@ NTSTATUS PhpEnumNtdllHandles(
                             PH_ZOMBIE_PROCESS_ENTRY process;
                             PPH_STRING fileName;
 
-                            process.ProcessId = processId;
+                            PhpInitializeZombieProcessEntry(&process, processId);
+                            PhpSetZombieProcessHandleCount(&process, processHandle);
 
                             if (NT_SUCCESS(PhGetProcessImageFileName(processHandle, &fileName)))
                             {
@@ -1415,7 +1642,7 @@ NTSTATUS PhpEnumNtdllHandles(
                     PH_ZOMBIE_PROCESS_ENTRY process;
                     PPH_STRING fileName;
 
-                    process.ProcessId = processId;
+                    PhpInitializeZombieProcessEntry(&process, processId);
 
                     if (NT_SUCCESS(PhGetProcessImageFileNameByProcessId(process.ProcessId, &fileName)))
                     {
@@ -1447,6 +1674,14 @@ NTSTATUS PhpEnumNtdllHandles(
     return status;
 }
 
+/**
+ * Enumerates zombie and hidden processes using the specified detection method.
+ *
+ * \param Method The detection method to use.
+ * \param Callback The callback routine invoked for each discovered process.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhEnumZombieProcesses(
     _In_ PH_ZOMBIE_PROCESS_METHOD Method,
     _In_ PPH_ENUM_ZOMBIE_PROCESSES_CALLBACK Callback,
@@ -1472,6 +1707,13 @@ NTSTATUS PhEnumZombieProcesses(
     return STATUS_FAIL_CHECK;
 }
 
+/**
+ * Opens handles to all running Client/Server Runtime Subsystem (CSRSS) processes.
+ *
+ * \param ProcessHandles Receives an allocated array of process handles.
+ * \param NumberOfProcessHandles Receives the count of opened handles.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpOpenCsrProcesses(
     _Out_ PHANDLE *ProcessHandles,
     _Out_ PULONG NumberOfProcessHandles
@@ -1533,6 +1775,12 @@ NTSTATUS PhpOpenCsrProcesses(
     return STATUS_UNSUCCESSFUL;
 }
 
+/**
+ * Queries the target process identifier for a process or thread handle in CSRSS.
+ *
+ * \param Handle A pointer to the CSR handle information structure to update.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhpGetCsrHandleProcessId(
     _Inout_ PPH_CSR_HANDLE_INFO Handle
     )
@@ -1584,6 +1832,13 @@ NTSTATUS PhpGetCsrHandleProcessId(
     return status;
 }
 
+/**
+ * Enumerates all process and thread handles opened by CSRSS processes.
+ *
+ * \param Callback The callback routine invoked for each CSR handle.
+ * \param Context User-defined context passed to the callback.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhEnumCsrProcessHandles(
     _In_ PPH_ENUM_CSR_PROCESS_HANDLES_CALLBACK Callback,
     _In_opt_ PVOID Context
@@ -1654,6 +1909,14 @@ NTSTATUS PhEnumCsrProcessHandles(
     return status;
 }
 
+/**
+ * Opens a process by duplicating or acquiring a handle from CSRSS.
+ *
+ * \param ProcessHandle Receives the duplicated or opened process handle.
+ * \param DesiredAccess The access mask requested for the process.
+ * \param Handle A pointer to the CSR handle info.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhOpenProcessByCsrHandle(
     _Out_ PHANDLE ProcessHandle,
     _In_ ACCESS_MASK DesiredAccess,
@@ -1708,6 +1971,13 @@ typedef struct _OPEN_PROCESS_BY_CSR_CONTEXT
     HANDLE ProcessId;
 } OPEN_PROCESS_BY_CSR_CONTEXT, *POPEN_PROCESS_BY_CSR_CONTEXT;
 
+/**
+ * Callback routine used to locate and open a specific target process from CSR handles.
+ *
+ * \param Handle A pointer to the CSR handle info.
+ * \param Context A pointer to the OPEN_PROCESS_BY_CSR_CONTEXT structure.
+ * \return TRUE to continue searching, FALSE once the target process is found and opened.
+ */
 static BOOLEAN NTAPI PhpOpenProcessByCsrHandlesCallback(
     _In_ PPH_CSR_HANDLE_INFO Handle,
     _In_opt_ PVOID Context
@@ -1729,6 +1999,14 @@ static BOOLEAN NTAPI PhpOpenProcessByCsrHandlesCallback(
     return TRUE;
 }
 
+/**
+ * Opens a process with the specified process ID using handles found in CSRSS.
+ *
+ * \param ProcessHandle Receives the opened process handle.
+ * \param DesiredAccess The access mask requested for the process.
+ * \param ProcessId The identifier of the process to open.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhOpenProcessByCsrHandles(
     _Out_ PHANDLE ProcessHandle,
     _In_ ACCESS_MASK DesiredAccess,

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -49,8 +49,9 @@
 #define PHMOTLC_ENCLAVE_BASE_ADDRESS 26
 #define PHMOTLC_ENCLAVE_SIZE 27
 #define PHMOTLC_ARCHITECTURE 28
+#define PHMOTLC_LDRFLAGS 29
 
-#define PHMOTLC_MAXIMUM 29
+#define PHMOTLC_MAXIMUM 30
 
 // begin_phapppub
 typedef struct _PH_MODULE_NODE
@@ -78,6 +79,7 @@ typedef struct _PH_MODULE_NODE
     PPH_STRING ImageCoherencyText;
     PPH_STRING ServiceText;
     PPH_STRING EnclaveSizeText;
+    PPH_STRING LdrFlagsText;
 
     struct _PH_MODULE_NODE *Parent;
     PPH_LIST Children;
@@ -102,6 +104,8 @@ typedef struct _PH_MODULE_NODE
 #define PH_MODULE_FLAGS_IMAGEKNOWNDLL_OPTION 15
 #define PH_MODULE_FLAGS_HIGHLIGHT_IMAGEKNOWNDLL 16
 #define PH_MODULE_FLAGS_ZERO_PAD_ADDRESSES 17
+#define PH_MODULE_FLAGS_HIGHLIGHT_NATIVE_MODULES 18
+#define PH_MODULE_FLAGS_HIGHLIGHT_MAPPED_MODULES 19
 #define PH_MODULE_FLAGS_SAVE_OPTION 40 // Always last (dmex)
 
 typedef struct _PH_MODULE_LIST_CONTEXT
@@ -117,6 +121,7 @@ typedef struct _PH_MODULE_LIST_CONTEXT
     HANDLE ProcessId;
     LARGE_INTEGER ProcessCreateTime;
     BOOLEAN HasServices;
+    BOOLEAN IsSubsystemProcess;
     BOOLEAN EnableStateHighlighting;
 
     union

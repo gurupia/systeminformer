@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2018-2022
+ *     dmex    2018-2026
  *
  */
 
@@ -128,11 +128,13 @@ PhGetAccountPrivileges(
     _Out_ PTOKEN_PRIVILEGES* Privileges
     );
 
-typedef NTSTATUS (NTAPI* PPH_ENUM_PRIVILEGES)(
+typedef _Function_class_(PH_ENUM_PRIVILEGES)
+NTSTATUS NTAPI PH_ENUM_PRIVILEGES(
     _In_ PPOLICY_PRIVILEGE_DEFINITION Privileges,
     _In_ ULONG NumberOfPrivileges,
     _In_opt_ PVOID Context
     );
+typedef PH_ENUM_PRIVILEGES* PPH_ENUM_PRIVILEGES;
 
 PHLIBAPI
 NTSTATUS
@@ -235,6 +237,45 @@ PPH_STRING
 NTAPI
 PhGetAzureDirectoryObjectSid(
     _In_ PSID ActiveDirectorySid
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsDomainJoined(
+    VOID
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhGetSidAuthorityName(
+    _In_ PSID Sid
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
+PhFormatSidTooltip(
+    _In_ PSID Sid,
+    _In_ BOOLEAN IncludeName,
+    _In_opt_ PLSA_USER_ACCOUNT_TYPE AccountType
+    );
+
+PHLIBAPI
+BOOLEAN
+NTAPI
+PhIsServiceSid(
+    _In_ PSID Sid
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhGetShadowAdminAssociatedSid(
+    _In_ PSID Sid,
+    _Out_ PSID *AssociatedSid,
+    _Out_opt_ PPH_STRING *AssociatedName
     );
 
 #ifdef __cplusplus

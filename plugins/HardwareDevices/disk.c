@@ -6,11 +6,18 @@
  * Authors:
  *
  *     wj32    2016
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *
  */
 
 #include "devices.h"
+
+/**
+ * Deletes a disk entry and releases its resources.
+ *
+ * \param Object Disk entry object.
+ * \param Flags Object deletion flags.
+ */
 _Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID DiskEntryDeleteProcedure(
     _In_ PVOID Object,
@@ -32,6 +39,9 @@ VOID DiskEntryDeleteProcedure(
     AddRemoveDeviceChangeCallback();
 }
 
+/**
+ * Initializes the disk device list and object type.
+ */
 VOID DiskDevicesInitialize(
     VOID
     )
@@ -40,6 +50,11 @@ VOID DiskDevicesInitialize(
     DiskDeviceEntryType = PhCreateObjectType(L"DiskDeviceEntry", 0, DiskEntryDeleteProcedure);
 }
 
+/**
+ * Refreshes all tracked disk devices and samples current statistics.
+ *
+ * \param RunCount Current provider update count.
+ */
 VOID DiskDevicesUpdate(
     _In_ ULONG RunCount
     )
@@ -51,7 +66,7 @@ VOID DiskDevicesUpdate(
         HANDLE deviceHandle;
         PDV_DISK_ENTRY entry;
 
-        entry = PhReferenceObjectSafe(DiskDevicesList->Items[i]);
+        entry = PhReferenceObjectUnsafe(DiskDevicesList->Items[i]);
 
         if (!entry)
             continue;
@@ -77,14 +92,14 @@ VOID DiskDevicesUpdate(
                 ULONG writeCount;
                 ULONG64 queryTime;
 
-                PhUpdateDelta(&entry->BytesReadDelta, diskPerformance.BytesRead.QuadPart);
-                PhUpdateDelta(&entry->BytesWrittenDelta, diskPerformance.BytesWritten.QuadPart);
-                PhUpdateDelta(&entry->ReadTimeDelta, diskPerformance.ReadTime.QuadPart);
-                PhUpdateDelta(&entry->WriteTimeDelta, diskPerformance.WriteTime.QuadPart);
-                PhUpdateDelta(&entry->IdleTimeDelta, diskPerformance.IdleTime.QuadPart);
-                PhUpdateDelta(&entry->ReadCountDelta, diskPerformance.ReadCount);
-                PhUpdateDelta(&entry->WriteCountDelta, diskPerformance.WriteCount);
-                PhUpdateDelta(&entry->QueryTimeDelta, diskPerformance.QueryTime.QuadPart);
+                PhUpdateDeltaClamped(&entry->BytesReadDelta, (ULONG64)diskPerformance.BytesRead.QuadPart);
+                PhUpdateDeltaClamped(&entry->BytesWrittenDelta, (ULONG64)diskPerformance.BytesWritten.QuadPart);
+                PhUpdateDeltaClamped(&entry->ReadTimeDelta, (ULONG64)diskPerformance.ReadTime.QuadPart);
+                PhUpdateDeltaClamped(&entry->WriteTimeDelta, (ULONG64)diskPerformance.WriteTime.QuadPart);
+                PhUpdateDeltaClamped(&entry->IdleTimeDelta, (ULONG64)diskPerformance.IdleTime.QuadPart);
+                PhUpdateDeltaClamped(&entry->ReadCountDelta, diskPerformance.ReadCount);
+                PhUpdateDeltaClamped(&entry->WriteCountDelta, diskPerformance.WriteCount);
+                PhUpdateDeltaClamped(&entry->QueryTimeDelta, (ULONG64)diskPerformance.QueryTime.QuadPart);
 
                 readTime = entry->ReadTimeDelta.Delta;
                 writeTime = entry->WriteTimeDelta.Delta;
@@ -104,7 +119,7 @@ VOID DiskDevicesUpdate(
                     entry->ActiveTime = 0.0f;
 
                 if (entry->ActiveTime > 100.f)
-                    entry->ActiveTime = 0.f;
+                    entry->ActiveTime = 100.f;
                 if (entry->ActiveTime < 0.f)
                     entry->ActiveTime = 0.f;
 
@@ -125,6 +140,12 @@ VOID DiskDevicesUpdate(
                 PhInitializeDelta(&entry->WriteCountDelta);
                 PhInitializeDelta(&entry->QueryTimeDelta);
 
+                // Re-arm the first sample, otherwise the counters of the device we reconnect to are
+                // reported as a single tick's delta. (dmex)
+                entry->HaveFirstSample = FALSE;
+
+                entry->CurrentBytesRead = 0;
+                entry->CurrentBytesWritten = 0;
                 entry->ResponseTime = 0;
                 entry->ActiveTime = 0.0f;
                 entry->QueueDepth = 0;
@@ -148,6 +169,12 @@ VOID DiskDevicesUpdate(
             PhInitializeDelta(&entry->WriteCountDelta);
             PhInitializeDelta(&entry->QueryTimeDelta);
 
+            // Re-arm the first sample, otherwise the counters of the device we reconnect to are
+            // reported as a single tick's delta. (dmex)
+            entry->HaveFirstSample = FALSE;
+
+            entry->CurrentBytesRead = 0;
+            entry->CurrentBytesWritten = 0;
             entry->ResponseTime = 0;
             entry->ActiveTime = 0.0f;
             entry->QueueDepth = 0;
@@ -157,18 +184,48 @@ VOID DiskDevicesUpdate(
             PhClearReference(&entry->DiskIndexName);
         }
 
-        if (!entry->HaveFirstSample)
+        // Note: the DevicePresent check keeps the first sample armed across the ticks where the
+        // device is missing, so the counters of the device we reconnect to are not reported as a
+        // single tick's delta. (dmex)
+
+        if (entry->DevicePresent && !entry->HaveFirstSample)
         {
             // The first sample must be zero.
             entry->BytesReadDelta.Delta = 0;
             entry->BytesWrittenDelta.Delta = 0;
+            entry->ReadTimeDelta.Delta = 0;
+            entry->WriteTimeDelta.Delta = 0;
+            entry->IdleTimeDelta.Delta = 0;
+            entry->ReadCountDelta.Delta = 0;
+            entry->WriteCountDelta.Delta = 0;
+            entry->QueryTimeDelta.Delta = 0;
             entry->HaveFirstSample = TRUE;
+        }
+
+        // Scale the byte deltas into per-second rates. The device reports the time it measured
+        // over (QueryTime, in 100ns units) which is more accurate than the provider interval;
+        // fall back to the provider interval when the device didn't report one. (dmex)
+
+        if (entry->QueryTimeDelta.Delta != 0)
+        {
+            entry->CurrentBytesRead = entry->BytesReadDelta.Delta * PH_TICKS_PER_SEC / entry->QueryTimeDelta.Delta;
+            entry->CurrentBytesWritten = entry->BytesWrittenDelta.Delta * PH_TICKS_PER_SEC / entry->QueryTimeDelta.Delta;
+        }
+        else if (NetRateIntervalMs != 0)
+        {
+            entry->CurrentBytesRead = entry->BytesReadDelta.Delta * 1000 / NetRateIntervalMs;
+            entry->CurrentBytesWritten = entry->BytesWrittenDelta.Delta * 1000 / NetRateIntervalMs;
+        }
+        else
+        {
+            entry->CurrentBytesRead = 0;
+            entry->CurrentBytesWritten = 0;
         }
 
         if (RunCount != 0)
         {
-            PhAddItemCircularBuffer_ULONG64(&entry->ReadBuffer, entry->BytesReadDelta.Delta);
-            PhAddItemCircularBuffer_ULONG64(&entry->WriteBuffer, entry->BytesWrittenDelta.Delta);
+            PhAddItemCircularBuffer_ULONG64(&entry->ReadBuffer, entry->CurrentBytesRead);
+            PhAddItemCircularBuffer_ULONG64(&entry->WriteBuffer, entry->CurrentBytesWritten);
         }
 
         PhDereferenceObjectDeferDelete(entry);
@@ -177,6 +234,12 @@ VOID DiskDevicesUpdate(
     PhReleaseQueuedLockShared(&DiskDevicesListLock);
 }
 
+/**
+ * Updates cached display information for a disk entry.
+ *
+ * \param DeviceHandle Optional disk device handle.
+ * \param DiskEntry Target disk entry.
+ */
 VOID DiskDeviceUpdateDeviceInfo(
     _In_opt_ HANDLE DeviceHandle,
     _In_ PDV_DISK_ENTRY DiskEntry
@@ -233,6 +296,12 @@ VOID DiskDeviceUpdateDeviceInfo(
     }
 }
 
+/**
+ * Initializes a disk device identifier.
+ *
+ * \param Id Destination identifier.
+ * \param DevicePath Device path.
+ */
 VOID InitializeDiskId(
     _Out_ PDV_DISK_ID Id,
     _In_ PPH_STRING DevicePath
@@ -241,6 +310,12 @@ VOID InitializeDiskId(
     PhSetReference(&Id->DevicePath, DevicePath);
 }
 
+/**
+ * Copies a disk device identifier.
+ *
+ * \param Destination Destination identifier.
+ * \param Source Source identifier.
+ */
 VOID CopyDiskId(
     _Out_ PDV_DISK_ID Destination,
     _In_ PDV_DISK_ID Source
@@ -252,6 +327,11 @@ VOID CopyDiskId(
         );
 }
 
+/**
+ * Releases references held by a disk device identifier.
+ *
+ * \param Id Identifier to release.
+ */
 VOID DeleteDiskId(
     _Inout_ PDV_DISK_ID Id
     )
@@ -259,6 +339,13 @@ VOID DeleteDiskId(
     PhClearReference(&Id->DevicePath);
 }
 
+/**
+ * Compares two disk device identifiers.
+ *
+ * \param Id1 First identifier.
+ * \param Id2 Second identifier.
+ * \return TRUE if both identifiers refer to the same disk.
+ */
 BOOLEAN EquivalentDiskId(
     _In_ PDV_DISK_ID Id1,
     _In_ PDV_DISK_ID Id2
@@ -267,6 +354,12 @@ BOOLEAN EquivalentDiskId(
     return PhEqualString(Id1->DevicePath, Id2->DevicePath, TRUE);
 }
 
+/**
+ * Creates and registers a disk entry.
+ *
+ * \param Id Disk identifier.
+ * \return Newly created disk entry.
+ */
 PDV_DISK_ENTRY CreateDiskEntry(
     _In_ PDV_DISK_ID Id
     )

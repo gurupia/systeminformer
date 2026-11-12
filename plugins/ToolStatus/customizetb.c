@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2015-2023
+ *     dmex    2015-2026
  *
  */
 
@@ -28,11 +28,11 @@ static CONST PCWSTR CustomizeSearchDisplayStrings[] =
 
 BOOLEAN CustomizeToolbarItemExists(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT IdCommand
+    _In_ LONG Command
     )
 {
-    INT index = 0;
-    INT count = 0;
+    LONG index = 0;
+    LONG count = 0;
     PBUTTON_CONTEXT button;
 
     if ((count = ListBox_GetCount(Context->CurrentListHandle)) == LB_ERR)
@@ -43,7 +43,7 @@ BOOLEAN CustomizeToolbarItemExists(
         if (!(button = (PBUTTON_CONTEXT)ListBox_GetItemData(Context->CurrentListHandle, index)))
             continue;
 
-        if (button->IdCommand == IdCommand)
+        if (button->IdCommand == Command)
             return TRUE;
     }
 
@@ -51,7 +51,7 @@ BOOLEAN CustomizeToolbarItemExists(
 }
 
 VOID CustomizeInsertToolbarButton(
-    _In_ INT Index,
+    _In_ LONG Index,
     _In_ PBUTTON_CONTEXT ItemContext
     )
 {
@@ -101,31 +101,31 @@ VOID CustomizeInsertToolbarButton(
 
 VOID CustomizeAddToolbarItem(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT IndexAvail,
-    _In_ INT IndexTo
+    _In_ LONG IndexFrom,
+    _In_ LONG IndexTo
     )
 {
-    INT count;
+    LONG count;
     PBUTTON_CONTEXT button;
 
     if ((count = ListBox_GetCount(Context->AvailableListHandle)) == LB_ERR)
         return;
 
-    if (!(button = (PBUTTON_CONTEXT)ListBox_GetItemData(Context->AvailableListHandle, IndexAvail)))
+    if (!(button = (PBUTTON_CONTEXT)ListBox_GetItemData(Context->AvailableListHandle, IndexFrom)))
         return;
 
-    if (IndexAvail != 0) // index 0 is separator
+    if (IndexFrom != 0) // index 0 is separator
     {
         // remove from 'available' list
-        ListBox_DeleteString(Context->AvailableListHandle, IndexAvail);
+        ListBox_DeleteString(Context->AvailableListHandle, IndexFrom);
 
-        if (IndexAvail == count - 1)
+        if (IndexFrom == count - 1)
         {
-            ListBox_SetCurSel(Context->AvailableListHandle, IndexAvail - 1);
+            ListBox_SetCurSel(Context->AvailableListHandle, IndexFrom - 1);
         }
         else
         {
-            ListBox_SetCurSel(Context->AvailableListHandle, IndexAvail);
+            ListBox_SetCurSel(Context->AvailableListHandle, IndexFrom);
         }
     }
     else
@@ -143,7 +143,7 @@ VOID CustomizeAddToolbarItem(
 
 VOID CustomizeRemoveToolbarItem(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT IndexFrom
+    _In_ LONG IndexFrom
     )
 {
     PBUTTON_CONTEXT button;
@@ -171,11 +171,11 @@ VOID CustomizeRemoveToolbarItem(
 
 VOID CustomizeMoveToolbarItem(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT IndexFrom,
-    _In_ INT IndexTo
+    _In_ LONG IndexFrom,
+    _In_ LONG IndexTo
     )
 {
-    INT count;
+    LONG count;
     PBUTTON_CONTEXT button;
 
     if (IndexFrom == IndexTo)
@@ -219,8 +219,8 @@ VOID CustomizeFreeToolbarItems(
     _In_ PCUSTOMIZE_CONTEXT Context
     )
 {
-    INT i = 0;
-    INT count = 0;
+    LONG i = 0;
+    LONG count = 0;
     PBUTTON_CONTEXT button;
 
     if ((count = ListBox_GetCount(Context->CurrentListHandle)) != LB_ERR)
@@ -260,8 +260,8 @@ VOID CustomizeLoadToolbarItems(
     _In_ PCUSTOMIZE_CONTEXT Context
     )
 {
-    INT index = 0;
-    INT count = 0;
+    LONG index = 0;
+    LONG count = 0;
     PBUTTON_CONTEXT context;
 
     CustomizeFreeToolbarItems(Context);
@@ -269,7 +269,7 @@ VOID CustomizeLoadToolbarItems(
     ListBox_ResetContent(Context->AvailableListHandle);
     ListBox_ResetContent(Context->CurrentListHandle);
 
-    count = (INT)SendMessage(ToolBarHandle, TB_BUTTONCOUNT, 0, 0);
+    count = (LONG)SendMessage(ToolBarHandle, TB_BUTTONCOUNT, 0, 0);
 
     for (index = 0; index < count; index++)
     {
@@ -290,7 +290,7 @@ VOID CustomizeLoadToolbarItems(
             }
             else
             {
-                context->IconHandle = CustomizeGetToolbarIcon(Context, button.idCommand, Context->WindowDpi);
+                context->IconHandle = CustomizeGetToolbarIcon(Context, context->IdCommand, Context->WindowDpi);
             }
 
             ListBox_AddItemData(Context->CurrentListHandle, context);
@@ -370,8 +370,8 @@ VOID CustomizeResetImages(
     _In_ PCUSTOMIZE_CONTEXT Context
     )
 {
-    INT index = 0;
-    INT count = 0;
+    LONG index = 0;
+    LONG count = 0;
     PBUTTON_CONTEXT button;
 
     if ((count = ListBox_GetCount(Context->CurrentListHandle)) != LB_ERR)
@@ -420,7 +420,7 @@ VOID CustomizeResetImages(
 
 HICON CustomizeGetToolbarIcon(
     _In_ PCUSTOMIZE_CONTEXT Context,
-    _In_ INT CommandID,
+    _In_ LONG CommandID,
     _In_ LONG DpiValue
     )
 {
@@ -442,7 +442,7 @@ VOID CustomizeResetToolbarImages(
 {
     // Reset the image cache with the new icons.
     // TODO: Move function to Toolbar.c
-    for (UINT index = 0; index < RTL_NUMBER_OF(ToolbarButtons); index++)
+    for (ULONG index = 0; index < RTL_NUMBER_OF(ToolbarButtons); index++)
     {
         if (ToolbarButtons[index].iBitmap != I_IMAGECALLBACK && !FlagOn(ToolbarButtons[index].fsStyle, BTNS_SEP))
         {
@@ -463,49 +463,458 @@ VOID CustomizeResetToolbarImages(
     }
 }
 
+static VOID CustomizeSetDragInsert(
+    _In_ PCUSTOMIZE_CONTEXT Context,
+    _In_ LONG ItemIndex
+    )
+{
+    RECT itemRect;
+    BOOLEAN dragImageActive;
+
+    // Only hide the drag image when the insert position changes. (Hiding and showing it on every DL_DRAGGING causes flicker.)
+    if (Context->DragInsertIndex == ItemIndex)
+        return;
+
+    dragImageActive = !!Context->DragImageList;
+
+    if (dragImageActive)
+        PhImageListDragShowNolock(FALSE);
+
+    if (Context->DragInsertIndex != LB_ERR &&
+        ListBox_GetItemRect(Context->CurrentListHandle, Context->DragInsertIndex, &itemRect) != LB_ERR)
+    {
+        InvalidateRect(Context->CurrentListHandle, &itemRect, FALSE);
+    }
+
+    Context->DragInsertIndex = ItemIndex;
+
+    if (Context->DragInsertIndex != LB_ERR &&
+        ListBox_GetItemRect(Context->CurrentListHandle, Context->DragInsertIndex, &itemRect) != LB_ERR)
+    {
+        InvalidateRect(Context->CurrentListHandle, &itemRect, FALSE);
+    }
+
+    UpdateWindow(Context->CurrentListHandle);
+
+    if (dragImageActive)
+        PhImageListDragShowNolock(TRUE);
+}
+
+static HIMAGELIST CustomizeCreateDragImage(
+    _In_ HWND ListBoxHandle,
+    _In_ LONG ItemIndex,
+    _In_ POINT CursorPosition,
+    _Out_ PPOINT Hotspot,
+    _Out_ PLONG ImageWidth,
+    _Out_ PLONG ImageHeight
+    )
+{
+    RECT itemRect;
+    POINT clientPoint;
+    LONG width;
+    LONG height;
+    HDC windowDc;
+    HDC bufferDc;
+    HBITMAP bitmap;
+    HBITMAP oldBitmap;
+    HIMAGELIST imageList;
+
+    Hotspot->x = 0;
+    Hotspot->y = 0;
+    *ImageWidth = 0;
+    *ImageHeight = 0;
+
+    if (ListBox_GetItemRect(ListBoxHandle, ItemIndex, &itemRect) == LB_ERR)
+        return NULL;
+
+    width = itemRect.right - itemRect.left;
+    height = itemRect.bottom - itemRect.top;
+
+    if (width <= 0 || height <= 0)
+        return NULL;
+
+    clientPoint = CursorPosition;
+
+    if (!ScreenToClient(ListBoxHandle, &clientPoint))
+        return NULL;
+
+    if (!(windowDc = GetDC(ListBoxHandle)))
+        return NULL;
+
+    bufferDc = CreateCompatibleDC(windowDc);
+    bitmap = PhCreateDIBSection(windowDc, PHBF_TOPDOWNDIB, width, height, NULL);
+
+    if (!bufferDc || !bitmap)
+    {
+        if (bitmap)
+            DeleteBitmap(bitmap);
+        if (bufferDc)
+            DeleteDC(bufferDc);
+
+        ReleaseDC(ListBoxHandle, windowDc);
+        return NULL;
+    }
+
+    oldBitmap = SelectBitmap(bufferDc, bitmap);
+    BitBlt(bufferDc, 0, 0, width, height, windowDc, itemRect.left, itemRect.top, SRCCOPY);
+    SelectBitmap(bufferDc, oldBitmap);
+    DeleteDC(bufferDc);
+    ReleaseDC(ListBoxHandle, windowDc);
+
+    imageList = PhImageListCreate(width, height, ILC_COLOR32, 1, 0);
+
+    if (!imageList || PhImageListAddBitmap(imageList, bitmap, NULL) == INT_ERROR)
+    {
+        if (imageList)
+            PhImageListDestroy(imageList);
+
+        DeleteBitmap(bitmap);
+        return NULL;
+    }
+
+    DeleteBitmap(bitmap);
+
+    Hotspot->x = clientPoint.x - itemRect.left;
+    Hotspot->y = clientPoint.y - itemRect.top;
+    *ImageWidth = width;
+    *ImageHeight = height;
+
+    return imageList;
+}
+
+static BOOLEAN CustomizeGetDragWindowPoint(
+    _In_ HWND WindowHandle,
+    _In_ POINT ScreenPoint,
+    _In_ LONG ImageWidth,
+    _In_ LONG ImageHeight,
+    _In_ POINT Hotspot,
+    _Out_ PPOINT WindowPoint
+    )
+{
+    RECT windowRect;
+    RECT clientRect;
+    POINT clientOrigin = { 0, 0 };
+    LONG minimumX;
+    LONG maximumX;
+    LONG minimumY;
+    LONG maximumY;
+
+    if (!GetWindowRect(WindowHandle, &windowRect) ||
+        !GetClientRect(WindowHandle, &clientRect) ||
+        !ClientToScreen(WindowHandle, &clientOrigin))
+    {
+        return FALSE;
+    }
+
+    WindowPoint->x = ScreenPoint.x - windowRect.left;
+    WindowPoint->y = ScreenPoint.y - windowRect.top;
+
+    // Keep the drag image inside the client area.
+    minimumX = clientOrigin.x - windowRect.left + Hotspot.x;
+    maximumX = minimumX + clientRect.right - ImageWidth;
+    minimumY = clientOrigin.y - windowRect.top + Hotspot.y;
+    maximumY = minimumY + clientRect.bottom - ImageHeight;
+
+    if (maximumX < minimumX || WindowPoint->x < minimumX)
+        WindowPoint->x = minimumX;
+    else if (WindowPoint->x > maximumX)
+        WindowPoint->x = maximumX;
+
+    if (maximumY < minimumY || WindowPoint->y < minimumY)
+        WindowPoint->y = minimumY;
+    else if (WindowPoint->y > maximumY)
+        WindowPoint->y = maximumY;
+
+    return TRUE;
+}
+
+static VOID CustomizeDestroyDragImage(
+    _In_ PCUSTOMIZE_CONTEXT Context
+    )
+{
+    HIMAGELIST imageList;
+
+    if (!(imageList = Context->DragImageList))
+        return;
+
+    Context->DragImageList = NULL;
+
+    PhImageListDragLeave(Context->WindowHandle);
+    PhImageListEndDrag();
+    PhImageListDestroy(imageList);
+}
+
+// Returns the row under the cursor, the count when the cursor is inside the
+// list box but below the last item, or LB_ERR when outside.
+static LONG CustomizeDragTargetIndex(
+    _In_ HWND ListBoxHandle,
+    _In_ POINT Point,
+    _In_ BOOLEAN AutoScroll
+    )
+{
+    LONG index;
+    RECT rect;
+
+    if ((index = LBItemFromPt(ListBoxHandle, Point, AutoScroll)) == LB_ERR)
+    {
+        GetWindowRect(ListBoxHandle, &rect);
+
+        if (PtInRect(&rect, Point))
+            index = ListBox_GetCount(ListBoxHandle);
+    }
+
+    return index;
+}
+
+// Clamps an insert row in the current list so items are never placed after the virtual separator.
+static LONG CustomizeClampCurrentInsertIndex(
+    _In_ PCUSTOMIZE_CONTEXT Context,
+    _In_ LONG Index
+    )
+{
+    LONG count = ListBox_GetCount(Context->CurrentListHandle);
+
+    if (count <= 0)
+        return 0;
+
+    return min(Index, count - 1);
+}
+
+VOID CustomizeDrawDragInsert(
+    _In_ PCUSTOMIZE_CONTEXT Context,
+    _In_ LPDRAWITEMSTRUCT DrawInfo
+    )
+{
+    RECT lineRect;
+    COLORREF oldColor;
+
+    if (DrawInfo->hwndItem != Context->CurrentListHandle ||
+        Context->DragInsertIndex == LB_ERR ||
+        (LONG)DrawInfo->itemID != Context->DragInsertIndex)
+    {
+        return;
+    }
+
+    lineRect = DrawInfo->rcItem;
+    lineRect.bottom = lineRect.top + PhScaleToDisplay(2, Context->WindowDpi);
+
+    oldColor = SetDCBrushColor(
+        DrawInfo->hDC,
+        PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT) ?
+        (COLORREF)PhGetIntegerSetting(SETTING_THEME_WINDOW_HIGHLIGHT_COLOR) :
+        GetSysColor(COLOR_HIGHLIGHT)
+        );
+    FillRect(DrawInfo->hDC, &lineRect, GetStockBrush(DC_BRUSH));
+    SetDCBrushColor(DrawInfo->hDC, oldColor);
+}
+
+LRESULT CustomizeDragListNotify(
+    _In_ PCUSTOMIZE_CONTEXT Context,
+    _In_ LPDRAGLISTINFO DragInfo,
+    _In_ PCUSTOMIZE_DRAG_CALLBACKS Callbacks
+    )
+{
+    LRESULT result = 0;
+
+    switch (DragInfo->uNotification)
+    {
+    case DL_BEGINDRAG:
+        {
+            LONG index = LBItemFromPt(DragInfo->hWnd, DragInfo->ptCursor, FALSE);
+            POINT windowPoint;
+            POINT hotspot;
+            LONG imageWidth;
+            LONG imageHeight;
+            HIMAGELIST imageList;
+            PBUTTON_CONTEXT button;
+
+            if (index == LB_ERR)
+                break;
+
+            // Virtual items (the trailing placeholders) can't be moved.
+            if (!(button = (PBUTTON_CONTEXT)ListBox_GetItemData(DragInfo->hWnd, index)) || button->IsVirtual)
+                break;
+
+            Context->DragSourceHandle = DragInfo->hWnd;
+            Context->DragItemIndex = index;
+            ListBox_SetCurSel(DragInfo->hWnd, index);
+            UpdateWindow(DragInfo->hWnd);
+
+            if (imageList = CustomizeCreateDragImage(
+                DragInfo->hWnd,
+                index,
+                DragInfo->ptCursor,
+                &hotspot,
+                &imageWidth,
+                &imageHeight
+                ))
+            {
+                BOOLEAN dragStarted = FALSE;
+
+                if (CustomizeGetDragWindowPoint(Context->WindowHandle, DragInfo->ptCursor, imageWidth, imageHeight, hotspot, &windowPoint))
+                {
+                    if (PhImageListBeginDrag(imageList, 0, hotspot.x, hotspot.y))
+                    {
+                        dragStarted = TRUE;
+
+                        if (PhImageListDragEnter(Context->WindowHandle, windowPoint.x, windowPoint.y))
+                        {
+                            Context->DragImageList = imageList;
+                            Context->DragImageHotspot = hotspot;
+                            Context->DragImageWidth = imageWidth;
+                            Context->DragImageHeight = imageHeight;
+                        }
+                    }
+                }
+
+                if (!Context->DragImageList)
+                {
+                    if (dragStarted)
+                        PhImageListEndDrag();
+
+                    PhImageListDestroy(imageList);
+                }
+            }
+
+            result = TRUE;
+        }
+        break;
+    case DL_DRAGGING:
+        {
+            LONG currentIndex = CustomizeDragTargetIndex(Context->CurrentListHandle, DragInfo->ptCursor, TRUE);
+            LONG availableIndex = CustomizeDragTargetIndex(Context->AvailableListHandle, DragInfo->ptCursor, FALSE);
+
+            if (currentIndex != LB_ERR)
+            {
+                CustomizeSetDragInsert(Context, CustomizeClampCurrentInsertIndex(Context, currentIndex));
+                result = DL_MOVECURSOR;
+            }
+            else if (availableIndex != LB_ERR && Context->DragSourceHandle == Context->CurrentListHandle)
+            {
+                // Dropping on the available list removes the item, there's no insert position to show.
+                CustomizeSetDragInsert(Context, LB_ERR);
+                result = DL_MOVECURSOR;
+            }
+            else
+            {
+                CustomizeSetDragInsert(Context, LB_ERR);
+                result = DL_STOPCURSOR;
+            }
+
+            if (Context->DragImageList)
+            {
+                POINT windowPoint;
+
+                if (CustomizeGetDragWindowPoint(
+                    Context->WindowHandle,
+                    DragInfo->ptCursor,
+                    Context->DragImageWidth,
+                    Context->DragImageHeight,
+                    Context->DragImageHotspot,
+                    &windowPoint
+                    ))
+                {
+                    PhImageListDragMove(windowPoint.x, windowPoint.y);
+                }
+            }
+        }
+        break;
+    case DL_DROPPED:
+        {
+            LONG currentIndex = CustomizeDragTargetIndex(Context->CurrentListHandle, DragInfo->ptCursor, FALSE);
+            LONG availableIndex = CustomizeDragTargetIndex(Context->AvailableListHandle, DragInfo->ptCursor, FALSE);
+
+            CustomizeSetDragInsert(Context, LB_ERR);
+            CustomizeDestroyDragImage(Context);
+
+            if (Context->DragItemIndex != LB_ERR)
+            {
+                if (Context->DragSourceHandle == Context->CurrentListHandle)
+                {
+                    if (currentIndex != LB_ERR)
+                    {
+                        // The insert row is before the item at that row, translate it to the final index.
+                        LONG insertIndex = CustomizeClampCurrentInsertIndex(Context, currentIndex);
+
+                        if (insertIndex > Context->DragItemIndex)
+                            insertIndex--;
+
+                        Callbacks->MoveItem(Context, Context->DragItemIndex, insertIndex);
+                    }
+                    else if (availableIndex != LB_ERR)
+                    {
+                        Callbacks->RemoveItem(Context, Context->DragItemIndex);
+                    }
+                }
+                else if (Context->DragSourceHandle == Context->AvailableListHandle)
+                {
+                    if (currentIndex != LB_ERR)
+                    {
+                        LONG insertIndex = CustomizeClampCurrentInsertIndex(Context, currentIndex);
+
+                        Callbacks->AddItem(Context, Context->DragItemIndex, insertIndex);
+                        ListBox_SetCurSel(Context->CurrentListHandle, insertIndex);
+                        SendMessage(Context->WindowHandle, WM_COMMAND, MAKEWPARAM(IDC_CURRENT, LBN_SELCHANGE), 0);
+                    }
+                }
+            }
+
+            Context->DragSourceHandle = NULL;
+            Context->DragItemIndex = LB_ERR;
+        }
+        break;
+    case DL_CANCELDRAG:
+        {
+            CustomizeSetDragInsert(Context, LB_ERR);
+            CustomizeDestroyDragImage(Context);
+            Context->DragSourceHandle = NULL;
+            Context->DragItemIndex = LB_ERR;
+        }
+        break;
+    }
+
+    return result;
+}
+
 INT_PTR CALLBACK CustomizeToolbarDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PCUSTOMIZE_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocate(sizeof(CUSTOMIZE_CONTEXT));
         memset(context, 0, sizeof(CUSTOMIZE_CONTEXT));
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (context == NULL)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            PhSetApplicationWindowIcon(hwndDlg);
+            context->WindowHandle = WindowHandle;
+            context->AvailableListHandle = GetDlgItem(WindowHandle, IDC_AVAILABLE);
+            context->CurrentListHandle = GetDlgItem(WindowHandle, IDC_CURRENT);
+            context->MoveUpButtonHandle = GetDlgItem(WindowHandle, IDC_MOVEUP);
+            context->MoveDownButtonHandle = GetDlgItem(WindowHandle, IDC_MOVEDOWN);
+            context->AddButtonHandle = GetDlgItem(WindowHandle, IDC_ADD);
+            context->RemoveButtonHandle = GetDlgItem(WindowHandle, IDC_REMOVE);
 
-            PhCenterWindow(hwndDlg, GetParent(hwndDlg));
-
-            context->WindowHandle = hwndDlg;
-            context->AvailableListHandle = GetDlgItem(hwndDlg, IDC_AVAILABLE);
-            context->CurrentListHandle = GetDlgItem(hwndDlg, IDC_CURRENT);
-            context->MoveUpButtonHandle = GetDlgItem(hwndDlg, IDC_MOVEUP);
-            context->MoveDownButtonHandle = GetDlgItem(hwndDlg, IDC_MOVEDOWN);
-            context->AddButtonHandle = GetDlgItem(hwndDlg, IDC_ADD);
-            context->RemoveButtonHandle = GetDlgItem(hwndDlg, IDC_REMOVE);
-
-            context->WindowDpi = PhGetWindowDpi(hwndDlg);
+            context->WindowDpi = PhGetWindowDpi(WindowHandle);
             context->FontHandle = PhCreateIconTitleFont(context->WindowDpi);
-            context->CXWidth = PhGetDpi(16, context->WindowDpi);
+            context->CXWidth = PhScaleToDisplay(16, context->WindowDpi);
 
             if (PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT))
             {
@@ -522,13 +931,23 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                 context->TextColor = GetSysColor(COLOR_WINDOWTEXT);
             }
 
+            PhSetApplicationWindowIcon(WindowHandle);
+
+            PhCenterWindow(WindowHandle, GetParent(WindowHandle));
+
             ListBox_SetItemHeight(context->AvailableListHandle, 0, context->CXWidth + 6); // BitmapHeight
             ListBox_SetItemHeight(context->CurrentListHandle, 0, context->CXWidth + 6); // BitmapHeight
+
+            context->DragListMessage = RegisterWindowMessage(DRAGLISTMSGSTRING);
+            context->DragItemIndex = LB_ERR;
+            context->DragInsertIndex = LB_ERR;
+            MakeDragList(context->AvailableListHandle);
+            MakeDragList(context->CurrentListHandle);
 
             CustomizeLoadToolbarItems(context);
             CustomizeLoadToolbarSettings(context);
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 
             PhSetDialogFocus(context->WindowHandle, context->CurrentListHandle);
         }
@@ -554,7 +973,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
             PhFree(context);
         }
         break;
@@ -563,7 +982,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
             context->WindowDpi = LOWORD(wParam);
             if (context->FontHandle) DeleteFont(context->FontHandle);
             context->FontHandle = PhCreateIconTitleFont(context->WindowDpi);
-            context->CXWidth = PhGetDpi(16, context->WindowDpi);
+            context->CXWidth = PhScaleToDisplay(16, context->WindowDpi);
             ListBox_SetItemHeight(context->AvailableListHandle, 0, context->CXWidth + 6); // BitmapHeight
             ListBox_SetItemHeight(context->CurrentListHandle, 0, context->CXWidth + 6); // BitmapHeight
 
@@ -591,8 +1010,8 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                         break;
                     case LBN_DBLCLK:
                         {
-                            INT index;
-                            INT indexto;
+                            LONG index;
+                            LONG indexto;
 
                             index = ListBox_GetCurSel(context->AvailableListHandle);
                             indexto = ListBox_GetCurSel(context->CurrentListHandle);
@@ -620,8 +1039,8 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                     {
                     case LBN_SELCHANGE:
                         {
-                            INT count;
-                            INT index;
+                            LONG count;
+                            LONG index;
                             PBUTTON_CONTEXT itemContext;
 
                             if ((count = ListBox_GetCount(context->CurrentListHandle)) == LB_ERR)
@@ -668,8 +1087,8 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                         break;
                     case LBN_DBLCLK:
                         {
-                            INT count;
-                            INT index;
+                            LONG count;
+                            LONG index;
 
                             if ((count = ListBox_GetCount(context->CurrentListHandle)) == LB_ERR)
                                 break;
@@ -698,8 +1117,8 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                 break;
             case IDC_ADD:
                 {
-                    INT index;
-                    INT indexto;
+                    LONG index;
+                    LONG indexto;
 
                     if ((index = ListBox_GetCurSel(context->AvailableListHandle)) == LB_ERR)
                         break;
@@ -712,7 +1131,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                 break;
             case IDC_REMOVE:
                 {
-                    INT index;
+                    LONG index;
 
                     if ((index = ListBox_GetCurSel(context->CurrentListHandle)) == LB_ERR)
                         break;
@@ -722,7 +1141,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                 break;
             case IDC_MOVEUP:
                 {
-                    INT index;
+                    LONG index;
 
                     if ((index = ListBox_GetCurSel(context->CurrentListHandle)) == LB_ERR)
                         break;
@@ -732,7 +1151,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                 break;
             case IDC_MOVEDOWN:
                 {
-                    INT index;
+                    LONG index;
 
                     if ((index = ListBox_GetCurSel(context->CurrentListHandle)) == LB_ERR)
                         break;
@@ -829,21 +1248,13 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
 
                         PhSetIntegerSetting(SETTING_NAME_TOOLSTATUS_CONFIG, ToolStatusConfig.Flags);
 
-                        if (ToolStatusConfig.AutoHideMenu)
-                        {
-                            SetMenu(MainWindowHandle, NULL);
-                        }
-                        else
-                        {
-                            SetMenu(MainWindowHandle, MainMenu);
-                            DrawMenuBar(MainWindowHandle);
-                        }
+                        ToolStatusApplyMainMenuVisibility(MainWindowHandle);
                     }
                 }
                 break;
             case IDCANCEL:
                 {
-                    EndDialog(hwndDlg, IDCANCEL);
+                    EndDialog(WindowHandle, IDCANCEL);
                 }
                 break;
             }
@@ -875,7 +1286,7 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                     break;
 
                 bufferDc = CreateCompatibleDC(drawInfo->hDC);
-                bufferBitmap = CreateCompatibleBitmap(drawInfo->hDC, bufferRect.right, bufferRect.bottom);
+                bufferBitmap = PhCreateDIBSection(drawInfo->hDC, PHBF_TOPDOWNDIB, bufferRect.right, bufferRect.bottom, NULL);
 
                 oldBufferBitmap = SelectBitmap(bufferDc, bufferBitmap);
                 SelectFont(bufferDc, context->FontHandle);
@@ -910,13 +1321,13 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
 
                 if (itemContext->IdCommand != 0)
                 {
-                    PWSTR stringBuffer = ToolbarGetText(itemContext->IdCommand);
+                    PCWSTR stringBuffer = ToolbarGetText(itemContext->IdCommand);
                     SIZE_T stringLength = PhCountStringZ(stringBuffer);
 
                     DrawText(
                         bufferDc,
                         stringBuffer,
-                        (INT)stringLength,
+                        (LONG)stringLength,
                         &bufferRect,
                         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOCLIP
                         );
@@ -944,6 +1355,8 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
                     SRCCOPY
                     );
 
+                CustomizeDrawDragInsert(context, drawInfo);
+
                 SelectBitmap(bufferDc, oldBufferBitmap);
                 DeleteBitmap(bufferBitmap);
                 DeleteDC(bufferDc);
@@ -953,11 +1366,25 @@ INT_PTR CALLBACK CustomizeToolbarDialogProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
+    }
+
+    if (context->DragListMessage && WindowMessage == context->DragListMessage)
+    {
+        static CUSTOMIZE_DRAG_CALLBACKS callbacks =
+        {
+            CustomizeAddToolbarItem,
+            CustomizeRemoveToolbarItem,
+            CustomizeMoveToolbarItem
+        };
+        LRESULT result = CustomizeDragListNotify(context, (LPDRAGLISTINFO)lParam, &callbacks);
+
+        SetWindowLongPtr(WindowHandle, DWLP_MSGRESULT, result);
+        return TRUE;
     }
 
     return FALSE;

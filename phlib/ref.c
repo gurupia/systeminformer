@@ -118,7 +118,7 @@ _May_raise_ PVOID PhCreateObject(
     }
 
     PhAcquireQueuedLockExclusive(&PhDbgObjectListLock);
-    InsertTailList(&PhDbgObjectListHead, &objectHeader->ObjectListEntry);
+    InsertTailListNoFence(&PhDbgObjectListHead, &objectHeader->ObjectListEntry);
     PhReleaseQueuedLockExclusive(&PhDbgObjectListLock);
 
     {
@@ -183,22 +183,28 @@ _May_raise_ PVOID PhReferenceObjectEx(
     // Increase the reference count.
     oldRefCount = _InterlockedExchangeAdd(&objectHeader->RefCount, RefCount);
 
+    assert(oldRefCount >= 0);
+
     return Object;
 }
 
 /**
- * Attempts to reference an object and fails if it is being destroyed.
+ * Unsafely attempts to reference an object and fails if it is being destroyed.
  *
  * \param Object The object to reference if it is not being deleted.
  *
  * \return The object itself if the object was referenced, NULL if it was being deleted and was not
  * referenced.
  *
- * \remarks This function is useful if a reference to an object is held, protected by a mutex, and
+ * \remarks This function is unsafe because it is the responsibility of the caller to ensure the
+ * memory pointed to by \a Object remains valid outside of the object's reference counting. The
+ * caller must property synchronize with the delete procedure of the object's type to avoid
+ * use-after-free bugs. The function itself provides you no safety or guarantees without correct
+ * usage. This function is useful if a reference to an object is held, protected by a mutex, and
  * the delete procedure of the object's type attempts to acquire the mutex. If this function is
  * called while the mutex is owned, you can avoid referencing an object that is being destroyed.
  */
-PVOID PhReferenceObjectSafe(
+PVOID PhReferenceObjectUnsafe(
     _In_ PVOID Object
     )
 {
@@ -488,7 +494,7 @@ VOID PhpFreeObject(
 
 #ifdef DEBUG
     PhAcquireQueuedLockExclusive(&PhDbgObjectListLock);
-    RemoveEntryList(&ObjectHeader->ObjectListEntry);
+    RemoveEntryListNoFence(&ObjectHeader->ObjectListEntry);
     PhReleaseQueuedLockExclusive(&PhDbgObjectListLock);
 #endif
 
@@ -536,12 +542,10 @@ PH_CLANG_DIAGNOSTIC_IGNORED("-Wsingle-bit-bitfield-constant-conversion");
     ObjectHeader->DeferDelete = 1;
 PH_CLANG_DIAGNOSTIC_POP();
 
-    MemoryBarrier();
     ObjectHeader->SavedTypeIndex = ObjectHeader->TypeIndex;
     ObjectHeader->SavedFlags = ObjectHeader->Flags;
 
-    oldFirstEntry = RtlFirstEntrySList(&PhObjectDeferDeleteListHead);
-    RtlInterlockedPushEntrySList(&PhObjectDeferDeleteListHead, &ObjectHeader->DeferDeleteListEntry);
+    oldFirstEntry = RtlInterlockedPushEntrySList(&PhObjectDeferDeleteListHead, &ObjectHeader->DeferDeleteListEntry);
     REF_STAT_UP(RefObjectsDeleteDeferred);
 
     // Was the to-free list empty before? If so, we need to queue a work item.

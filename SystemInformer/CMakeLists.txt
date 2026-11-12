@@ -30,6 +30,7 @@ set(HEADERS
     "include/modprv.h"
     "include/netlist.h"
     "include/netprv.h"
+    "include/netsup.h"
     "include/notifico.h"
     "include/notificop.h"
     "include/notiftoast.h"
@@ -110,10 +111,10 @@ set(SOURCES
     "hndlstat.c"
     "infodlg.c"
     "informer.c"
+    "informerwnd.c"
     "itemtips.c"
     "jobprp.c"
     "kdump.c"
-    "ksidbg.c"
     "ksisup.c"
     "ksyscall.c"
     "log.c"
@@ -121,6 +122,7 @@ set(SOURCES
     "main.c"
     "mainwnd.c"
     "mdump.c"
+    "memcfg.c"
     "memedit.c"
     "memlist.c"
     "memlists.c"
@@ -154,6 +156,7 @@ set(SOURCES
     "procprv.c"
     "procrec.c"
     "proctree.c"
+    "envdlg.c"
     "prpgenv.c"
     "prpggen.c"
     "prpghndl.c"
@@ -168,6 +171,7 @@ set(SOURCES
     "prpgvdm.c"
     "prpgwmi.c"
     "runas.c"
+    "runaspkg.c"
     "searchbox.c"
     "sessmsg.c"
     "sessprp.c"
@@ -184,6 +188,8 @@ set(SOURCES
     "sysscmem.c"
     "thrdlist.c"
     "thrdprv.c"
+    "thrdctx.c"
+    "thrdshstk.c"
     "thrdstk.c"
     "thrdstks.c"
     "tokprp.c"
@@ -211,7 +217,8 @@ target_include_directories(SystemInformer PRIVATE
 )
 
 target_include_directories(SystemInformer INTERFACE
-    "${SI_ROOT}/sdk/include"
+    "${SI_ROOT}/phnt/include"
+    "${SI_ROOT}/sdk/include/$<CONFIG>${SI_PLATFORM_SHORT}"
 )
 
 target_compile_definitions(SystemInformer PRIVATE

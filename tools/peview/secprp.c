@@ -5,12 +5,14 @@
  *
  * Authors:
  *
- *     dmex    2020-2022
+ *     dmex    2020-2026
  *
  */
 
 #include <peview.h>
 #include <cryptuiapi.h>
+#include <wintrust.h>
+#include <base64.h>
 #include "colmgr.h"
 
 #define WM_PV_CERTIFICATE_PROPERTIES (WM_APP + 801)
@@ -47,6 +49,9 @@ typedef enum _PV_CERTIFICATE_TREE_COLUMN_NAME
     PV_CERTIFICATE_TREE_COLUMN_NAME_THUMBPRINT,
     PV_CERTIFICATE_TREE_COLUMN_NAME_SIZE,
     PV_CERTIFICATE_TREE_COLUMN_NAME_ALG,
+    PV_CERTIFICATE_TREE_COLUMN_NAME_SPKI,
+    PV_CERTIFICATE_TREE_COLUMN_NAME_SPCPROGRAM,
+    PV_CERTIFICATE_TREE_COLUMN_NAME_SPCURL,
     PV_CERTIFICATE_TREE_COLUMN_NAME_MAXIMUM
 } PV_CERTIFICATE_TREE_COLUMN_NAME;
 
@@ -76,6 +81,9 @@ typedef struct _PV_CERTIFICATE_NODE
     PPH_STRING DateTo;
     PPH_STRING Thumbprint;
     PPH_STRING Algorithm;
+    PPH_STRING SubjectPublicKeyInfo;
+    PPH_STRING SpcProgramName;
+    PPH_STRING SpcUrl;
 
     PPH_STRING IndexString;
     PPH_STRING SizeString;
@@ -158,6 +166,12 @@ BOOLEAN PvCertificateTreeFilterCallback(
             return TRUE;
     }
 
+    if (!PhIsNullOrEmptyString(certificateNode->SubjectPublicKeyInfo))
+    {
+        if (PvSearchControlMatch(context->SearchMatchHandle, &certificateNode->SubjectPublicKeyInfo->sr))
+            return TRUE;
+    }
+
     return FALSE;
 }
 
@@ -189,11 +203,14 @@ VOID PvInitializeCertificateTree(
     PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_THUMBPRINT, TRUE, L"Thumbprint", 100, PH_ALIGN_LEFT, 6, 0);
     PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_SIZE, TRUE, L"Size", 50, PH_ALIGN_LEFT, 7, 0);
     PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_ALG, TRUE, L"Algorithm", 50, PH_ALIGN_LEFT, 8, 0);
+    PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_SPKI, FALSE, L"SubjectPublicKeyInfo (SHA-256)", 100, PH_ALIGN_LEFT, 9, 0);
+    PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_SPCPROGRAM, FALSE, L"SPC program name", 150, PH_ALIGN_LEFT, 10, 0);
+    PhAddTreeNewColumn(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_SPCURL, FALSE, L"SPC publisher/more-information URL", 200, PH_ALIGN_LEFT, 11, 0);
 
     TreeNew_SetRedraw(Context->TreeNewHandle, TRUE);
     TreeNew_SetTriState(Context->TreeNewHandle, TRUE);
     TreeNew_SetSort(Context->TreeNewHandle, PV_CERTIFICATE_TREE_COLUMN_NAME_INDEX, NoSortOrder);
-    TreeNew_SetRowHeight(Context->TreeNewHandle, PhGetDpi(22, PhGetWindowDpi(Context->WindowHandle)));
+    TreeNew_SetRowHeight(Context->TreeNewHandle, PvpGetTreeNewRowHeight(Context->TreeNewHandle));
 
     settings = PhGetStringSetting(L"ImageSecurityTreeColumns");
     PhCmLoadSettings(Context->TreeNewHandle, &settings->sr);
@@ -360,6 +377,9 @@ VOID PvDestroyCertificateNode(
     if (Node->DateFrom) PhDereferenceObject(Node->DateFrom);
     if (Node->DateTo) PhDereferenceObject(Node->DateTo);
     if (Node->Thumbprint) PhDereferenceObject(Node->Thumbprint);
+    if (Node->SubjectPublicKeyInfo) PhDereferenceObject(Node->SubjectPublicKeyInfo);
+    if (Node->SpcProgramName) PhDereferenceObject(Node->SpcProgramName);
+    if (Node->SpcUrl) PhDereferenceObject(Node->SpcUrl);
     if (Node->IndexString) PhDereferenceObject(Node->IndexString);
     if (Node->SizeString) PhDereferenceObject(Node->SizeString);
 
@@ -405,7 +425,7 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(Issuer)
 {
-    sortResult = PhCompareString(node1->Issuer, node2->Issuer, TRUE);
+    sortResult = PhCompareStringWithNullSortOrder(node1->Issuer, node2->Issuer, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
 }
 END_SORT_FUNCTION
 
@@ -423,7 +443,7 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(Thumbprint)
 {
-    sortResult = PhCompareString(node1->Thumbprint, node2->Thumbprint, TRUE);
+    sortResult = PhCompareStringWithNullSortOrder(node1->Thumbprint, node2->Thumbprint, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
 }
 END_SORT_FUNCTION
 
@@ -435,7 +455,25 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(Alg)
 {
-    sortResult = PhCompareString(node1->Algorithm, node2->Algorithm, TRUE);
+    sortResult = PhCompareStringWithNullSortOrder(node1->Algorithm, node2->Algorithm, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(Pin)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->SubjectPublicKeyInfo, node2->SubjectPublicKeyInfo, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(SpcProgramName)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->SpcProgramName, node2->SpcProgramName, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+BEGIN_SORT_FUNCTION(SpcUrl)
+{
+    sortResult = PhCompareStringWithNullSortOrder(node1->SpcUrl, node2->SpcUrl, ((PPV_PE_CERTIFICATE_CONTEXT)_context)->TreeNewSortOrder, TRUE);
 }
 END_SORT_FUNCTION
 
@@ -474,7 +512,7 @@ BOOLEAN NTAPI PvCertificateTreeNewCallback(
             {
                 if (!node)
                 {
-                    static PVOID sortFunctions[] =
+                    static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                     {
                         SORT_FUNCTION(Name),
                         SORT_FUNCTION(Index),
@@ -484,9 +522,12 @@ BOOLEAN NTAPI PvCertificateTreeNewCallback(
                         SORT_FUNCTION(DateTo),
                         SORT_FUNCTION(Thumbprint),
                         SORT_FUNCTION(Size),
-                        SORT_FUNCTION(Alg)
+                        SORT_FUNCTION(Alg),
+                        SORT_FUNCTION(Pin),
+                        SORT_FUNCTION(SpcProgramName),
+                        SORT_FUNCTION(SpcUrl)
                     };
-                    int (__cdecl *sortFunction)(void *, const void *, const void *);
+                    _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                     static_assert(RTL_NUMBER_OF(sortFunctions) == PV_CERTIFICATE_TREE_COLUMN_NAME_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -585,6 +626,21 @@ BOOLEAN NTAPI PvCertificateTreeNewCallback(
             case PV_CERTIFICATE_TREE_COLUMN_NAME_ALG:
                 {
                     getCellText->Text = PhGetStringRef(node->Algorithm);
+                }
+                break;
+            case PV_CERTIFICATE_TREE_COLUMN_NAME_SPKI:
+                {
+                    getCellText->Text = PhGetStringRef(node->SubjectPublicKeyInfo);
+                }
+                break;
+            case PV_CERTIFICATE_TREE_COLUMN_NAME_SPCPROGRAM:
+                {
+                    getCellText->Text = PhGetStringRef(node->SpcProgramName);
+                }
+                break;
+            case PV_CERTIFICATE_TREE_COLUMN_NAME_SPCURL:
+                {
+                    getCellText->Text = PhGetStringRef(node->SpcUrl);
                 }
                 break;
             default:
@@ -997,6 +1053,39 @@ BOOLEAN PvpPeFillNodeCertificateInfo(
         PhFree(hash);
     }
 
+    {
+        PBYTE derBuffer = NULL;
+        ULONG derLength = 0;
+
+        if (CryptEncodeObjectEx(
+            X509_ASN_ENCODING,
+            X509_PUBLIC_KEY_INFO,
+            &CertificateContext->pCertInfo->SubjectPublicKeyInfo,
+            CRYPT_ENCODE_ALLOC_FLAG,
+            NULL,
+            &derBuffer,
+            &derLength
+            ))
+        {
+            PH_HASH_CONTEXT hashContext;
+            UCHAR hash[PH_HASH_SHA256_LENGTH];
+            CHAR base64Buffer[48]; // 32 bytes -> 44 base64 chars (+ NUL)
+            SIZE_T base64Length;
+
+            if (
+                NT_SUCCESS(PhInitializeHash(&hashContext, Sha256HashAlgorithm)) &&
+                NT_SUCCESS(PhUpdateHash(&hashContext, derBuffer, derLength)) &&
+                NT_SUCCESS(PhFinalHash(&hashContext, hash, sizeof(hash), NULL)) &&
+                PhBase64Encode(hash, sizeof(hash), base64Buffer, sizeof(base64Buffer), &base64Length)
+                )
+            {
+                CertificateNode->SubjectPublicKeyInfo = PhZeroExtendToUtf16Ex(base64Buffer, base64Length);
+            }
+
+            LocalFree(derBuffer);
+        }
+    }
+
     //if (
     //    ((ULONG_PTR)indirect->Data.pszObjId >> 16) == 0 ||
     //    !RtlEqualMemory(indirect->Data.pszObjId, SPC_PE_IMAGE_DATA_OBJID, sizeof(SPC_PE_IMAGE_DATA_OBJID)) &&
@@ -1083,6 +1172,60 @@ PCMSG_SIGNER_INFO PvpPeGetSignerInfoIndex(
     }
 
     return signerInfo;
+}
+
+VOID PvpPeSetPrimarySpcInfo(
+    _In_ PPV_CERTIFICATE_NODE Node,
+    _In_ PCMSG_SIGNER_INFO SignerInfo
+    )
+{
+    for (ULONG i = 0; i < SignerInfo->AuthAttrs.cAttr; i++)
+    {
+        if (PhEqualBytesZ(SPC_SP_OPUS_INFO_OBJID, SignerInfo->AuthAttrs.rgAttr[i].pszObjId, TRUE))
+        {
+            PSPC_SP_OPUS_INFO opusInfo;
+            ULONG opusInfoLength = 0;
+
+            if (CryptDecodeObjectEx(
+                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                SPC_SP_OPUS_INFO_OBJID,
+                SignerInfo->AuthAttrs.rgAttr[i].rgValue[0].pbData,
+                SignerInfo->AuthAttrs.rgAttr[i].rgValue[0].cbData,
+                CRYPT_DECODE_NOCOPY_FLAG | CRYPT_DECODE_ALLOC_FLAG,
+                NULL,
+                &opusInfo,
+                &opusInfoLength
+                ))
+            {
+                PPH_STRING urls = NULL;
+
+                if (opusInfo->pwszProgramName)
+                {
+                    Node->SpcProgramName = PhCreateString(opusInfo->pwszProgramName);
+                }
+
+                if (opusInfo->pPublisherInfo && opusInfo->pPublisherInfo->dwLinkChoice == SPC_URL_LINK_CHOICE)
+                {
+                    urls = PhCreateString(opusInfo->pPublisherInfo->pwszUrl);
+                }
+
+                if (opusInfo->pMoreInfo && opusInfo->pMoreInfo->dwLinkChoice == SPC_URL_LINK_CHOICE)
+                {
+                    PPH_STRING moreInfo = PhCreateString(opusInfo->pMoreInfo->pwszUrl);
+
+                    if (urls)
+                        PhMoveReference(&urls, PhFormatString(L"%s\r\n%s", urls->Buffer, moreInfo->Buffer));
+                    else
+                        urls = moreInfo;
+                }
+
+                Node->SpcUrl = urls;
+                LocalFree(opusInfo);
+            }
+
+            break;
+        }
+    }
 }
 
 typedef struct _PV_CERT_ENUM_CONTEXT
@@ -1175,6 +1318,11 @@ VOID PvpPeEnumerateCounterSignSignatures(
             {
                 if (cryptMessageSignerInfo = PvpPeGetSignerInfoIndex(cryptMessageHandle, i))
                 {
+                    if (i == 0 && Context->NodeRootList->Count != 0)
+                    {
+                        PvpPeSetPrimarySpcInfo(Context->NodeRootList->Items[0], cryptMessageSignerInfo);
+                    }
+
                     PvpPeEnumerateNestedSignatures(Context, cryptMessageSignerInfo);
 
                     PvpPeEnumerateCounterSignSignatures(Context, cryptMessageSignerInfo);
@@ -1520,6 +1668,12 @@ INT_PTR CALLBACK PvpPeSecurityDlgProc(
 
                 context->PropSheetContext->LayoutInitialized = TRUE;
             }
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;
     case WM_SIZE:

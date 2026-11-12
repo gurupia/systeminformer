@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -14,11 +14,11 @@
 #include <apiimport.h>
 
 /**
-* Creates an anonymous pipe.
-*
-* \param PipeReadHandle The pipe read handle.
-* \param PipeWriteHandle The pipe write handle.
-*/
+ * Creates an anonymous pipe.
+ *
+ * \param PipeReadHandle The pipe read handle.
+ * \param PipeWriteHandle The pipe write handle.
+ */
 NTSTATUS PhCreatePipe(
     _Out_ PHANDLE PipeReadHandle,
     _Out_ PHANDLE PipeWriteHandle
@@ -28,13 +28,13 @@ NTSTATUS PhCreatePipe(
 }
 
 /**
-* Creates an anonymous pipe.
-*
-* \param[out] PipeReadHandle The pipe read handle.
-* \param[out] PipeWriteHandle The pipe write handle.
-* \param[in] PipeReadAttributes Optional pipe read attributes.
-* \param[in] PipeWriteAttributes Optional pipe write attributes.
-*/
+ * Creates an anonymous pipe.
+ *
+ * \param[out] PipeReadHandle The pipe read handle.
+ * \param[out] PipeWriteHandle The pipe write handle.
+ * \param[in] PipeReadAttributes Optional pipe read attributes.
+ * \param[in] PipeWriteAttributes Optional pipe write attributes.
+ */
 NTSTATUS PhCreatePipeEx(
     _Out_ PHANDLE PipeReadHandle,
     _Out_ PHANDLE PipeWriteHandle,
@@ -121,7 +121,7 @@ NTSTATUS PhCreatePipeEx(
                     objectAttributes.SecurityDescriptor = &securityDescriptor;
                 }
 
-                assert(RtlValidSecurityDescriptor(&securityDescriptor));
+                assert(PhValidSecurityDescriptor(&securityDescriptor));
             }
         }
 
@@ -198,11 +198,11 @@ CleanupExit:
 }
 
 /**
-* Creates an named pipe.
-*
-* \param PipeHandle The pipe read/write handle.
-* \param PipeName The pipe name.
-*/
+ * Creates an named pipe.
+ *
+ * \param PipeHandle The pipe read/write handle.
+ * \param PipeName The pipe name.
+ */
 NTSTATUS PhCreateNamedPipe(
     _Out_ PHANDLE PipeHandle,
     _In_ PCPH_STRINGREF PipeName
@@ -245,10 +245,17 @@ NTSTATUS PhCreateNamedPipe(
 
     if (NT_SUCCESS(PhDefaultNpAcl(&pipeAcl)))
     {
-        PhCreateSecurityDescriptor(&securityDescriptor, SECURITY_DESCRIPTOR_REVISION);
-        PhSetDaclSecurityDescriptor(&securityDescriptor, TRUE, pipeAcl, FALSE);
+        status = PhCreateSecurityDescriptor(&securityDescriptor, SECURITY_DESCRIPTOR_REVISION);
 
-        objectAttributes.SecurityDescriptor = &securityDescriptor;
+        if (NT_SUCCESS(status))
+        {
+            status = PhSetDaclSecurityDescriptor(&securityDescriptor, TRUE, pipeAcl, FALSE);
+
+            if (NT_SUCCESS(status))
+            {
+                objectAttributes.SecurityDescriptor = &securityDescriptor;
+            }
+        }
     }
 
     status = NtCreateNamedPipeFile(
@@ -282,6 +289,222 @@ NTSTATUS PhCreateNamedPipe(
     return status;
 }
 
+/**
+ * Opens one of the named-pipe filesystem protected-prefix directories.
+ *
+ * The NPFS pre-creates squat-proof directories under the named-pipe device. Only the matching
+ * account or group may create pipes inside its directory, while everyone may open existing pipes.
+ * Creating a server pipe with a relative name under the returned handle prevents a lower-privileged
+ * process from squatting the pipe name before the real server starts.
+ *
+ * \param[out] DirectoryHandle Receives a handle to the protected-prefix directory. Pass this as the
+ *        RootDirectory when creating a pipe with a relative name (see PhCreateNamedPipe).
+ * \param[in] PrefixType The protected prefix to open (Administrators, LocalService or NetworkService).
+ * \param[in] DesiredAccess Requested access mask for the directory handle.
+ * \return NTSTATUS Successful or error status.
+ */
+NTSTATUS PhOpenNamedPipeProtectedPrefix(
+    _Out_ PHANDLE DirectoryHandle,
+    _In_ PH_NAMED_PIPE_PREFIX_TYPE PrefixType,
+    _In_ ACCESS_MASK DesiredAccess
+    )
+{
+    static CONST PH_STRINGREF deviceName = PH_STRINGREF_INIT(DEVICE_NAMED_PIPE L"ProtectedPrefix\\");
+    static CONST PH_STRINGREF administratorsName = PH_STRINGREF_INIT(L"Administrators");
+    static CONST PH_STRINGREF localServiceName = PH_STRINGREF_INIT(L"LocalService");
+    static CONST PH_STRINGREF networkServiceName = PH_STRINGREF_INIT(L"NetworkService");
+    NTSTATUS status;
+    PCPH_STRINGREF prefixName;
+    HANDLE directoryHandle;
+    PPH_STRING objectName;
+    UNICODE_STRING objectNameUs;
+    OBJECT_ATTRIBUTES objectAttributes;
+    IO_STATUS_BLOCK isb;
+
+    switch (PrefixType)
+    {
+    case PhNamedPipePrefixAdministrators:
+        prefixName = &administratorsName;
+        break;
+    case PhNamedPipePrefixLocalService:
+        prefixName = &localServiceName;
+        break;
+    case PhNamedPipePrefixNetworkService:
+        prefixName = &networkServiceName;
+        break;
+    default:
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    objectName = PhConcatStringRef2(&deviceName, prefixName);
+
+    if (!PhStringRefToUnicodeString(&objectName->sr, &objectNameUs))
+    {
+        PhDereferenceObject(objectName);
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &objectNameUs,
+        OBJ_CASE_INSENSITIVE,
+        NULL,
+        NULL
+        );
+
+    status = NtOpenFile(
+        &directoryHandle,
+        DesiredAccess | SYNCHRONIZE,
+        &objectAttributes,
+        &isb,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_SYNCHRONOUS_IO_NONALERT
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *DirectoryHandle = directoryHandle;
+    }
+
+    PhDereferenceObject(objectName);
+    return status;
+}
+
+/**
+ * Creates a named pipe with caller-supplied placement and security.
+ *
+ * \param[out] PipeHandle Receives the pipe read/write handle.
+ * \param[in] PipeName The pipe name. When \a RootDirectory is NULL the name is relative to the named
+ *        pipe device (\Device\NamedPipe\); otherwise it is relative to \a RootDirectory, an
+ *        open named-pipe directory handle.
+ * \param[in] RootDirectory Optional directory handle the name is relative to.
+ * \param[in] SecurityDescriptor Optional security descriptor for the pipe. When NULL the default
+ *        named pipe ACL is used, which grants read access to Everyone; callers creating a
+ *        privileged control channel must supply their own descriptor.
+ * \param[in] CreateDisposition FILE_CREATE to fail if the pipe already exists (squat detection),
+ *        or FILE_OPEN_IF to create an additional instance of an existing pipe.
+ * \param[in] PipeType FILE_PIPE_BYTE_STREAM_TYPE or FILE_PIPE_MESSAGE_TYPE. Remote clients are
+ *        always rejected. The read mode follows the pipe type.
+ * \param[in] MaximumInstances The maximum number of instances, or FILE_PIPE_UNLIMITED_INSTANCES.
+ * \return NTSTATUS Successful or error status.
+ *
+ * \remarks The pipe is full duplex and opened for synchronous I/O.
+ */
+NTSTATUS PhCreateNamedPipeEx(
+    _Out_ PHANDLE PipeHandle,
+    _In_ PCPH_STRINGREF PipeName,
+    _In_opt_ HANDLE RootDirectory,
+    _In_opt_ PSECURITY_DESCRIPTOR SecurityDescriptor,
+    _In_ ULONG CreateDisposition,
+    _In_ ULONG PipeType,
+    _In_ ULONG MaximumInstances
+    )
+{
+    static CONST PH_STRINGREF deviceName = PH_STRINGREF_INIT(DEVICE_NAMED_PIPE);
+    NTSTATUS status;
+    PACL pipeAcl = NULL;
+    HANDLE pipeHandle;
+    PPH_STRING pipeName;
+    UNICODE_STRING pipeNameUs;
+    OBJECT_ATTRIBUTES objectAttributes;
+    IO_STATUS_BLOCK isb;
+    LARGE_INTEGER timeout;
+    SECURITY_DESCRIPTOR securityDescriptor;
+    ULONG readMode;
+    SECURITY_QUALITY_OF_SERVICE pipeSecurityQos =
+    {
+        sizeof(SECURITY_QUALITY_OF_SERVICE),
+        SecurityAnonymous,
+        SECURITY_STATIC_TRACKING,
+        FALSE
+    };
+
+    if (RootDirectory)
+        pipeName = PhCreateString2(PipeName);
+    else
+        pipeName = PhConcatStringRef2(&deviceName, PipeName);
+
+    if (!PhStringRefToUnicodeString(&pipeName->sr, &pipeNameUs))
+    {
+        PhDereferenceObject(pipeName);
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    InitializeObjectAttributesEx(
+        &objectAttributes,
+        &pipeNameUs,
+        OBJ_CASE_INSENSITIVE,
+        RootDirectory,
+        SecurityDescriptor,
+        &pipeSecurityQos
+        );
+
+    if (!SecurityDescriptor)
+    {
+        status = PhDefaultNpAcl(&pipeAcl);
+
+        if (NT_SUCCESS(status))
+        {
+            status = PhCreateSecurityDescriptor(&securityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+
+            if (NT_SUCCESS(status))
+            {
+                status = PhSetDaclSecurityDescriptor(&securityDescriptor, TRUE, pipeAcl, FALSE);
+
+                if (NT_SUCCESS(status))
+                {
+                    objectAttributes.SecurityDescriptor = &securityDescriptor;
+                }
+            }
+        }
+
+        if (!NT_SUCCESS(status))
+            goto CleanupExit;
+    }
+
+    if (PipeType & FILE_PIPE_MESSAGE_TYPE)
+        readMode = FILE_PIPE_MESSAGE_MODE;
+    else
+        readMode = FILE_PIPE_BYTE_STREAM_MODE;
+
+    status = NtCreateNamedPipeFile(
+        &pipeHandle,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | SYNCHRONIZE,
+        &objectAttributes,
+        &isb,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        CreateDisposition,
+        FILE_PIPE_FULL_DUPLEX | FILE_SYNCHRONOUS_IO_NONALERT,
+        PipeType | FILE_PIPE_REJECT_REMOTE_CLIENTS,
+        readMode,
+        FILE_PIPE_QUEUE_OPERATION,
+        MaximumInstances,
+        PAGE_SIZE * 16,
+        PAGE_SIZE * 16,
+        PhTimeoutFromMilliseconds(&timeout, 1000)
+        );
+
+    if (NT_SUCCESS(status))
+    {
+        *PipeHandle = pipeHandle;
+    }
+
+CleanupExit:
+    if (pipeAcl)
+    {
+        PhFree(pipeAcl);
+    }
+
+    PhDereferenceObject(pipeName);
+    return status;
+}
+
+/**
+ * Connects to a named pipe.
+ *
+ * \param[out] PipeHandle The pipe read/write handle.
+ * \param[in] PipeName The pipe name.
+ */
 NTSTATUS PhConnectPipe(
     _Out_ PHANDLE PipeHandle,
     _In_ PCPH_STRINGREF PipeName
@@ -342,6 +565,11 @@ NTSTATUS PhConnectPipe(
     return status;
 }
 
+/**
+ * Listens for a connection from a client on a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ */
 NTSTATUS PhListenNamedPipe(
     _In_ HANDLE PipeHandle
     )
@@ -373,6 +601,11 @@ NTSTATUS PhListenNamedPipe(
     return status;
 }
 
+/**
+ * Disconnects a client from a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ */
 NTSTATUS PhDisconnectNamedPipe(
     _In_ HANDLE PipeHandle
     )
@@ -404,6 +637,16 @@ NTSTATUS PhDisconnectNamedPipe(
     return status;
 }
 
+/**
+ * Peeks at data from a named pipe without removing it.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[out] Buffer Optional buffer to receive the data.
+ * \param[in] Length The length of the buffer.
+ * \param[out] NumberOfBytesRead Optional pointer to receive the number of bytes read.
+ * \param[out] NumberOfBytesAvailable Optional pointer to receive the number of bytes available.
+ * \param[out] NumberOfBytesLeftInMessage Optional pointer to receive the number of bytes left in the message.
+ */
 NTSTATUS PhPeekNamedPipe(
     _In_ HANDLE PipeHandle,
     _Out_writes_bytes_opt_(Length) PVOID Buffer,
@@ -471,6 +714,15 @@ NTSTATUS PhPeekNamedPipe(
     return status;
 }
 
+/**
+ * Connects to a named pipe, writes a message, reads a response, and disconnects.
+ *
+ * \param[in] PipeName The pipe name.
+ * \param[in] InputBuffer The input buffer.
+ * \param[in] InputBufferLength The length of the input buffer.
+ * \param[out] OutputBuffer The output buffer.
+ * \param[in] OutputBufferLength The length of the output buffer.
+ */
 NTSTATUS PhCallNamedPipe(
     _In_ PCWSTR PipeName,
     _In_reads_bytes_(InputBufferLength) PVOID InputBuffer,
@@ -516,7 +768,8 @@ NTSTATUS PhCallNamedPipe(
             InputBuffer,
             InputBufferLength,
             OutputBuffer,
-            OutputBufferLength
+            OutputBufferLength,
+            NULL
             );
     }
 
@@ -534,16 +787,27 @@ NTSTATUS PhCallNamedPipe(
     return status;
 }
 
+/**
+ * Performs a transceive operation on a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[in] InputBuffer The input buffer.
+ * \param[in] InputBufferLength The length of the input buffer.
+ * \param[out] OutputBuffer The output buffer.
+ * \param[in] OutputBufferLength The length of the output buffer.
+ * \param[out] NumberOfBytesRead The number of bytes read from the pipe.
+ */
 NTSTATUS PhTransceiveNamedPipe(
     _In_ HANDLE PipeHandle,
     _In_reads_bytes_(InputBufferLength) PVOID InputBuffer,
     _In_ ULONG InputBufferLength,
     _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer,
-    _In_ ULONG OutputBufferLength
+    _In_ ULONG OutputBufferLength,
+    _Out_opt_ PULONG NumberOfBytesRead
     )
 {
     NTSTATUS status;
-    IO_STATUS_BLOCK isb;
+    IO_STATUS_BLOCK isb = { 0 };
 
     status = NtFsControlFile(
         PipeHandle,
@@ -566,9 +830,18 @@ NTSTATUS PhTransceiveNamedPipe(
             status = isb.Status;
     }
 
+    if (NumberOfBytesRead)
+        *NumberOfBytesRead = (ULONG)isb.Information;
+
     return status;
 }
 
+/**
+ * Waits for a named pipe to become available.
+ *
+ * \param[in] PipeName The pipe name.
+ * \param[in] Timeout Optional timeout in milliseconds.
+ */
 NTSTATUS PhWaitForNamedPipe(
     _In_ PCWSTR PipeName,
     _In_opt_ ULONG Timeout
@@ -580,6 +853,7 @@ NTSTATUS PhWaitForNamedPipe(
     UNICODE_STRING objectName;
     HANDLE fileSystemHandle;
     OBJECT_ATTRIBUTES objectAttributes;
+    ULONG_PTR waitForBufferStack[64];
     PFILE_PIPE_WAIT_FOR_BUFFER waitForBuffer;
     ULONG waitForBufferLength;
 
@@ -606,7 +880,11 @@ NTSTATUS PhWaitForNamedPipe(
 
     PhInitializeStringRefLongHint(&pipeName, PipeName);
     waitForBufferLength = FIELD_OFFSET(FILE_PIPE_WAIT_FOR_BUFFER, Name) + (ULONG)pipeName.Length;
-    waitForBuffer = PhAllocate(waitForBufferLength);
+
+    if (waitForBufferLength <= sizeof(waitForBufferStack))
+        waitForBuffer = (PFILE_PIPE_WAIT_FOR_BUFFER)waitForBufferStack;
+    else
+        waitForBuffer = PhAllocate(waitForBufferLength);
 
     if (Timeout)
     {
@@ -636,12 +914,19 @@ NTSTATUS PhWaitForNamedPipe(
         0
         );
 
-    PhFree(waitForBuffer);
+    if (waitForBuffer != (PFILE_PIPE_WAIT_FOR_BUFFER)waitForBufferStack)
+        PhFree(waitForBuffer);
+
     NtClose(fileSystemHandle);
 
     return status;
 }
 
+/**
+ * Impersonates the client of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ */
 NTSTATUS PhImpersonateClientOfNamedPipe(
     _In_ HANDLE PipeHandle
     )
@@ -662,6 +947,11 @@ NTSTATUS PhImpersonateClientOfNamedPipe(
         );
 }
 
+/**
+ * Disables impersonation for a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ */
 NTSTATUS PhDisableImpersonateNamedPipe(
     _In_ HANDLE PipeHandle
     )
@@ -682,6 +972,13 @@ NTSTATUS PhDisableImpersonateNamedPipe(
         );
 }
 
+/**
+ * Gets the computer name of the client of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[in] ClientComputerNameLength The length of the client computer name buffer.
+ * \param[out] ClientComputerName The client computer name buffer.
+ */
 NTSTATUS PhGetNamedPipeClientComputerName(
     _In_ HANDLE PipeHandle,
     _In_ ULONG ClientComputerNameLength,
@@ -715,6 +1012,12 @@ NTSTATUS PhGetNamedPipeClientComputerName(
     return status;
 }
 
+/**
+ * Gets the process ID of the client of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[out] ClientProcessId The client process ID.
+ */
 NTSTATUS PhGetNamedPipeClientProcessId(
     _In_ HANDLE PipeHandle,
     _Out_ PHANDLE ClientProcessId
@@ -756,6 +1059,12 @@ NTSTATUS PhGetNamedPipeClientProcessId(
     return status;
 }
 
+/**
+ * Gets the session ID of the client of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[out] ClientSessionId The client session ID.
+ */
 NTSTATUS PhGetNamedPipeClientSessionId(
     _In_ HANDLE PipeHandle,
     _Out_ PHANDLE ClientSessionId
@@ -797,6 +1106,12 @@ NTSTATUS PhGetNamedPipeClientSessionId(
     return status;
 }
 
+/**
+ * Gets the process ID of the server of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[out] ServerProcessId The server process ID.
+ */
 NTSTATUS PhGetNamedPipeServerProcessId(
     _In_ HANDLE PipeHandle,
     _Out_ PHANDLE ServerProcessId
@@ -838,6 +1153,12 @@ NTSTATUS PhGetNamedPipeServerProcessId(
     return status;
 }
 
+/**
+ * Gets the session ID of the server of a named pipe.
+ *
+ * \param[in] PipeHandle The pipe handle.
+ * \param[out] ServerSessionId The server session ID.
+ */
 NTSTATUS PhGetNamedPipeServerSessionId(
     _In_ HANDLE PipeHandle,
     _Out_ PHANDLE ServerSessionId
@@ -879,6 +1200,13 @@ NTSTATUS PhGetNamedPipeServerSessionId(
     return status;
 }
 
+/**
+ * Enumerates named pipes in the named pipe directory.
+ *
+ * \param[in] SearchPattern Optional search pattern.
+ * \param[in] Callback The callback function.
+ * \param[in] Context Optional context.
+ */
 NTSTATUS PhEnumDirectoryNamedPipe(
     _In_opt_ PCPH_STRINGREF SearchPattern,
     _In_ PPH_ENUM_DIRECTORY_FILE Callback,
@@ -914,13 +1242,18 @@ NTSTATUS PhEnumDirectoryNamedPipe(
     return status;
 }
 
-// rev from RtlDefaultNpAcl
+/**
+ * Gets the default ACL for a named pipe.
+ *
+ * \param[out] DefaultNpAc The default ACL.
+ */
+ // rev from RtlDefaultNpAcl
 NTSTATUS PhDefaultNpAcl(
     _Out_ PACL* DefaultNpAc
     )
 {
     NTSTATUS status;
-    PACL pipeAcl;
+    PACL pipeAcl = NULL;
     PH_TOKEN_OWNER tokenQuery;
 
     status = PhGetTokenOwner(
@@ -933,19 +1266,7 @@ NTSTATUS PhDefaultNpAcl(
         APPCONTAINER_SID_TYPE appContainerSidType = InvalidAppContainerSidType;
         PH_TOKEN_APPCONTAINER tokenAppContainer = { 0 };
         PSID appContainerSidParent = NULL;
-
-        ULONG defaultAclSize =
-            (ULONG)sizeof(ACL) +
-            (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-            PhLengthSid((PSID)&PhSeLocalSystemSid) +
-            (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-            PhLengthSid(PhSeAdministratorsSid()) +
-            (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-            PhLengthSid(tokenQuery.TokenOwner.Owner) +
-            (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-            PhLengthSid((PSID)&PhSeEveryoneSid) +
-            (ULONG)sizeof(ACCESS_ALLOWED_ACE) +
-            PhLengthSid((PSID)&PhSeAnonymousLogonSid);
+        ULONG defaultAclSize;
 
         if (NT_SUCCESS(PhGetTokenAppContainerSid(NtCurrentThreadEffectiveToken(), &tokenAppContainer)))
         {
@@ -959,31 +1280,70 @@ NTSTATUS PhDefaultNpAcl(
             }
         }
 
+        if (!NT_SUCCESS(status = RtlULongAdd(SECURITY_DESCRIPTOR_MIN_LENGTH, sizeof(ACL), &defaultAclSize)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(&PhSeLocalSystemSid), &defaultAclSize)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(PhSeAdministratorsSid()), &defaultAclSize)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(tokenQuery.TokenOwner.Owner), &defaultAclSize)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(&PhSeEveryoneSid), &defaultAclSize)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(&PhSeAnonymousLogonSid), &defaultAclSize)))
+            goto CleanupExit;
+
         if (tokenAppContainer.AppContainer.Sid)
-            defaultAclSize += (ULONG)sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(tokenAppContainer.AppContainer.Sid);
-        if (appContainerSidParent)
-            defaultAclSize += (ULONG)sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(appContainerSidParent);
-
-        pipeAcl = PhAllocateZero(defaultAclSize);
-        PhCreateAcl(pipeAcl, defaultAclSize, ACL_REVISION);
-        PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, &PhSeLocalSystemSid);
-        PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, PhSeAdministratorsSid());
-
-        if (tokenAppContainer.AppContainer.Sid)
-            PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, tokenAppContainer.AppContainer.Sid);
-        if (appContainerSidParent)
-            PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, appContainerSidParent);
-
-        PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, tokenQuery.TokenOwner.Owner);
-        PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_READ, &PhSeEveryoneSid);
-        PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_READ, &PhSeAnonymousLogonSid);
-
-        *DefaultNpAc = pipeAcl;
+        {
+            if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(tokenAppContainer.AppContainer.Sid), &defaultAclSize)))
+                goto CleanupExit;
+        }
 
         if (appContainerSidParent)
         {
-            RtlFreeSid(appContainerSidParent);
+            if (!NT_SUCCESS(status = RtlULongAdd(defaultAclSize, sizeof(ACCESS_ALLOWED_ACE) + PhLengthSid(appContainerSidParent), &defaultAclSize)))
+                goto CleanupExit;
         }
+
+        if (!(pipeAcl = PhAllocateZeroSafe(defaultAclSize)))
+        {
+            status = STATUS_NO_MEMORY;
+            goto CleanupExit;
+        }
+
+        if (!NT_SUCCESS(status = PhCreateAcl(pipeAcl, defaultAclSize, ACL_REVISION)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, &PhSeLocalSystemSid)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, PhSeAdministratorsSid())))
+            goto CleanupExit;
+
+        if (tokenAppContainer.AppContainer.Sid)
+        {
+            if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, tokenAppContainer.AppContainer.Sid)))
+                goto CleanupExit;
+        }
+
+        if (appContainerSidParent)
+        {
+            if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, appContainerSidParent)))
+                goto CleanupExit;
+        }
+
+        if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_ALL, tokenQuery.TokenOwner.Owner)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_READ, &PhSeEveryoneSid)))
+            goto CleanupExit;
+        if (!NT_SUCCESS(status = PhAddAccessAllowedAce(pipeAcl, ACL_REVISION, GENERIC_READ, &PhSeAnonymousLogonSid)))
+            goto CleanupExit;
+
+        *DefaultNpAc = pipeAcl;
+
+    CleanupExit:
+        if (!NT_SUCCESS(status) && pipeAcl)
+            PhFree(pipeAcl);
+        if (appContainerSidParent)
+            RtlFreeSid(appContainerSidParent);
     }
 
     return status;

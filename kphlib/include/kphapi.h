@@ -19,61 +19,68 @@
 
 // Process
 
-typedef ULONG KPH_PROCESS_STATE;
-typedef KPH_PROCESS_STATE* PKPH_PROCESS_STATE;
+typedef _Enum_is_bitflag_ enum _KPH_PROCESS_STATE
+{
+    KPH_PROCESS_STATE_NONE                         = 0x00000000,
 
-#define KPH_PROCESS_SECURELY_CREATED                     0x00000001ul
-#define KPH_PROCESS_VERIFIED_PROCESS                     0x00000002ul
-#define KPH_PROCESS_PROTECTED_PROCESS                    0x00000004ul
-#define KPH_PROCESS_NO_UNTRUSTED_IMAGES                  0x00000008ul
-#define KPH_PROCESS_HAS_FILE_OBJECT                      0x00000010ul
-#define KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS          0x00000020ul
-#define KPH_PROCESS_NO_USER_WRITABLE_REFERENCES          0x00000040ul
-#define KPH_PROCESS_NO_FILE_TRANSACTION                  0x00000080ul
-#define KPH_PROCESS_NOT_BEING_DEBUGGED                   0x00000100ul
-#define KPH_PROCESS_NO_WRITABLE_FILE_OBJECT              0x00000200ul
+    KPH_PROCESS_SECURELY_CREATED                   = 0x00000001,
+    KPH_PROCESS_VERIFIED_PROCESS                   = 0x00000002,
+    KPH_PROCESS_PROTECTED_PROCESS                  = 0x00000004,
+    KPH_PROCESS_NO_UNTRUSTED_IMAGES                = 0x00000008,
+    KPH_PROCESS_HAS_FILE_OBJECT                    = 0x00000010,
+    KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS        = 0x00000020,
+    KPH_PROCESS_NO_USER_WRITABLE_REFERENCES        = 0x00000040,
+    KPH_PROCESS_NO_FILE_TRANSACTION                = 0x00000080,
+    KPH_PROCESS_NOT_BEING_DEBUGGED                 = 0x00000100,
+    KPH_PROCESS_NO_WRITABLE_FILE_OBJECT            = 0x00000200,
+    KPH_PROCESS_CREATE_NOTIFICATION                = 0x00000400,
 
-#define KPH_PROCESS_STATE_MAXIMUM (KPH_PROCESS_SECURELY_CREATED               |\
-                                   KPH_PROCESS_VERIFIED_PROCESS               |\
-                                   KPH_PROCESS_PROTECTED_PROCESS              |\
-                                   KPH_PROCESS_NO_UNTRUSTED_IMAGES            |\
-                                   KPH_PROCESS_HAS_FILE_OBJECT                |\
-                                   KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS    |\
-                                   KPH_PROCESS_NO_USER_WRITABLE_REFERENCES    |\
-                                   KPH_PROCESS_NO_FILE_TRANSACTION            |\
-                                   KPH_PROCESS_NOT_BEING_DEBUGGED             |\
-                                   KPH_PROCESS_NO_WRITABLE_FILE_OBJECT)
+    KPH_PROCESS_STATE_MAXIMUM = (KPH_PROCESS_SECURELY_CREATED                 |\
+                                 KPH_PROCESS_VERIFIED_PROCESS                 |\
+                                 KPH_PROCESS_PROTECTED_PROCESS                |\
+                                 KPH_PROCESS_NO_UNTRUSTED_IMAGES              |\
+                                 KPH_PROCESS_HAS_FILE_OBJECT                  |\
+                                 KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS      |\
+                                 KPH_PROCESS_NO_USER_WRITABLE_REFERENCES      |\
+                                 KPH_PROCESS_NO_FILE_TRANSACTION              |\
+                                 KPH_PROCESS_NOT_BEING_DEBUGGED               |\
+                                 KPH_PROCESS_NO_WRITABLE_FILE_OBJECT          |\
+                                 KPH_PROCESS_CREATE_NOTIFICATION),
 
-#define KPH_PROCESS_STATE_HIGH    (KPH_PROCESS_VERIFIED_PROCESS               |\
-                                   KPH_PROCESS_PROTECTED_PROCESS              |\
-                                   KPH_PROCESS_NO_UNTRUSTED_IMAGES            |\
-                                   KPH_PROCESS_HAS_FILE_OBJECT                |\
-                                   KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS    |\
-                                   KPH_PROCESS_NO_USER_WRITABLE_REFERENCES    |\
-                                   KPH_PROCESS_NO_FILE_TRANSACTION            |\
-                                   KPH_PROCESS_NOT_BEING_DEBUGGED             |\
-                                   KPH_PROCESS_NO_WRITABLE_FILE_OBJECT)
+    KPH_PROCESS_STATE_HIGH    = (KPH_PROCESS_VERIFIED_PROCESS                 |\
+                                 KPH_PROCESS_PROTECTED_PROCESS                |\
+                                 KPH_PROCESS_NO_UNTRUSTED_IMAGES              |\
+                                 KPH_PROCESS_HAS_FILE_OBJECT                  |\
+                                 KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS      |\
+                                 KPH_PROCESS_NO_USER_WRITABLE_REFERENCES      |\
+                                 KPH_PROCESS_NO_FILE_TRANSACTION              |\
+                                 KPH_PROCESS_NOT_BEING_DEBUGGED               |\
+                                 KPH_PROCESS_NO_WRITABLE_FILE_OBJECT          |\
+                                 KPH_PROCESS_CREATE_NOTIFICATION),
 
-#define KPH_PROCESS_STATE_MEDIUM  (KPH_PROCESS_VERIFIED_PROCESS               |\
-                                   KPH_PROCESS_PROTECTED_PROCESS              |\
-                                   KPH_PROCESS_HAS_FILE_OBJECT                |\
-                                   KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS    |\
-                                   KPH_PROCESS_NO_USER_WRITABLE_REFERENCES    |\
-                                   KPH_PROCESS_NO_FILE_TRANSACTION            |\
-                                   KPH_PROCESS_NO_WRITABLE_FILE_OBJECT)
+    KPH_PROCESS_STATE_MEDIUM  = (KPH_PROCESS_VERIFIED_PROCESS                 |\
+                                 KPH_PROCESS_PROTECTED_PROCESS                |\
+                                 KPH_PROCESS_HAS_FILE_OBJECT                  |\
+                                 KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS      |\
+                                 KPH_PROCESS_NO_USER_WRITABLE_REFERENCES      |\
+                                 KPH_PROCESS_NO_FILE_TRANSACTION              |\
+                                 KPH_PROCESS_NO_WRITABLE_FILE_OBJECT),
 
-#define KPH_PROCESS_STATE_LOW     (KPH_PROCESS_VERIFIED_PROCESS               |\
-                                   KPH_PROCESS_HAS_FILE_OBJECT                |\
-                                   KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS    |\
-                                   KPH_PROCESS_NO_USER_WRITABLE_REFERENCES    |\
-                                   KPH_PROCESS_NO_FILE_TRANSACTION            |\
-                                   KPH_PROCESS_NO_WRITABLE_FILE_OBJECT)
+    KPH_PROCESS_STATE_LOW     = (KPH_PROCESS_VERIFIED_PROCESS                 |\
+                                 KPH_PROCESS_HAS_FILE_OBJECT                  |\
+                                 KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS      |\
+                                 KPH_PROCESS_NO_USER_WRITABLE_REFERENCES      |\
+                                 KPH_PROCESS_NO_FILE_TRANSACTION              |\
+                                 KPH_PROCESS_NO_WRITABLE_FILE_OBJECT),
 
-#define KPH_PROCESS_STATE_MINIMUM (KPH_PROCESS_HAS_FILE_OBJECT                |\
-                                   KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS    |\
-                                   KPH_PROCESS_NO_USER_WRITABLE_REFERENCES    |\
-                                   KPH_PROCESS_NO_FILE_TRANSACTION            |\
-                                   KPH_PROCESS_NO_WRITABLE_FILE_OBJECT)
+    KPH_PROCESS_STATE_MINIMUM = (KPH_PROCESS_HAS_FILE_OBJECT                  |\
+                                 KPH_PROCESS_HAS_SECTION_OBJECT_POINTERS      |\
+                                 KPH_PROCESS_NO_USER_WRITABLE_REFERENCES      |\
+                                 KPH_PROCESS_NO_FILE_TRANSACTION              |\
+                                 KPH_PROCESS_NO_WRITABLE_FILE_OBJECT),
+} KPH_PROCESS_STATE, *PKPH_PROCESS_STATE;
+DEFINE_ENUM_FLAG_OPERATORS(KPH_PROCESS_STATE);
+C_ASSERT(sizeof(KPH_PROCESS_STATE) == sizeof(ULONG));
 
 typedef enum _KPH_PROCESS_INFORMATION_CLASS
 {
@@ -135,20 +142,18 @@ typedef struct _KPH_PROCESS_BASIC_INFORMATION
         {
             ULONG CreateNotification : 1;
             ULONG ExitNotification : 1;
-            ULONG VerifiedProcess : 1;
-            ULONG SecurelyCreated : 1;
-            ULONG Protected : 1;
             ULONG IsWow64 : 1;
             ULONG IsSubsystemProcess : 1;
             ULONG AllocatedImageName : 1;
-            ULONG Reserved : 24;
+            ULONG SystemAllocatedImageFileName : 1;
+            ULONG Reserved : 26;
         };
     };
 
     SIZE_T NumberOfThreads;
 
     //
-    // Only valid if Protected flag is set.
+    // Only valid if KPH_PROCESS_PROTECTED_PROCESS is set in ProcessState.
     //
     ACCESS_MASK ProcessAllowedMask;
     ACCESS_MASK ThreadAllowedMask;
@@ -499,7 +504,7 @@ typedef const KPH_RATE_LIMIT_POLICY* PCKPH_RATE_LIMIT_POLICY;
 #define KPH_RATE_LIMIT_PER_HOUR(rate, burst) { rate, 3600, burst }
 #define KPH_RATE_LIMIT_PER_DAY(rate, burst)  { rate, 86400, burst }
 
-#define KPH_INFORMER_COUNT       153
+#define KPH_INFORMER_COUNT       155
 #define KPH_INFORMER_INDEX(name) (KphMsg##name - (MaxKphMsgClientAllowed + 1))
 
 typedef union _KPH_INFORMER_OPTIONS
@@ -541,11 +546,12 @@ typedef struct _KPH_MESSAGE_TIMEOUTS
     LARGE_INTEGER FilePostCreateTimeout;
 } KPH_MESSAGE_TIMEOUTS, *PKPH_MESSAGE_TIMEOUTS;
 
-typedef struct _KPH_MESSAGE_SETTINGS
+typedef struct _KPH_INFORMER_CLIENT_SETTINGS
 {
-    KPH_MESSAGE_TIMEOUTS Timeouts;
-    KPH_RATE_LIMIT_POLICY Policy[KPH_INFORMER_COUNT];
-} KPH_MESSAGE_SETTINGS, *PKPH_MESSAGE_SETTINGS;
+    KPH_MESSAGE_TIMEOUTS MessageTimeouts;
+    KPH_RATE_LIMIT_POLICY AsyncQueuePolicy;
+    KPH_RATE_LIMIT_POLICY InformerPolicy[KPH_INFORMER_COUNT];
+} KPH_INFORMER_CLIENT_SETTINGS, *PKPH_INFORMER_CLIENT_SETTINGS;
 
 typedef struct _KPH_RATE_LIMIT_STATS
 {
@@ -555,10 +561,16 @@ typedef struct _KPH_RATE_LIMIT_STATS
     LONG64 CasMiss;
 } KPH_RATE_LIMIT_STATS, *PKPH_RATE_LIMIT_STATS;
 
+typedef struct _KPH_INFORMER_CLIENT_STATS
+{
+    KPH_RATE_LIMIT_STATS AsyncQueueRateLimit;
+    KPH_RATE_LIMIT_STATS InformerRateLimit[KPH_INFORMER_COUNT];
+} KPH_INFORMER_CLIENT_STATS, *PKPH_INFORMER_CLIENT_STATS;
+
 typedef struct _KPH_INFORMER_STATS
 {
     KPH_RATE_LIMIT_STATS RateLimit[KPH_INFORMER_COUNT];
-} KPH_INFORMER_STATS, * PKPH_INFORMER_STATS;
+} KPH_INFORMER_STATS, *PKPH_INFORMER_STATS;
 
 // Parameters
 

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2015
- *     dmex    2016-2024
+ *     dmex    2016-2026
  *
  */
 
@@ -18,6 +18,8 @@
 #include <settings.h>
 
 #include "db.h"
+
+#include <usernotesintf.h>
 #include "resource.h"
 
 #define INTENT_PROCESS_COMMENT 0x1
@@ -140,22 +142,22 @@ INT_PTR CALLBACK OptionsDlgProc(
     );
 
 INT_PTR CALLBACK ProcessCommentPageDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
 
 INT_PTR CALLBACK ServiceCommentPageDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
 
 UINT_PTR CALLBACK ColorDlgHookProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );

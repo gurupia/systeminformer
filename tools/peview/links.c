@@ -187,6 +187,7 @@ INT_PTR CALLBACK PvpPeLinksDlgProc(
 
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            PvConfigListViewFont(hwndDlg, context->ListViewHandle);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"#");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 250, L"Name");
             PhSetExtendedListView(context->ListViewHandle);
@@ -245,7 +246,7 @@ INT_PTR CALLBACK PvpPeLinksDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

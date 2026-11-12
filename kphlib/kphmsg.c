@@ -13,7 +13,7 @@
 #include <kphlibbase.h>
 #include <kphmsg.h>
 
-#define KPH_MESSAGE_VERSION 5
+#define KPH_MESSAGE_VERSION 8
 
 /**
  * Gets the current system time (UTC).
@@ -76,6 +76,11 @@ NTSTATUS KphMsgValidate(
 
     if ((Message->Header.Size < KPH_MESSAGE_MIN_SIZE) ||
         (Message->Header.Size > sizeof(KPH_MESSAGE)))
+    {
+        return STATUS_INVALID_MESSAGE;
+    }
+
+    if (Message->_Dyn.Count > ARRAYSIZE(Message->_Dyn.Entries))
     {
         return STATUS_INVALID_MESSAGE;
     }

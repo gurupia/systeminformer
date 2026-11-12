@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2015
- *     dmex    2016-2023
+ *     dmex    2016-2026
  *     jxy-s   2024
  *
  */
@@ -36,17 +36,22 @@ VOID EtpTickNpuDialog(
     );
 
 INT_PTR CALLBACK EtpNpuDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     );
 
 INT_PTR CALLBACK EtpNpuPanelDialogProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
+    );
+
+VOID EtpGetNpuGraphRects(
+    _Out_writes_(6) RECT LabelRects[6],
+    _Out_writes_(6) RECT GraphRects[6]
     );
 
 VOID EtpCreateNpuGraphs(
@@ -54,7 +59,7 @@ VOID EtpCreateNpuGraphs(
     );
 
 VOID EtpLayoutNpuGraphs(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     );
 
 VOID EtpNotifyNpuGraph(

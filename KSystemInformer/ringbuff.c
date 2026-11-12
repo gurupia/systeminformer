@@ -17,7 +17,7 @@ KPH_PROTECTED_DATA_SECTION_PUSH();
 static PKPH_OBJECT_TYPE KphpRingBufferType = NULL;
 KPH_PROTECTED_DATA_SECTION_POP();
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
-static const UNICODE_STRING KphpRingBufferTypeName = RTL_CONSTANT_STRING(L"KphRingBuffer");
+DECLARE_CONST_UNICODE_STRING(KphpRingBufferTypeName, L"KphRingBuffer");
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 
 /**
@@ -33,6 +33,7 @@ KPH_PROTECTED_DATA_SECTION_RO_POP();
  *
  * \return Reserved buffer, null on failure.
  */
+_IRQL_requires_max_(DISPATCH_LEVEL)
 _Return_allocatesMem_size_(Length)
 PVOID KphReserveRingBuffer(
     _In_ PKPH_RING_BUFFER Ring,
@@ -49,6 +50,8 @@ PVOID KphReserveRingBuffer(
     ULONG alignment;
     PKPH_RING_HEADER headerPointer;
     KPH_RING_HEADER header;
+
+    KPH_NPAGED_CODE_DISPATCH_MAX();
 
     //
     // Maximum reserve accounts for the maximum encoded length bits, additional
@@ -74,6 +77,18 @@ PVOID KphReserveRingBuffer(
 
     consumerPos = ReadULongAcquire(Ring->ConsumerPos);
     producerPos = ReadULongNoFence(Ring->ProducerPos);
+
+    if (!NT_VERIFY(consumerPos <= Ring->Length))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      GENERAL,
+                      "Ring buffer position overflow: %lu %lu %lu",
+                      producerPos,
+                      consumerPos,
+                      Ring->Length);
+
+        goto Exit;
+    }
 
     if (producerPos >= consumerPos)
     {
@@ -140,11 +155,6 @@ PVOID KphReserveRingBuffer(
 
         WriteULong64Release(&headerPointer->Value, header.Value);
 
-        if (Ring->Event)
-        {
-            KeSetEvent(Ring->Event, EVENT_INCREMENT, FALSE);
-        }
-
         producerPos = 0;
     }
 
@@ -179,13 +189,14 @@ Exit:
 }
 
 /**
- * \brief Helper routine to commit a previously reserved ring buffer entry.
+ * \brief Helper routine to submits a previously reserved ring buffer entry.
  *
  * \param[in] Ring Pointer to a ring buffer object.
- * \param[in] Buffer Pointer to the buffer to commit.
+ * \param[in] Buffer Pointer to the buffer to submit.
  * \param[in] Discard If TRUE the buffer is discarded, if FALSE is it committed.
  */
-VOID KphpCommitRingBuffer(
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID KphpSubmitRingBuffer(
     _In_ PKPH_RING_BUFFER Ring,
     _In_aliasesMem_ PVOID Buffer,
     _In_ BOOLEAN Discard
@@ -194,23 +205,19 @@ VOID KphpCommitRingBuffer(
     PKPH_RING_HEADER headerPointer;
     KPH_RING_HEADER header;
 
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
     headerPointer = Add2Ptr(Buffer, -KPH_RING_BUFFER_HEADER_SIZE);
 
     header.Value = ReadULong64NoFence(&headerPointer->Value);
     header.Busy = FALSE;
     header.Discard = !!Discard;
 
-    WriteULong64Release(&headerPointer->Value, header.Value);
+    InterlockedExchangeU64(&headerPointer->Value, header.Value);
 
-    if (Ring->Event)
+    if (Ring->Event && !ReadULongAcquire(Ring->ConsumerProcessing))
     {
-        ULONG consumerPos;
-
-        consumerPos = ReadULongAcquire(Ring->ConsumerPos);
-        if (Add2Ptr(Ring->Buffer, consumerPos) == headerPointer)
-        {
-            KeSetEvent(Ring->Event, EVENT_INCREMENT, FALSE);
-        }
+        KeSetEvent(Ring->Event, EVENT_INCREMENT, FALSE);
     }
 }
 
@@ -224,12 +231,15 @@ VOID KphpCommitRingBuffer(
  * \param[in] Buffer Pointer to the buffer to commit, previously returned from
  * KphReserveRingBuffer.
  */
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID KphCommitRingBuffer(
     _In_ PKPH_RING_BUFFER Ring,
     _In_freesMem_ PVOID Buffer
     )
 {
-    KphpCommitRingBuffer(Ring, Buffer, FALSE);
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
+    KphpSubmitRingBuffer(Ring, Buffer, FALSE);
 }
 
 /**
@@ -242,12 +252,15 @@ VOID KphCommitRingBuffer(
  * \param[in] Buffer Pointer to the buffer to discard, previously returned from
  * KphReserveRingBuffer.
  */
+_IRQL_requires_max_(DISPATCH_LEVEL)
 VOID KphDiscardRingBuffer(
     _In_ PKPH_RING_BUFFER Ring,
     _In_freesMem_ PVOID Buffer
     )
 {
-    KphpCommitRingBuffer(Ring, Buffer, TRUE);
+    KPH_NPAGED_CODE_DISPATCH_MAX();
+
+    KphpSubmitRingBuffer(Ring, Buffer, TRUE);
 }
 
 KPH_PAGED_FILE();
@@ -629,6 +642,7 @@ NTSTATUS KphCreateRingBuffer(
 
     ring->ProducerPos = &producer->Position;
     ring->ConsumerPos = &consumer->Position;
+    ring->ConsumerProcessing = &consumer->Processing;
     ring->Length = bufferLength;
     ring->Buffer = producer->Buffer;
 

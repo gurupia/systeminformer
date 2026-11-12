@@ -17,6 +17,7 @@
 #include <emenu.h>
 #include <mainwnd.h>
 #include <procprv.h>
+#include <ntafd.h>
 #include <phafd.h>
 
 typedef struct _COMMON_PAGE_CONTEXT
@@ -34,8 +35,8 @@ HPROPSHEETPAGE PhpCommonCreatePage(
     _In_ DLGPROC DlgProc
     );
 
-INT CALLBACK PhpCommonPropPageProc(
-    _In_ HWND hwnd,
+UINT CALLBACK PhpCommonPropPageProc(
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     );
@@ -110,8 +111,8 @@ HPROPSHEETPAGE PhpCommonCreatePage(
     return propSheetPageHandle;
 }
 
-INT CALLBACK PhpCommonPropPageProc(
-    _In_ HWND hwnd,
+UINT CALLBACK PhpCommonPropPageProc(
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     )
@@ -568,6 +569,7 @@ typedef struct _MAPPINGS_PAGE_CONTEXT
     DLGPROC HookProc;
     HWND WindowHandle;
     HWND ListViewHandle;
+    HFONT WindowFont;
     PKPH_SECTION_MAPPINGS_INFORMATION SectionInfo;
 
 } MAPPINGS_PAGE_CONTEXT, *PMAPPINGS_PAGE_CONTEXT;
@@ -703,8 +705,11 @@ INT_PTR CALLBACK PhpMappingsPageProc(
             context->WindowHandle = hwndDlg;
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
 
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            SetWindowFont(context->ListViewHandle, context->WindowFont, FALSE);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 140, L"View");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 100, L"Start");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 100, L"End");
@@ -721,7 +726,18 @@ INT_PTR CALLBACK PhpMappingsPageProc(
             if (context->SectionInfo)
                 PhFree(context->SectionInfo);
 
+            if (context->WindowFont)
+                DeleteFont(context->WindowFont);
+
             PhFree(context);
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
         }
         break;
     case WM_CONTEXTMENU:
@@ -822,6 +838,7 @@ typedef struct _PHP_AFD_SOCKET_PAGE_CONTEXT
     HANDLE ProcessId;
     HANDLE HandleValue;
     HWND ListViewHandle;
+    HFONT WindowFont;
     PPH_LISTVIEW_CONTEXT ListViewContext;
     PH_LAYOUT_MANAGER LayoutManager;
 } PHP_AFD_SOCKET_PAGE_CONTEXT, *PPHP_AFD_SOCKET_PAGE_CONTEXT;
@@ -1107,6 +1124,41 @@ HPROPSHEETPAGE PhCreateAfdSocketPage(
     return propSheetPageHandle;
 }
 
+static NTSTATUS PhpAfdQueryFormatTdiDeviceNameWithTimeout(
+    _In_ HANDLE SocketHandle,
+    _In_ ULONG QueryMode,
+    _Outptr_ PPH_STRING *TdiDeviceName
+    )
+{
+    NTSTATUS status;
+    HANDLE hTdiDevice;
+
+    status = PhCallPhAfdQueryTdiHandleWithTimeout(
+        SocketHandle,
+        QueryMode,
+        &hTdiDevice
+        );
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    if (hTdiDevice == INVALID_HANDLE_VALUE)
+    {
+        *TdiDeviceName = PhCreateString(L"N/A (transport is not TDI)");
+    }
+    else if (hTdiDevice == NULL)
+    {
+        *TdiDeviceName = PhCreateString(L"None");
+    }
+    else
+    {
+        status = PhGetObjectName(NtCurrentProcess(), hTdiDevice, TRUE, TdiDeviceName);
+        NtClose(hTdiDevice);
+    }
+
+    return status;
+}
+
 static VOID PhpRefreshAfdSocketPageInfo(
     _In_ PPHP_AFD_SOCKET_PAGE_CONTEXT Context
     )
@@ -1115,6 +1167,7 @@ static VOID PhpRefreshAfdSocketPageInfo(
     HANDLE processHandle;
     HANDLE socketHandle = NULL;
     PPH_STRING itemString;
+    PH_AFD_SOCKET_ADDRESS_INFORMATION addressInfo;
     SOCK_SHARED_INFO sharedInfo;
     AFD_INFORMATION simpleInfo;
     ULONG optionValue;
@@ -1142,12 +1195,23 @@ static VOID PhpRefreshAfdSocketPageInfo(
     if (!NT_SUCCESS(status))
         return;
 
+    // Query the socket information on a worker thread since unresponsive socket handles can hang
+    // queries indefinitely. If we cannot get any information this way, skip filling out the
+    // socket information since the queries below would hang the same way. (jxy-s)
+    if (!NT_SUCCESS(PhCallPhAfdQuerySocketAddressInfoWithTimeout(socketHandle, &addressInfo)))
+    {
+        NtClose(socketHandle);
+        return;
+    }
+
     //
     // Shared Winsock context
     //
 
-    if (NT_SUCCESS(PhAfdQuerySharedInfo(socketHandle, &sharedInfo)))
+    if (addressInfo.HasSharedInfo)
     {
+        sharedInfo = addressInfo.SharedInfo;
+
         // State
         itemString = PhAfdFormatSocketState(sharedInfo.State);
         PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_STATE, PhGetString(itemString));
@@ -1228,14 +1292,16 @@ static VOID PhpRefreshAfdSocketPageInfo(
     //
 
     // Address
-    if (NT_SUCCESS(PhAfdQueryFormatAddress(socketHandle, FALSE, &itemString, 0)))
+    if (addressInfo.HasLocalAddress &&
+        NT_SUCCESS(PhAfdFormatAddress(&addressInfo.LocalAddress, &itemString, 0)))
     {
         PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_ADDRESS, PhGetString(itemString));
         PhDereferenceObject(itemString);
     }
 
     // Remote address
-    if (NT_SUCCESS(PhAfdQueryFormatAddress(socketHandle, TRUE, &itemString, 0)))
+    if (addressInfo.HasRemoteAddress &&
+        NT_SUCCESS(PhAfdFormatAddress(&addressInfo.RemoteAddress, &itemString, 0)))
     {
         PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_REMOTE_ADDRESS, PhGetString(itemString));
         PhDereferenceObject(itemString);
@@ -1246,7 +1312,7 @@ static VOID PhpRefreshAfdSocketPageInfo(
     //
 
     // Connect time
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_CONNECT_TIME, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_CONNECT_TIME, &simpleInfo)))
     {
         switch (simpleInfo.Information.Ulong)
         {
@@ -1258,7 +1324,7 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
     }
 
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_DELIVERY_STATUS, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_DELIVERY_STATUS, &simpleInfo)))
     {
         // Delivery available
         PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_DELIVERY_AVAILABLE, simpleInfo.Information.DeliveryStatus.DeliveryAvailable);
@@ -1268,30 +1334,30 @@ static VOID PhpRefreshAfdSocketPageInfo(
     }
 
     // Pending sends
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_SENDS_PENDING, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_SENDS_PENDING, &simpleInfo)))
     {
         PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_SENDS_PENDING, simpleInfo.Information.Ulong);
     }
 
     // Receive window size
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_RECEIVE_WINDOW_SIZE, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_RECEIVE_WINDOW_SIZE, &simpleInfo)))
     {
         PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_RECEIVE_WINDOW_SIZE, simpleInfo.Information.Ulong);
     }
 
     // Send window size
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_SEND_WINDOW_SIZE, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_SEND_WINDOW_SIZE, &simpleInfo)))
     {
         PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_SEND_WINDOW_SIZE, simpleInfo.Information.Ulong);
     }
 
     // Maximum send size
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_MAX_SEND_SIZE, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_MAX_SEND_SIZE, &simpleInfo)))
     {
         PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_MAX_SEND_SIZE, simpleInfo.Information.Ulong);
     }
 
-    if (NT_SUCCESS(PhAfdQuerySimpleInfo(socketHandle, AFD_GROUP_ID_AND_TYPE, &simpleInfo)))
+    if (NT_SUCCESS(PhCallPhAfdQuerySimpleInfoWithTimeout(socketHandle, AFD_GROUP_ID_AND_TYPE, &simpleInfo)))
     {
         // Group ID
         PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_GROUP_ID, simpleInfo.Information.GroupInfo.GroupID);
@@ -1307,14 +1373,14 @@ static VOID PhpRefreshAfdSocketPageInfo(
     //
 
     // TDI address device
-    if (NT_SUCCESS(PhAfdQueryFormatTdiDeviceName(socketHandle, AFD_QUERY_ADDRESS_HANDLE, &itemString)))
+    if (NT_SUCCESS(PhpAfdQueryFormatTdiDeviceNameWithTimeout(socketHandle, AFD_QUERY_ADDRESS_HANDLE, &itemString)))
     {
         PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_TDI_ADDRESS_DEVICE, PhGetString(itemString));
         PhDereferenceObject(itemString);
     }
 
     // TDI connection device
-    if (NT_SUCCESS(PhAfdQueryFormatTdiDeviceName(socketHandle, AFD_QUERY_CONNECTION_HANDLE, &itemString)))
+    if (NT_SUCCESS(PhpAfdQueryFormatTdiDeviceNameWithTimeout(socketHandle, AFD_QUERY_CONNECTION_HANDLE, &itemString)))
     {
         PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_TDI_CONNECTION_DEVICE, PhGetString(itemString));
         PhDereferenceObject(itemString);
@@ -1325,92 +1391,92 @@ static VOID PhpRefreshAfdSocketPageInfo(
     // deliberately invalid query. If it succeeds, we know we've hit the bug and
     // cannot display any meaningful option information about the socket. (diversenok)
 
-    if (!NT_SUCCESS(PhAfdQueryOption(socketHandle, 0xDEAD, 0xDEAD, &optionValue)))
+    if (!NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, 0xDEAD, 0xDEAD, &optionValue)))
     {
         //
         // Socket-level options
         //
 
         // Reuse address
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_REUSEADDR, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_REUSEADDR, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_REUSEADDR, optionValue);
         }
 
         // Keep alive
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_KEEPALIVE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_KEEPALIVE, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_KEEPALIVE, optionValue);
         }
 
         // Don't route
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_DONTROUTE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_DONTROUTE, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_DONTROUTE, optionValue);
         }
 
         // Broadcast
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_BROADCAST, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_BROADCAST, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_BROADCAST, optionValue);
         }
 
         // OOB in line
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_OOBINLINE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_OOBINLINE, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_OOBINLINE, optionValue);
         }
 
         // Receive buffer size
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_RCVBUF, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_RCVBUF, &optionValue)))
         {
             PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_SO_RCVBUF, optionValue);
         }
 
         // Maximum message size
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_MAX_MSG_SIZE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_MAX_MSG_SIZE, &optionValue)))
         {
             PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_SO_MAX_MSG_SIZE, optionValue);
         }
 
         // Conditional accept
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_CONDITIONAL_ACCEPT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_CONDITIONAL_ACCEPT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_CONDITIONAL_ACCEPT, optionValue);
         }
 
         // Pause accept
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_PAUSE_ACCEPT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_PAUSE_ACCEPT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_PAUSE_ACCEPT, optionValue);
         }
 
         // Compartment ID
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_COMPARTMENT_ID, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_COMPARTMENT_ID, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_SO_COMPARTMENT_ID, optionValue);
         }
 
         // Randomize port
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_RANDOMIZE_PORT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_RANDOMIZE_PORT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_RANDOMIZE_PORT, optionValue);
         }
 
         // Port scalability
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_PORT_SCALABILITY, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_PORT_SCALABILITY, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_PORT_SCALABILITY, optionValue);
         }
 
         // Reuse unicast port
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_REUSE_UNICASTPORT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_REUSE_UNICASTPORT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_REUSE_UNICASTPORT, optionValue);
         }
 
         // Exclusive address use
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_SO_EXCLUSIVEADDRUSE, optionValue);
         }
@@ -1420,28 +1486,28 @@ static VOID PhpRefreshAfdSocketPageInfo(
         //
 
         // Header included
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_HDRINCL, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_HDRINCL, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_HDRINCL, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_HDRINCL, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_HDRINCL, optionValue);
         }
 
         // Type-of-service
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_TOS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_TOS, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_IP_TOS, optionValue);
         }
 
         // Unicast TTL
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_TTL, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_TTL, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_IP_TTL, optionValue);
         }
 
         // Multicast interface
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_MULTICAST_IF, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_IF, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_MULTICAST_IF, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_IF, &optionValue)))
         {
             itemString = PhAfdFormatInterfaceOption(optionValue);
             PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_IP_MULTICAST_IF, PhGetString(itemString));
@@ -1449,48 +1515,48 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // Multicast TTL
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_MULTICAST_TTL, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_MULTICAST_TTL, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_IP_MULTICAST_TTL, optionValue);
         }
 
         // Multicast loopback
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_MULTICAST_LOOP, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_MULTICAST_LOOP, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_MULTICAST_LOOP, optionValue);
         }
 
         // Don't fragment
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_DONTFRAGMENT, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_DONTFRAG, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_DONTFRAGMENT, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_DONTFRAG, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_DONTFRAGMENT, optionValue);
         }
 
         // Receive packet info
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_PKTINFO, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_PKTINFO, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_PKTINFO, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_PKTINFO, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_PKTINFO, optionValue);
         }
 
         // Receive TTL
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVTTL, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IP_HOPLIMIT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVTTL, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IP_HOPLIMIT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVTTL, optionValue);
         }
 
         // Broadcast reception
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECEIVE_BROADCAST, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECEIVE_BROADCAST, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECEIVE_BROADCAST, optionValue);
         }
 
         // IPv6 protection level
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_PROTECTION_LEVEL, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_PROTECTION_LEVEL, &optionValue)))
         {
             itemString = PhAfdFormatProtectionLevel(optionValue);
             PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_IP_PROTECTION_LEVEL, PhGetString(itemString));
@@ -1498,35 +1564,35 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // Receive arrival interface
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVIF, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVIF, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVIF, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVIF, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVIF, optionValue);
         }
 
         // Receive destination address
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVDSTADDR, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVDSTADDR, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVDSTADDR, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVDSTADDR, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVDSTADDR, optionValue);
         }
 
         // IPv6-only
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_V6ONLY, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_V6ONLY, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_V6ONLY, optionValue);
         }
 
         // Interface list
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_IFLIST, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_IFLIST, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_IFLIST, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_IFLIST, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_IFLIST, optionValue);
         }
 
         // Unicast interface
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_UNICAST_IF, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_UNICAST_IF, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_UNICAST_IF, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_UNICAST_IF, &optionValue)))
         {
             itemString = PhAfdFormatInterfaceOption(optionValue);
             PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_IP_UNICAST_IF, PhGetString(itemString));
@@ -1534,56 +1600,56 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // Receive routing header
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVRTHDR, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVRTHDR, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVRTHDR, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVRTHDR, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVRTHDR, optionValue);
         }
 
         // Receive type-of-service
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVTCLASS, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVTCLASS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVTCLASS, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVTCLASS, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVTOS, optionValue);
         }
 
         // Original arrival interface
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_ORIGINAL_ARRIVAL_IF, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_ORIGINAL_ARRIVAL_IF, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_ORIGINAL_ARRIVAL_IF, optionValue);
         }
 
         // Receive ECN
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVECN, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVECN, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVECN, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVECN, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVECN, optionValue);
         }
 
         // Receive extended packet info
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_PKTINFO_EX, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_PKTINFO_EX, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_PKTINFO_EX, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_PKTINFO_EX, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_PKTINFO_EX, optionValue);
         }
 
         // WFP redirect records
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_WFP_REDIRECT_RECORDS, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_WFP_REDIRECT_RECORDS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_WFP_REDIRECT_RECORDS, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_WFP_REDIRECT_RECORDS, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_WFP_REDIRECT_RECORDS, optionValue);
         }
 
         // WFP redirect context
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_WFP_REDIRECT_CONTEXT, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_WFP_REDIRECT_CONTEXT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_WFP_REDIRECT_CONTEXT, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_WFP_REDIRECT_CONTEXT, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_WFP_REDIRECT_CONTEXT, optionValue);
         }
 
         // MTU discovery
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_MTU_DISCOVER, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_MTU_DISCOVER, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &optionValue)))
         {
             itemString = PhAfdFormatMtuDiscoveryMode(optionValue);
             PhSetSocketListViewItem(Context, PH_AFD_SOCKET_ITEM_IP_MTU_DISCOVER, PhGetString(itemString));
@@ -1591,22 +1657,22 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // Path MTU
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_MTU, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_MTU, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_MTU, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_MTU, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_IP_MTU, optionValue);
         }
 
         // Receive ICMP errors
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_RECVERR, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_RECVERR, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_RECVERR, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_RECVERR, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_IP_RECVERR, optionValue);
         }
 
         // Upper MTU bound
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IP, IP_USER_MTU, &optionValue)) ||
-            NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_IPV6, IPV6_USER_MTU, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IP, IP_USER_MTU, &optionValue)) ||
+            NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_IPV6, IPV6_USER_MTU, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_IP_USER_MTU, optionValue);
         }
@@ -1616,31 +1682,31 @@ static VOID PhpRefreshAfdSocketPageInfo(
         //
 
         // No delay
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_NODELAY, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_NODELAY, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_NODELAY, optionValue);
         }
 
         // Expedited data
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_EXPEDITED_1122, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_EXPEDITED_1122, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_EXPEDITED, optionValue);
         }
 
         // Keep alive
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_KEEPALIVE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_KEEPALIVE, &optionValue)))
         {
             PhSetSocketListViewItemTimeSpan(Context, PH_AFD_SOCKET_ITEM_TCP_KEEPALIVE, PH_TICKS_PER_SEC * optionValue);
         }
 
         // Maximum segment size
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_MAXSEG, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_MAXSEG, &optionValue)))
         {
             PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_TCP_MAXSEG, optionValue);
         }
 
         // Retry timeout
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_MAXRT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_MAXRT, &optionValue)))
         {
             switch (optionValue)
             {
@@ -1653,49 +1719,49 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // URG interpretation
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_STDURG, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_STDURG, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_STDURG, optionValue);
         }
 
         // No URG
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_NOURG, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_NOURG, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_NOURG, optionValue);
         }
 
         // At mark
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_ATMARK, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_ATMARK, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_ATMARK, optionValue);
         }
 
         // No SYN retries
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_NOSYNRETRIES, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_NOSYNRETRIES, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_NOSYNRETRIES, optionValue);
         }
 
         // Timestamps
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_TIMESTAMPS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_TIMESTAMPS, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_TIMESTAMPS, optionValue);
         }
 
         // Congestion algorithm
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_CONGESTION_ALGORITHM, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_CONGESTION_ALGORITHM, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_TCP_CONGESTION_ALGORITHM, optionValue);
         }
 
         // Delay FIN ACK
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_DELAY_FIN_ACK, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_DELAY_FIN_ACK, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_DELAY_FIN_ACK, optionValue);
         }
 
         // Retry timeout (precise)
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_MAXRTMS, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_MAXRTMS, &optionValue)))
         {
             switch (optionValue)
             {
@@ -1708,25 +1774,25 @@ static VOID PhpRefreshAfdSocketPageInfo(
         }
 
         // Fast open
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_FASTOPEN, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_FASTOPEN, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_FASTOPEN, optionValue);
         }
 
         // Keep alive count
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_KEEPCNT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_KEEPCNT, &optionValue)))
         {
             PhSetSocketListViewItemDecimal(Context, PH_AFD_SOCKET_ITEM_TCP_KEEPCNT, optionValue);
         }
 
         // Keep alive interval
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_KEEPINTVL, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_KEEPINTVL, &optionValue)))
         {
             PhSetSocketListViewItemTimeSpan(Context, PH_AFD_SOCKET_ITEM_TCP_KEEPINTVL, PH_TICKS_PER_SEC * optionValue);
         }
 
         // Fail on ICMP error
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_TCP, TCP_FAIL_CONNECT_ON_ICMP_ERROR, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_TCP, TCP_FAIL_CONNECT_ON_ICMP_ERROR, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_TCP_FAIL_CONNECT_ON_ICMP_ERROR, optionValue);
         }
@@ -1735,7 +1801,7 @@ static VOID PhpRefreshAfdSocketPageInfo(
         // TCP information
         //
 
-        if (NT_SUCCESS(PhAfdQueryTcpInfo(socketHandle, &tcpInfo, &tcpInfoVersion)))
+        if (NT_SUCCESS(PhCallPhAfdQueryTcpInfoWithTimeout(socketHandle, &tcpInfo, &tcpInfoVersion)))
         {
             // TCP state
             itemString = PhAfdFormatTcpState(tcpInfo.State);
@@ -1847,19 +1913,19 @@ static VOID PhpRefreshAfdSocketPageInfo(
         //
 
         // No checksum
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_UDP, UDP_NOCHECKSUM, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_UDP, UDP_NOCHECKSUM, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_UDP_NOCHECKSUM, optionValue);
         }
 
         // Maximum message size
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_UDP, UDP_SEND_MSG_SIZE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_UDP, UDP_SEND_MSG_SIZE, &optionValue)))
         {
             PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_UDP_SEND_MSG_SIZE, optionValue);
         }
 
         // Maximum coalesced size
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, IPPROTO_UDP, UDP_RECV_MAX_COALESCED_SIZE, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, IPPROTO_UDP, UDP_RECV_MAX_COALESCED_SIZE, &optionValue)))
         {
             PhSetSocketListViewItemBytes(Context, PH_AFD_SOCKET_ITEM_UDP_RECV_MAX_COALESCED_SIZE, optionValue);
         }
@@ -1869,25 +1935,25 @@ static VOID PhpRefreshAfdSocketPageInfo(
         //
 
         // Connect timeout
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONNECT_TIMEOUT, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONNECT_TIMEOUT, &optionValue)))
         {
             PhSetSocketListViewItemTimeSpan(Context, PH_AFD_SOCKET_ITEM_HVSOCKET_CONNECT_TIMEOUT, PH_TICKS_PER_MS * optionValue);
         }
 
         // Container passthru
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONTAINER_PASSTHRU, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONTAINER_PASSTHRU, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_HVSOCKET_CONTAINER_PASSTHRU, optionValue);
         }
 
         // Connected suspend
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONNECTED_SUSPEND, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_CONNECTED_SUSPEND, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_HVSOCKET_CONNECTED_SUSPEND, optionValue);
         }
 
         // High VTL
-        if (NT_SUCCESS(PhAfdQueryOption(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_HIGH_VTL, &optionValue)))
+        if (NT_SUCCESS(PhCallPhAfdQueryOptionWithTimeout(socketHandle, HV_PROTOCOL_RAW, HVSOCKET_HIGH_VTL, &optionValue)))
         {
             PhSetSocketListViewItemBoolean(Context, PH_AFD_SOCKET_ITEM_HVSOCKET_HIGH_VTL, optionValue);
         }
@@ -1917,8 +1983,11 @@ INT_PTR CALLBACK PhpAfdSocketPageProc(
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
             context->ListViewContext = PhListView_Initialize(context->ListViewHandle);
 
+            context->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            SetWindowFont(context->ListViewHandle, context->WindowFont, FALSE);
             PhSetExtendedListView(context->ListViewHandle);
             PhListView_AddColumn(context->ListViewContext, 0, 0, 0, LVCFMT_LEFT, 145, L"Name");
             PhListView_AddColumn(context->ListViewContext, 1, 1, 1, LVCFMT_LEFT, 225, L"Value");
@@ -2079,11 +2148,19 @@ INT_PTR CALLBACK PhpAfdSocketPageProc(
             PhDeleteLayoutManager(&context->LayoutManager);
             PhListView_Destroy(context->ListViewContext);
 
+            if (context->WindowFont)
+                DeleteFont(context->WindowFont);
+
             PhFree(context);
         }
         break;
     case WM_DPICHANGED:
         {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+                PhSwapReferenceFont(&context->WindowFont, context->ListViewHandle, windowFont, TRUE);
+
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
             PhLayoutManagerLayout(&context->LayoutManager);
         }
@@ -2110,9 +2187,7 @@ INT_PTR CALLBACK PhpAfdSocketPageProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -2142,9 +2217,8 @@ INT_PTR CALLBACK PhpAfdSocketPageProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     case WM_CTLCOLORBTN:
@@ -2157,3 +2231,4 @@ INT_PTR CALLBACK PhpAfdSocketPageProc(
 
     return FALSE;
 }
+

@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2021
+ *     dmex    2021-2026
  *
  */
 
@@ -410,15 +410,14 @@ VOID PvSetPeImageOptionalHeaderProperties(
         {
             symbol = PhGetSymbolFromAddress(
                 PvSymbolProvider,
-                PTR_ADD_OFFSET(
-                    PvMappedImage.NtHeaders32->OptionalHeader.ImageBase,
-                    imageNtHeader->OptionalHeader.AddressOfEntryPoint),
+                PTR_ADD_OFFSET(UlongToPtr(PvMappedImage.NtHeaders32->OptionalHeader.ImageBase), imageNtHeader->OptionalHeader.AddressOfEntryPoint),
                 NULL,
                 NULL,
                 &symbolName,
                 NULL
                 );
         }
+
         if (symbolName)
         {
             PH_FORMAT format[5];
@@ -868,7 +867,15 @@ INT_PTR CALLBACK PvPeHeadersDlgProc(
 
             PvPeUpdateImageHeaderProperties(context);
 
-            PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+            // phlib's initializer resets the listview colors, so apply the page
+            // palette after initializing the dialog theme.
+            PvThemeInitializePageDialog(hwndDlg, PhEnableThemeSupport);
+            PvThemeApplyListView(context->ListViewHandle);
+        }
+        break;
+    case WM_THEMECHANGED:
+        {
+            PvThemeApplyListView(context->ListViewHandle);
         }
         break;
     case WM_DESTROY:
@@ -913,7 +920,7 @@ INT_PTR CALLBACK PvPeHeadersDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -178,11 +178,15 @@ PPH_STRING PhpCreateCommandStatusString(
 
     if (statusString = PhGetStatusMessage(Status, 0))
     {
+        static const PH_STRINGREF trimCharSet = PH_STRINGREF_INIT(L"\r\n ");
         PH_FORMAT format[3];
+        PH_STRINGREF statusText = statusString->sr;
+
+        PhTrimStringRef(&statusText, &trimCharSet, PH_TRIM_END_ONLY);
 
         PhInitFormatS(&format[0], Message);
         PhInitFormatC(&format[1], L' ');
-        PhInitFormatSR(&format[2], statusString->sr);
+        PhInitFormatSR(&format[2], statusText);
 
         string = PhFormat(format, RTL_NUMBER_OF(format), 10);
 
@@ -225,7 +229,7 @@ NTSTATUS PhpMemoryListCommandCommon(
             else
             {
                 // User cancelled elevation.
-                status = STATUS_SUCCESS;
+                status = STATUS_CANCELLED;
             }
         }
     }
@@ -623,7 +627,7 @@ VOID PhMemoryListCommandDialog(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SHOW_PROGRESS_BAR | TDF_CAN_BE_MINIMIZED | TDF_CALLBACK_TIMER;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON | TDCBF_CANCEL_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, PhGetWindowDpi(PrentWindow));
     config.pfCallback = PhMemoryListCommandDialogCallbackProc;
     config.hwndParent = PrentWindow;
     config.lpCallbackData = (LONG_PTR)context;
@@ -745,7 +749,10 @@ INT_PTR CALLBACK PhpMemoryListsDlgProc(
             PhRegisterCallback(PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent), ProcessesUpdatedCallback, NULL, &ProcessesUpdatedRegistration);
             PhpUpdateMemoryListInfo(hwndDlg);
 
-            PhLoadWindowPlacementFromSetting(SETTING_MEMORY_LISTS_WINDOW_POSITION, NULL, hwndDlg);
+            if (PhValidWindowPlacementFromSetting(SETTING_MEMORY_LISTS_WINDOW_POSITION))
+                PhLoadWindowPlacementFromSetting(SETTING_MEMORY_LISTS_WINDOW_POSITION, NULL, hwndDlg);
+            else
+                PhCenterWindow(hwndDlg, GetParent(hwndDlg));
             PhRegisterDialog(hwndDlg);
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);

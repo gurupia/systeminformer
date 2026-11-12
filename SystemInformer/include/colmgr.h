@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2015
- *     dmex    2023-2024
+ *     dmex    2023-2026
  *
  */
 
@@ -46,6 +46,7 @@ typedef struct _PH_CM_COLUMN
     ULONG SubId;
     PVOID Context;
     PVOID SortFunction;
+    PPH_TREENEW_HEADER_TEXT_CACHE HeaderTextCache; // Owned and freed by the column manager.
 } PH_CM_COLUMN, *PPH_CM_COLUMN;
 
 VOID PhCmInitializeManager(
@@ -80,7 +81,7 @@ VOID PhCmSetNotifyPlugin(
     );
 
 BOOLEAN PhCmForwardMessage(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,

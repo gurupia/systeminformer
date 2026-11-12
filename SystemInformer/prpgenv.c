@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2018-2023
+ *     dmex    2018-2026
  *
  */
 
@@ -230,32 +230,40 @@ VOID PhpRefreshEnvironmentList(
         static CONST PH_STRINGREF environmentKeyName = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Control\\Session Manager\\Environment");
         HANDLE keyHandle;
 
-        PhCreateEnvironmentBlock(&systemDefaultEnvironment, NULL, FALSE);
-
-        SIZE_T variableLength = 0;
-        PWSTR variableName = systemDefaultEnvironment;
-
-        while (*variableName)
+        if (NT_SUCCESS(PhCreateEnvironmentBlock(&systemDefaultEnvironment, NULL, FALSE)))
         {
-            variableLength += PhCountStringZ(variableName);
-            variableName += variableLength + 1;
+            PWSTR variableName = systemDefaultEnvironment;
+            ULONG environmentBlockLength;
+
+            // Advance by each string's own length (plus its terminator), not the running
+            // total, and include the terminators in the block length. (dmex)
+            while (*variableName)
+            {
+                variableName += PhCountStringZ(variableName) + 1;
+            }
+
+            environmentBlockLength = (ULONG)((ULONG_PTR)variableName - (ULONG_PTR)systemDefaultEnvironment) + sizeof(UNICODE_NULL);
+
+            enumerationKey = 0;
+
+            while (NT_SUCCESS(PhEnumProcessEnvironmentVariables(
+                systemDefaultEnvironment,
+                environmentBlockLength,
+                &enumerationKey,
+                &variable
+                )))
+            {
+                PH_ENVIRONMENT_ITEM entry;
+
+                entry.Name = PhCreateString2(&variable.Name);
+                entry.Value = PhCreateString2(&variable.Value);
+
+                PhAddItemArray(&Context->Items, &entry);
+            }
         }
-
-        enumerationKey = 0;
-
-        while (NT_SUCCESS(PhEnumProcessEnvironmentVariables(
-            systemDefaultEnvironment,
-            (ULONG)variableLength * sizeof(WCHAR),
-            &enumerationKey,
-            &variable
-            )))
+        else
         {
-            PH_ENVIRONMENT_ITEM entry;
-
-            entry.Name = PhCreateString2(&variable.Name);
-            entry.Value = PhCreateString2(&variable.Value);
-
-            PhAddItemArray(&Context->Items, &entry);
+            systemDefaultEnvironment = NULL;
         }
 
         status = PhOpenKey(
@@ -281,7 +289,7 @@ VOID PhpRefreshEnvironmentList(
         {
             PhpSetEnvironmentListStatusMessage(Context, status);
             TreeNew_NodesStructured(Context->TreeNewHandle);
-            return;
+            goto CleanupExit;
         }
 
     }
@@ -444,6 +452,7 @@ VOID PhpRefreshEnvironmentList(
 
     TreeNew_NodesStructured(Context->TreeNewHandle);
 
+CleanupExit:
     if (systemDefaultEnvironment)
         PhDestroyEnvironmentBlock(systemDefaultEnvironment);
     if (userDefaultEnvironment)
@@ -526,7 +535,6 @@ VOID PhpRefreshWslEnvironmentList(
     }
 
     PhApplyTreeNewFilters(&Context->TreeFilterSupport);
-    TreeNew_NodesStructured(Context->TreeNewHandle);
 
     PhClearReference(&environment);
 }
@@ -710,14 +718,14 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
         {
             HWND windowhandle;
 
-            windowhandle = GetDlgItem(hwndDlg, IDC_VALUE);
+            windowhandle = GetDlgItem(hwndDlg, IDC_ENV_VALUE);
 
             PhSetApplicationWindowIcon(hwndDlg);
 
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
             PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_NAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_ENV_NAME), NULL, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
             PhAddLayoutItem(&context->LayoutManager, windowhandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDCANCEL), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
@@ -729,8 +737,8 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
             context->MinimumSize.bottom = 140;
             MapDialogRect(hwndDlg, &context->MinimumSize);
 
-            PhSetDialogItemText(hwndDlg, IDC_NAME, context->Name);
-            PhSetDialogItemText(hwndDlg, IDC_VALUE, context->Value ? context->Value : L"");
+            PhSetDialogItemText(hwndDlg, IDC_ENV_NAME, context->Name);
+            PhSetDialogItemText(hwndDlg, IDC_ENV_VALUE, context->Value ? context->Value : L"");
 
             PhSetWindowContext(windowhandle, PH_WINDOW_CONTEXT_DEFAULT, PhGetWindowProcedure(windowhandle));
             PhSetWindowProcedure(windowhandle, (WNDPROC)PhpEditEnvSubclassProc);
@@ -773,8 +781,8 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
                         break;
                     }
 
-                    name = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_NAME)));
-                    value = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_VALUE)));
+                    name = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ENV_NAME)));
+                    value = PH_AUTO(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ENV_VALUE)));
 
                     if (!PhIsNullOrEmptyString(name))
                     {
@@ -795,7 +803,7 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
                             }
                             else if (status == STATUS_TIMEOUT)
                             {
-                                PhShowStatus(hwndDlg, L"Unable to delete the environment variable.", 0, WAIT_TIMEOUT);
+                                PhShowStatus(hwndDlg, L"Unable to set the environment variable.", 0, WAIT_TIMEOUT);
                                 break;
                             }
 
@@ -806,11 +814,11 @@ INT_PTR CALLBACK PhpEditEnvDlgProc(
                     }
                 }
                 break;
-            case IDC_NAME:
+            case IDC_ENV_NAME:
                 {
                     if (GET_WM_COMMAND_CMD(wParam, lParam) == EN_CHANGE)
                     {
-                        EnableWindow(GetDlgItem(hwndDlg, IDOK), PhGetWindowTextLength(GetDlgItem(hwndDlg, IDC_NAME)) > 0);
+                        EnableWindow(GetDlgItem(hwndDlg, IDOK), PhGetWindowTextLength(GetDlgItem(hwndDlg, IDC_ENV_NAME)) > 0);
                     }
                 }
                 break;
@@ -862,7 +870,7 @@ INT_PTR PhpShowEditEnvDialog(
 
     result = PhDialogBox(
         PhInstanceHandle,
-        MAKEINTRESOURCE(IDD_EDITENV),
+        MAKEINTRESOURCE(IDD_ENVEDIT),
         ParentWindowHandle,
         PhpEditEnvDlgProc,
         &context
@@ -872,6 +880,114 @@ INT_PTR PhpShowEditEnvDialog(
         *Refresh = context.Refresh;
 
     return result;
+}
+
+BOOLEAN PhpIsMultiEntryEnvironmentVariable(
+    _In_ PPH_STRING Name,
+    _In_opt_ PPH_STRING Value
+    )
+{
+    if (
+        PhEqualString2(Name, L"Path", FALSE) ||
+        PhEqualString2(Name, L"PATHEXT", FALSE) ||
+        PhEqualString2(Name, L"LIBPATH", FALSE)
+        )
+    {
+        return TRUE;
+    }
+
+    if (Value && PhFindCharInString(Value, 0, L';') != SIZE_MAX)
+        return TRUE;
+
+    return FALSE;
+}
+
+BOOLEAN PhpEditEnvironmentNode(
+    _Inout_ PPH_ENVIRONMENT_CONTEXT Context,
+    _In_ PPHP_PROCESS_ENVIRONMENT_TREENODE Node,
+    _Out_ PBOOLEAN Refresh
+    )
+{
+    BOOLEAN refresh = FALSE;
+
+    *Refresh = FALSE;
+
+    if (!Node || Node->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP)
+        return FALSE;
+
+    if (Node->ValueText && PhpIsMultiEntryEnvironmentVariable(Node->NameText, Node->ValueText))
+    {
+        PPH_STRING newValue;
+
+        if (PhShowEnvironmentVariableSplitDialog(
+            Context->WindowHandle,
+            Node->NameText,
+            Node->ValueText,
+            FALSE,
+            &newValue
+            ))
+        {
+            NTSTATUS status = STATUS_SUCCESS;
+
+            if (!PhEqualString(newValue, Node->ValueText, FALSE))
+            {
+                EDIT_ENV_DIALOG_CONTEXT editContext;
+
+                if (PhGetIntegerSetting(SETTING_ENABLE_WARNINGS) && !PhShowConfirmMessage(
+                    Context->WindowHandle,
+                    L"edit",
+                    L"the selected environment variable",
+                    L"Some programs may restrict access or ban your account when editing the environment variable(s) of the process.",
+                    FALSE
+                    ))
+                {
+                    PhDereferenceObject(newValue);
+                    return TRUE;
+                }
+
+                memset(&editContext, 0, sizeof(EDIT_ENV_DIALOG_CONTEXT));
+                editContext.ProcessItem = Context->ProcessItem;
+                editContext.Name = Node->NameText->Buffer;
+                editContext.Value = Node->ValueText->Buffer;
+
+                status = PhpEditDlgSetEnvironment(
+                    &editContext,
+                    Context->ProcessItem,
+                    Node->NameText,
+                    newValue
+                    );
+
+                if (status == STATUS_TIMEOUT)
+                {
+                    PhShowStatus(Context->WindowHandle, L"Unable to set the environment variable.", 0, WAIT_TIMEOUT);
+                }
+                else if (!NT_SUCCESS(status))
+                {
+                    PhShowStatus(Context->WindowHandle, L"Unable to set the environment variable.", status, 0);
+                }
+                else
+                {
+                    refresh = TRUE;
+                }
+            }
+
+            PhDereferenceObject(newValue);
+        }
+    }
+    else
+    {
+        PhpShowEditEnvDialog(
+            Context->WindowHandle,
+            Context->ProcessItem,
+            Node->NameText->Buffer,
+            Node->ValueText ? Node->ValueText->Buffer : NULL,
+            &refresh
+            );
+    }
+
+    *Refresh = refresh;
+
+    return TRUE;
 }
 
 VOID PhpShowEnvironmentNodeContextMenu(
@@ -887,7 +1003,10 @@ VOID PhpShowEnvironmentNodeContextMenu(
     if (!PhpGetSelectedEnvironmentNodes(Context, &nodes, &numberOfNodes))
         return;
     if (numberOfNodes == 0)
+    {
+        PhFree(nodes);
         return;
+    }
 
     menu = PhCreateEMenu();
     if (!PhpHasSelectedEnvironmentGroupNode(nodes, numberOfNodes))
@@ -918,6 +1037,7 @@ VOID PhpShowEnvironmentNodeContextMenu(
     }
 
     PhDestroyEMenu(menu);
+    PhFree(nodes);
 }
 
 VOID PhLoadSettingsEnvironmentList(
@@ -926,10 +1046,12 @@ VOID PhLoadSettingsEnvironmentList(
 {
     PPH_STRING settings;
     PPH_STRING sortSettings;
+    ULONG flags;
 
     settings = PhGetStringSetting(SETTING_ENVIRONMENT_TREE_LIST_COLUMNS);
     sortSettings = PhGetStringSetting(SETTING_ENVIRONMENT_TREE_LIST_SORT);
-    Context->Flags = PhGetIntegerSetting(SETTING_ENVIRONMENT_TREE_LIST_FLAGS);
+    flags = PhGetIntegerSetting(SETTING_ENVIRONMENT_TREE_LIST_FLAGS);
+    Context->Flags = flags;
 
     PhCmLoadSettingsEx(Context->TreeNewHandle, &Context->Cm, 0, &settings->sr, &sortSettings->sr);
 
@@ -1016,6 +1138,8 @@ VOID PhpDestroyEnvironmentNode(
         PhDereferenceObject(Node->NameText);
     if (Node->ValueText)
         PhDereferenceObject(Node->ValueText);
+    if (Node->Children)
+        PhDereferenceObject(Node->Children);
 
     PhFree(Node);
 }
@@ -1191,7 +1315,7 @@ BEGIN_SORT_FUNCTION(Value)
 END_SORT_FUNCTION
 
 BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -1225,12 +1349,12 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
             {
                 if (!node)
                 {
-                    static PVOID sortFunctions[] =
+                    static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                     {
                         SORT_FUNCTION(Name),
                         SORT_FUNCTION(Value)
                     };
-                    int (__cdecl *sortFunction)(void *, const void *, const void *);
+                    _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                     static_assert(RTL_NUMBER_OF(sortFunctions) == ENVIRONMENT_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1293,13 +1417,13 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
             //else
             {
                 if (context->HighlightCmdEnvironment && node->IsCmdVariable)
-                    getNodeColor->BackColor = PhCsColorDebuggedProcesses;
+                    getNodeColor->BackColor = PhCsColorEnvironmentCmd;
                 else if (context->HighlightProcessEnvironment && node->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_PROCESS)
-                    getNodeColor->BackColor = PhCsColorServiceProcesses;
+                    getNodeColor->BackColor = PhCsColorEnvironmentProcess;
                 else if (context->HighlightUserEnvironment && node->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_USER)
-                    getNodeColor->BackColor = PhCsColorOwnProcesses;
+                    getNodeColor->BackColor = PhCsColorEnvironmentUser;
                 else if (context->HighlightSystemEnvironment && node->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_SYSTEM)
-                    getNodeColor->BackColor = PhCsColorSystemProcesses;
+                    getNodeColor->BackColor = PhCsColorEnvironmentSystem;
             }
 
             getNodeColor->Flags = TN_AUTO_FORECOLOR;
@@ -1315,9 +1439,8 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
             // HACK
             if (context->TreeFilterSupport.FilterList)
                 PhApplyTreeNewFilters(&context->TreeFilterSupport);
-
-            // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            else
+                TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewContextMenu:
@@ -1353,7 +1476,7 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
         {
             PH_TN_COLUMN_MENU_DATA data;
 
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = 0;
             data.DefaultSortOrder = NoSortOrder;
@@ -1361,7 +1484,7 @@ BOOLEAN NTAPI PhpEnvironmentTreeNewCallback(
 
             data.Selection = PhShowEMenu(
                 data.Menu,
-                hwnd,
+                WindowHandle,
                 PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP,
                 data.MouseEvent->ScreenLocation.x,
@@ -1516,6 +1639,7 @@ VOID PhpDeleteEnvironmentTree(
 
     PhDereferenceObject(Context->NodeHashtable);
     PhDereferenceObject(Context->NodeList);
+    PhDereferenceObject(Context->NodeRootList);
 }
 
 _Function_class_(PH_TN_FILTER_FUNCTION)
@@ -1607,10 +1731,12 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             context->SearchWindowHandle = GetDlgItem(hwndDlg, IDC_SEARCH);
             context->ProcessItem = processItem;
 
-            PhCreateSearchControl(
+            PhCreateSearchControl2(
                 hwndDlg,
                 context->SearchWindowHandle,
                 L"Search Environment (Ctrl+K)",
+                SETTING_SEARCH_ENVIRONMENT_REGEX,
+                SETTING_SEARCH_ENVIRONMENT_CASE_SENSITIVE,
                 PhpProcessEnvironmentSearchControlCallback,
                 context
                 );
@@ -1620,7 +1746,7 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
 
             if (PhTreeWindowFont)
             {
-                context->TreeNewFont = PhDuplicateFont(PhTreeWindowFont);
+                context->TreeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
                 SetWindowFont(context->TreeNewHandle, context->TreeNewFont, FALSE);
             }
 
@@ -1643,6 +1769,8 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             PhApplyTreeNewFilters(&context->TreeFilterSupport);
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, context->TreeNewHandle);
         }
         break;
     case WM_DESTROY:
@@ -1671,6 +1799,17 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                 PhAddPropPageLayoutItem(hwndDlg, context->SearchWindowHandle, dialogItem, PH_ANCHOR_RIGHT | PH_ANCHOR_TOP);
                 PhAddPropPageLayoutItem(hwndDlg, context->TreeNewHandle, dialogItem, PH_ANCHOR_ALL);
                 PhEndPropPageLayout(hwndDlg, propPageContext);
+            }
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            if (PhTreeWindowFont)
+            {
+                HFONT treeNewFont;
+
+                if (treeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg)))
+                    PhSwapReferenceFont(&context->TreeNewFont, context->TreeNewHandle, treeNewFont, TRUE);
             }
         }
         break;
@@ -1791,16 +1930,10 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                     PPHP_PROCESS_ENVIRONMENT_TREENODE item = PhpGetSelectedEnvironmentNode(context);
                     BOOLEAN refresh;
 
-                    if (!item || item->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP)
+                    if (!PhpEditEnvironmentNode(context, item, &refresh))
                         break;
 
-                    if (PhpShowEditEnvDialog(
-                        hwndDlg,
-                        context->ProcessItem,
-                        item->NameText->Buffer,
-                        item->ValueText->Buffer,
-                        &refresh
-                        ) == IDOK && refresh)
+                    if (refresh)
                     {
                         if (processItem->IsSubsystemProcess)
                         {
@@ -1818,16 +1951,10 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                     PPHP_PROCESS_ENVIRONMENT_TREENODE item = PhpGetSelectedEnvironmentNode(context);
                     BOOLEAN refresh;
 
-                    if (!item || item->Type & PROCESS_ENVIRONMENT_TREENODE_TYPE_GROUP)
+                    if (!PhpEditEnvironmentNode(context, item, &refresh))
                         break;
 
-                    if (PhpShowEditEnvDialog(
-                        context->WindowHandle,
-                        context->ProcessItem,
-                        item->NameText->Buffer,
-                        item->ValueText->Buffer,
-                        &refresh
-                        ) == IDOK && refresh)
+                    if (refresh)
                     {
                         if (processItem->IsSubsystemProcess)
                         {
@@ -1896,18 +2023,6 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             }
         }
         break;
-    case WM_NOTIFY:
-        {
-            LPNMHDR header = (LPNMHDR)lParam;
-
-            switch (header->code)
-            {
-            case PSN_QUERYINITIALFOCUS:
-                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)context->TreeNewHandle);
-                return TRUE;
-            }
-        }
-        break;
     case WM_KEYDOWN:
         {
             if (LOWORD(wParam) == 'K')
@@ -1920,6 +2035,12 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

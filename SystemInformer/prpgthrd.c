@@ -6,13 +6,14 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2018-2023
+ *     dmex    2018-2026
  *
  */
 
 #include <phapp.h>
 #include <procprp.h>
 #include <procprpp.h>
+#include <mainwnd.h>
 #include <cpysave.h>
 #include <emenu.h>
 #include <secedit.h>
@@ -113,6 +114,8 @@ VOID PhpInitializeThreadMenu(
             ID_THREAD_TERMINATE,
             ID_THREAD_SUSPEND,
             ID_THREAD_RESUME,
+            ID_THREAD_FREEZE,
+            ID_THREAD_THAW,
             ID_THREAD_COPY,
             ID_THREAD_AFFINITY,
         };
@@ -131,6 +134,31 @@ VOID PhpInitializeThreadMenu(
         if (menuItem = PhFindEMenuItem(Menu, PH_EMENU_FIND_DESCEND, L"&Priority", 0))
         {
             PhSetEnabledEMenuItem(menuItem, TRUE);
+        }
+    }
+
+    if (WindowsVersion < WINDOWS_11)
+    {
+        PPH_EMENU_ITEM menuItem;
+
+        if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_THREAD_FREEZE))
+            PhDestroyEMenuItem(menuItem);
+        if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_THREAD_THAW))
+            PhDestroyEMenuItem(menuItem);
+    }
+    else if (NumberOfThreads == 1)
+    {
+        PPH_EMENU_ITEM menuItem;
+
+        if (ReadPointerAcquire(&Threads[0]->FreezeHandle))
+        {
+            if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_THREAD_FREEZE))
+                PhDestroyEMenuItem(menuItem);
+        }
+        else
+        {
+            if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_THREAD_THAW))
+                PhDestroyEMenuItem(menuItem);
         }
     }
 
@@ -171,7 +199,7 @@ VOID PhpInitializeThreadMenu(
         KPRIORITY threadPriority = THREAD_PRIORITY_ERROR_RETURN;
         IO_PRIORITY_HINT ioPriority = ULONG_MAX;
         ULONG pagePriority = ULONG_MAX;
-        BOOLEAN threadPriorityBoost = FALSE;
+        BOOLEAN threadPriorityBoostDisabled = TRUE;
         ULONG id = 0;
 
         if (NT_SUCCESS(PhOpenThread(
@@ -185,7 +213,7 @@ VOID PhpInitializeThreadMenu(
             PhGetThreadBasePriority(threadHandle, &threadPriority);
             PhGetThreadIoPriority(threadHandle, &ioPriority);
             PhGetThreadPagePriority(threadHandle, &pagePriority);
-            PhGetThreadPriorityBoost(threadHandle, &threadPriorityBoost);
+            PhGetThreadPriorityBoost(threadHandle, &threadPriorityBoostDisabled);
 
             if (NT_SUCCESS(PhOpenThreadToken(
                 threadHandle,
@@ -301,13 +329,14 @@ VOID PhpInitializeThreadMenu(
             }
         }
 
-        if (threadPriorityBoost)
+        if (!threadPriorityBoostDisabled)
         {
             PhSetFlagsEMenuItem(Menu, ID_THREAD_BOOST, PH_EMENU_CHECKED, PH_EMENU_CHECKED);
         }
     }
 }
 
+_Function_class_(PH_OPEN_OBJECT)
 static NTSTATUS NTAPI PhpThreadPermissionsOpenThread(
     _Out_ PHANDLE Handle,
     _In_ ACCESS_MASK DesiredAccess,
@@ -320,6 +349,7 @@ static NTSTATUS NTAPI PhpThreadPermissionsOpenThread(
     return STATUS_UNSUCCESSFUL;
 }
 
+_Function_class_(PH_CLOSE_OBJECT)
 static NTSTATUS PhpThreadPermissionsCloseHandle(
     _In_opt_ HANDLE Handle,
     _In_opt_ BOOLEAN Release,
@@ -330,6 +360,7 @@ static NTSTATUS PhpThreadPermissionsCloseHandle(
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_OPEN_OBJECT)
 static NTSTATUS NTAPI PhpOpenThreadTokenObject(
     _Out_ PHANDLE Handle,
     _In_ ACCESS_MASK DesiredAccess,
@@ -342,6 +373,7 @@ static NTSTATUS NTAPI PhpOpenThreadTokenObject(
     return STATUS_UNSUCCESSFUL;
 }
 
+_Function_class_(PH_CLOSE_OBJECT)
 static NTSTATUS PhpCloseThreadTokenObject(
     _In_opt_ HANDLE Handle,
     _In_opt_ BOOLEAN Release,
@@ -352,6 +384,7 @@ static NTSTATUS PhpCloseThreadTokenObject(
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_TN_FILTER_FUNCTION)
 BOOLEAN PhpThreadTreeFilterCallback(
     _In_ PPH_TREENEW_NODE Node,
     _In_opt_ PPH_THREADS_CONTEXT Context
@@ -493,12 +526,16 @@ PPH_EMENU PhpCreateThreadMenu(
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_TERMINATE, L"T&erminate\bDel", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_SUSPEND, L"&Suspend", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_RESUME, L"Res&ume", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_FREEZE, L"&Freeze", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_THAW, L"&Thaw", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_ANALYZE_WAIT, L"Analy&ze", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_AFFINITY, L"&Affinity", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_BOOST, L"&Boost", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_CRITICAL, L"Critical", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_PERMISSIONS, L"Per&missions", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_REGISTERS, L"Registe&rs", NULL, NULL), ULONG_MAX);
+    PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_SHADOW_STACK, L"Shadow stack", NULL, NULL), ULONG_MAX);
     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, ID_THREAD_TOKEN, L"&Token", NULL, NULL), ULONG_MAX);
 
     menuItem = PhCreateEMenuItem(0, 0, L"&Priority", NULL, NULL);
@@ -883,6 +920,7 @@ VOID PhpProcessThreadsSave(
     PhFreeFileDialog(fileDialog);
 }
 
+_Function_class_(PH_CALLBACK_FUNCTION)
 VOID PhpSymbolProviderEventCallbackThreadStatus(
     _In_ PVOID Parameter,
     _In_ PVOID Context
@@ -912,6 +950,7 @@ VOID PhpSymbolProviderEventCallbackThreadStatus(
     }
 }
 
+_Function_class_(PH_SEARCHCONTROL_CALLBACK)
 VOID NTAPI PhpProcessThreadsSearchControlCallback(
     _In_ ULONG_PTR MatchHandle,
     _In_opt_ PVOID Context
@@ -999,7 +1038,7 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
 
             if (PhTreeWindowFont)
             {
-                threadsContext->TreeNewFont = PhDuplicateFont(PhTreeWindowFont);
+                threadsContext->TreeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
                 SetWindowFont(threadsContext->TreeNewHandle, threadsContext->TreeNewFont, FALSE);
             }
 
@@ -1010,10 +1049,12 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             threadsContext->ListContext.ProcessCreateTime = processItem->CreateTime;
 
             // Initialize the search box. (dmex)
-            PhCreateSearchControl(
+            PhCreateSearchControl2(
                 hwndDlg,
                 threadsContext->SearchboxHandle,
                 L"Search Threads (Ctrl+K)",
+                SETTING_SEARCH_THREADS_REGEX,
+                SETTING_SEARCH_THREADS_CASE_SENSITIVE,
                 PhpProcessThreadsSearchControlCallback,
                 threadsContext
                 );
@@ -1022,8 +1063,6 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             // open the process, since cycle time information requires sufficient access to the
             // threads. (wj32)
             {
-                HANDLE processHandle;
-
                 // We make a distinction between PROCESS_QUERY_INFORMATION and PROCESS_QUERY_LIMITED_INFORMATION since
                 // the latter can be used when opening audiodg.exe even though we can't access its threads using
                 // THREAD_QUERY_LIMITED_INFORMATION. (wj32)
@@ -1032,12 +1071,11 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                 {
                     threadsContext->ListContext.UseCycleTime = TRUE;
                 }
-                else if (NT_SUCCESS(PhOpenProcess(&processHandle, PROCESS_QUERY_INFORMATION, processItem->ProcessId)))
+                else if (processItem->IsHandleValid)
                 {
                     threadsContext->ListContext.UseCycleTime = TRUE;
-                    NtClose(processHandle);
                 }
-                else if (NT_SUCCESS(PhOpenProcess(&processHandle, PROCESS_QUERY_LIMITED_INFORMATION, processItem->ProcessId)))
+                else if (processItem->QueryHandle)
                 {
                     threadsContext->ListContext.UseCycleTime = TRUE;
 
@@ -1050,8 +1088,6 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                             threadsContext->ListContext.UseCycleTime = FALSE;
                         }
                     }
-
-                    NtClose(processHandle);
                 }
             }
 
@@ -1086,6 +1122,8 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             }
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, threadsContext->TreeNewHandle);
         }
         break;
     case WM_DESTROY:
@@ -1158,6 +1196,17 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             }
         }
         break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            if (PhTreeWindowFont)
+            {
+                HFONT treeNewFont;
+
+                if (treeNewFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg)))
+                    PhSwapReferenceFont(&threadsContext->TreeNewFont, threadsContext->TreeNewHandle, treeNewFont, TRUE);
+            }
+        }
+        break;
     case WM_COMMAND:
         {
             switch (GET_WM_COMMAND_ID(wParam, lParam))
@@ -1181,6 +1230,37 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                             threadsContext->Provider
                             );
                         PhDereferenceObject(threadsContext->Provider);
+                    }
+                }
+                break;
+            case ID_THREAD_SHADOW_STACK:
+                {
+                    PPH_THREAD_ITEM threadItem = PhGetSelectedThreadItem(&threadsContext->ListContext);
+
+                    if (threadItem)
+                    {
+                        PhReferenceObject(threadsContext->Provider->SymbolProvider);
+                        PhShowThreadShadowStack(
+                            hwndDlg,
+                            threadsContext->Provider->ProcessId,
+                            threadItem->ThreadId,
+                            threadsContext->Provider->SymbolProvider
+                            );
+                        PhDereferenceObject(threadsContext->Provider->SymbolProvider);
+                    }
+                }
+                break;
+            case ID_THREAD_REGISTERS:
+                {
+                    PPH_THREAD_ITEM threadItem = PhGetSelectedThreadItem(&threadsContext->ListContext);
+
+                    if (threadItem)
+                    {
+                        PhShowThreadContextDialog(
+                            hwndDlg,
+                            threadsContext->Provider->ProcessId,
+                            threadItem->ThreadId
+                            );
                     }
                 }
                 break;
@@ -1219,6 +1299,30 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                     PhGetSelectedThreadItems(&threadsContext->ListContext, &threads, &numberOfThreads);
                     PhReferenceObjects(threads, numberOfThreads);
                     PhUiResumeThreads(hwndDlg, threads, numberOfThreads);
+                    PhDereferenceObjects(threads, numberOfThreads);
+                    PhFree(threads);
+                }
+                break;
+            case ID_THREAD_FREEZE:
+                {
+                    PPH_THREAD_ITEM *threads;
+                    ULONG numberOfThreads;
+
+                    PhGetSelectedThreadItems(&threadsContext->ListContext, &threads, &numberOfThreads);
+                    PhReferenceObjects(threads, numberOfThreads);
+                    PhUiFreezeThreads(hwndDlg, threads, numberOfThreads);
+                    PhDereferenceObjects(threads, numberOfThreads);
+                    PhFree(threads);
+                }
+                break;
+            case ID_THREAD_THAW:
+                {
+                    PPH_THREAD_ITEM *threads;
+                    ULONG numberOfThreads;
+
+                    PhGetSelectedThreadItems(&threadsContext->ListContext, &threads, &numberOfThreads);
+                    PhReferenceObjects(threads, numberOfThreads);
+                    PhUiThawThreads(hwndDlg, threads, numberOfThreads);
                     PhDereferenceObjects(threads, numberOfThreads);
                     PhFree(threads);
                 }
@@ -1567,6 +1671,11 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                     PPH_EMENU_ITEM hideSuspendedMenuItem;
                     PPH_EMENU_ITEM hideGuiMenuItem;
                     PPH_EMENU_ITEM highlightSuspendedMenuItem;
+                    PPH_EMENU_ITEM highlightDelayExecutionMenuItem;
+                    PPH_EMENU_ITEM highlightUserRequestMenuItem;
+                    PPH_EMENU_ITEM highlightAlertByThreadIdMenuItem;
+                    PPH_EMENU_ITEM highlightQueueMenuItem;
+                    PPH_EMENU_ITEM highlightExecutiveMenuItem;
                     PPH_EMENU_ITEM highlightGuiMenuItem;
                     PPH_EMENU_ITEM saveMenuItem;
                     PPH_EMENU_ITEM selectedItem;
@@ -1577,6 +1686,11 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                     hideSuspendedMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIDE_SUSPENDED, L"Hide suspended", NULL, NULL);
                     hideGuiMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIDE_GUITHREADS, L"Hide gui", NULL, NULL);
                     highlightSuspendedMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_SUSPENDED, L"Highlight suspended", NULL, NULL);
+                    highlightDelayExecutionMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_DELAYEXECUTION, L"Highlight delay execution", NULL, NULL);
+                    highlightUserRequestMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_USERREQUEST, L"Highlight user request", NULL, NULL);
+                    highlightAlertByThreadIdMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_ALERTBYTHREADID, L"Highlight alert by thread ID", NULL, NULL);
+                    highlightQueueMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_QUEUE, L"Highlight queue", NULL, NULL);
+                    highlightExecutiveMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_EXECUTIVE, L"Highlight executive", NULL, NULL);
                     highlightGuiMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_GUITHREADS, L"Highlight gui", NULL, NULL);
                     saveMenuItem = PhCreateEMenuItem(0, PH_THREAD_TREELIST_MENUITEM_SAVE, L"Save...", NULL, NULL);
 
@@ -1585,6 +1699,11 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                     PhInsertEMenuItem(menu, hideGuiMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, highlightSuspendedMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightDelayExecutionMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightUserRequestMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightAlertByThreadIdMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightQueueMenuItem, ULONG_MAX);
+                    PhInsertEMenuItem(menu, highlightExecutiveMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, highlightGuiMenuItem, ULONG_MAX);
                     PhInsertEMenuItem(menu, PhCreateEMenuSeparator(), ULONG_MAX);
                     PhInsertEMenuItem(menu, saveMenuItem, ULONG_MAX);
@@ -1595,6 +1714,16 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                         hideGuiMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (threadsContext->ListContext.HighlightSuspended)
                         highlightSuspendedMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (threadsContext->ListContext.HighlightDelayExecution)
+                        highlightDelayExecutionMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (threadsContext->ListContext.HighlightUserRequest)
+                        highlightUserRequestMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (threadsContext->ListContext.HighlightAlertByThreadId)
+                        highlightAlertByThreadIdMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (threadsContext->ListContext.HighlightQueue)
+                        highlightQueueMenuItem->Flags |= PH_EMENU_CHECKED;
+                    if (threadsContext->ListContext.HighlightExecutive)
+                        highlightExecutiveMenuItem->Flags |= PH_EMENU_CHECKED;
                     if (threadsContext->ListContext.HighlightGuiThreads)
                         highlightGuiMenuItem->Flags |= PH_EMENU_CHECKED;
 
@@ -1638,9 +1767,6 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             case PSN_KILLACTIVE:
                 // Can't disable, it screws up the deltas.
                 break;
-            case PSN_QUERYINITIALFOCUS:
-                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)threadsContext->TreeNewHandle);
-                return TRUE;
             }
         }
         break;
@@ -1717,6 +1843,12 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

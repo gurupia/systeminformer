@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2015-2024
+ *     dmex    2015-2026
  *
  */
 
@@ -13,6 +13,12 @@
 #include <ntdddisk.h>
 #define PHNT_DEVICE_MAP 1
 
+/**
+ * Queries the DOS mount points for a given disk device number.
+ *
+ * \param DeviceNumber The disk device number.
+ * \return A string containing the DOS mount points.
+ */
 PPH_STRING DiskDriveQueryDosMountPoints(
     _In_ ULONG DeviceNumber
     )
@@ -94,6 +100,12 @@ PPH_STRING DiskDriveQueryDosMountPoints(
     return PhFinalStringBuilderString(&stringBuilder);
 }
 
+/**
+ * Queries the mount point handles for a given disk device number.
+ *
+ * \param DeviceNumber The disk device number.
+ * \return A list of disk handle entries.
+ */
 PPH_LIST DiskDriveQueryMountPointHandles(
     _In_ ULONG DeviceNumber
     )
@@ -186,6 +198,11 @@ PPH_LIST DiskDriveQueryMountPointHandles(
     return deviceList;
 }
 
+/**
+ * Closes the mount point handles.
+ *
+ * \param MountPointHandles A list of mount point handles.
+ */
 VOID DiskDriveCloseMountPointHandles(
     _In_ PPH_LIST MountPointHandles
     )
@@ -206,6 +223,55 @@ VOID DiskDriveCloseMountPointHandles(
     PhDereferenceObject(MountPointHandles);
 }
 
+/**
+ * Converts one of the offset-addressed strings in a storage device descriptor.
+ *
+ * The descriptor comes from the device stack and its offsets are not guaranteed
+ * to be inside the bytes the IOCTL actually returned, so the offset is validated
+ * and a terminator is required within the remaining span. (dmex)
+ *
+ * \param Descriptor The device descriptor.
+ * \param BufferLength The number of bytes the IOCTL returned.
+ * \param Offset The descriptor-relative offset of the string, or zero.
+ * \return A trimmed string, or an empty string when the offset is absent or invalid.
+ */
+PPH_STRING DiskDriveQueryDescriptorString(
+    _In_reads_bytes_(BufferLength) PSTORAGE_DEVICE_DESCRIPTOR Descriptor,
+    _In_ ULONG BufferLength,
+    _In_ ULONG Offset
+    )
+{
+    PPH_STRING string;
+    PPH_STRING trimmed;
+    PSTR start;
+    SIZE_T length;
+
+    if (Offset == 0 || Offset >= BufferLength)
+        return PhReferenceEmptyString();
+
+    start = PTR_ADD_OFFSET(Descriptor, Offset);
+    length = BufferLength - Offset;
+
+    if (!memchr(start, ANSI_NULL, length))
+        return PhReferenceEmptyString();
+
+    string = PhConvertUtf8ToUtf16(start);
+    trimmed = PhTrimStringZ(&string->sr, 0, L" \t\r\n");
+    PhDereferenceObject(string);
+
+    return trimmed;
+}
+
+/**
+ * Queries device information.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param DiskVendor A pointer to a variable that receives the disk vendor.
+ * \param DiskModel A pointer to a variable that receives the disk model.
+ * \param DiskRevision A pointer to a variable that receives the disk revision.
+ * \param DiskSerial A pointer to a variable that receives the disk serial.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryDeviceInformation(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PPH_STRING* DiskVendor,
@@ -216,8 +282,10 @@ NTSTATUS DiskDriveQueryDeviceInformation(
 {
     NTSTATUS status;
     ULONG bufferLength;
+    ULONG returnLength;
     STORAGE_PROPERTY_QUERY query;
     PSTORAGE_DESCRIPTOR_HEADER buffer;
+    PSTORAGE_DEVICE_DESCRIPTOR deviceDescriptor;
 
     query.QueryType = PropertyStandardQuery;
     query.PropertyId = StorageDeviceProperty;
@@ -226,35 +294,51 @@ NTSTATUS DiskDriveQueryDeviceInformation(
     buffer = PhAllocate(bufferLength);
     memset(buffer, 0, bufferLength);
 
+    returnLength = 0;
+
     status = PhDeviceIoControlFile(
         DeviceHandle,
         IOCTL_STORAGE_QUERY_PROPERTY,
         &query,
-        sizeof(query),
+        sizeof(STORAGE_PROPERTY_QUERY),
         buffer,
         bufferLength,
-        NULL
+        &returnLength
         );
 
     if (!NT_SUCCESS(status))
     {
         PhFree(buffer);
         return status;
+    }
+
+    if (returnLength < sizeof(STORAGE_DESCRIPTOR_HEADER))
+    {
+        PhFree(buffer);
+        return STATUS_INFO_LENGTH_MISMATCH;
     }
 
     bufferLength = buffer->Size;
     PhFree(buffer);
+
+    // The device reports the descriptor size; it must at least cover the fields
+    // read below. (dmex)
+    if (bufferLength < sizeof(STORAGE_DEVICE_DESCRIPTOR))
+        return STATUS_INFO_LENGTH_MISMATCH;
+
     buffer = PhAllocate(bufferLength);
     memset(buffer, 0, bufferLength);
+
+    returnLength = 0;
 
     status = PhDeviceIoControlFile(
         DeviceHandle,
         IOCTL_STORAGE_QUERY_PROPERTY,
         &query,
-        sizeof(query),
+        sizeof(STORAGE_PROPERTY_QUERY),
         buffer,
         bufferLength,
-        NULL
+        &returnLength
         );
 
     if (!NT_SUCCESS(status))
@@ -263,77 +347,41 @@ NTSTATUS DiskDriveQueryDeviceInformation(
         return status;
     }
 
-    PSTORAGE_DEVICE_DESCRIPTOR deviceDescriptor = (PSTORAGE_DEVICE_DESCRIPTOR)buffer;
+    // The bytes actually returned are authoritative for the offset checks below,
+    // not the size the device declared. (dmex)
+    if (returnLength < sizeof(STORAGE_DEVICE_DESCRIPTOR) || returnLength > bufferLength)
+    {
+        PhFree(buffer);
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    deviceDescriptor = (PSTORAGE_DEVICE_DESCRIPTOR)buffer;
 
     if (DiskVendor)
-    {
-        if (deviceDescriptor->VendorIdOffset != 0)
-        {
-            PPH_STRING string;
-
-            string = PhConvertUtf8ToUtf16(PTR_ADD_OFFSET(deviceDescriptor, deviceDescriptor->VendorIdOffset));
-            *DiskVendor = PhTrimStringZ(&string->sr, 0, L" \t\r\n");
-            PhDereferenceObject(string);
-        }
-        else
-        {
-            *DiskVendor = PhReferenceEmptyString();
-        }
-    }
+        *DiskVendor = DiskDriveQueryDescriptorString(deviceDescriptor, returnLength, deviceDescriptor->VendorIdOffset);
 
     if (DiskModel)
-    {
-        if (deviceDescriptor->ProductIdOffset != 0)
-        {
-            PPH_STRING string;
-
-            string = PhConvertUtf8ToUtf16(PTR_ADD_OFFSET(deviceDescriptor, deviceDescriptor->ProductIdOffset));
-            *DiskModel = PhTrimStringZ(&string->sr, 0, L" \t\r\n");
-            PhDereferenceObject(string);
-        }
-        else
-        {
-            *DiskModel = PhReferenceEmptyString();
-        }
-    }
+        *DiskModel = DiskDriveQueryDescriptorString(deviceDescriptor, returnLength, deviceDescriptor->ProductIdOffset);
 
     if (DiskRevision)
-    {
-        if (deviceDescriptor->ProductRevisionOffset != 0)
-        {
-            PPH_STRING string;
-
-            string = PhConvertUtf8ToUtf16(PTR_ADD_OFFSET(deviceDescriptor, deviceDescriptor->ProductRevisionOffset));
-            *DiskRevision = PhTrimStringZ(&string->sr, 0, L" \t\r\n");
-            PhDereferenceObject(string);
-        }
-        else
-        {
-            *DiskRevision = PhReferenceEmptyString();
-        }
-    }
+        *DiskRevision = DiskDriveQueryDescriptorString(deviceDescriptor, returnLength, deviceDescriptor->ProductRevisionOffset);
 
     if (DiskSerial)
-    {
-        if (deviceDescriptor->SerialNumberOffset != 0)
-        {
-            PPH_STRING string;
-
-            string = PhConvertUtf8ToUtf16(PTR_ADD_OFFSET(deviceDescriptor, deviceDescriptor->SerialNumberOffset));
-            *DiskSerial = PhTrimStringZ(&string->sr, 0, L" \t\r\n");
-            PhDereferenceObject(string);
-        }
-        else
-        {
-            *DiskSerial = PhReferenceEmptyString();
-        }
-    }
+        *DiskSerial = DiskDriveQueryDescriptorString(deviceDescriptor, returnLength, deviceDescriptor->SerialNumberOffset);
 
     PhFree(buffer);
 
     return status;
 }
 
+/**
+ * Queries the device type and number.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param DeviceNumber A pointer to a variable that receives the device number.
+ * \param DeviceType A pointer to a variable that receives the device type.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryDeviceTypeAndNumber(
     _In_ HANDLE DeviceHandle,
     _Out_opt_ PULONG DeviceNumber,
@@ -351,7 +399,7 @@ NTSTATUS DiskDriveQueryDeviceTypeAndNumber(
         NULL,
         0,
         &result,
-        sizeof(result),
+        sizeof(STORAGE_DEVICE_NUMBER),
         NULL
         );
 
@@ -371,6 +419,13 @@ NTSTATUS DiskDriveQueryDeviceTypeAndNumber(
     return status;
 }
 
+/**
+ * Queries the disk performance statistics.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param Info A pointer to a variable that receives the disk performance statistics.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryStatistics(
     _In_ HANDLE DeviceHandle,
     _Out_ PDISK_PERFORMANCE Info
@@ -387,7 +442,7 @@ NTSTATUS DiskDriveQueryStatistics(
         NULL,
         0,
         &result,
-        sizeof(result),
+        sizeof(DISK_PERFORMANCE),
         NULL
         );
 
@@ -399,6 +454,187 @@ NTSTATUS DiskDriveQueryStatistics(
     return status;
 }
 
+DEFINE_GUID(DiskPerfGuid, 0xBDD865D1, 0xD7C1, 0x11D0, 0xA5, 0x01, 0x00, 0xA0, 0xC9, 0x06, 0x29, 0x10);
+static typeof(&WmiOpenBlock) WmiOpenBlock_I = NULL;
+static typeof(&WmiQueryAllDataW) WmiQueryAllDataW_I = NULL;
+static typeof(&WmiCloseBlock) WmiCloseBlock_I = NULL;
+static PH_INITONCE Advapi32InitOnce = PH_INITONCE_INIT;
+static PVOID Advapi32BaseAddress = NULL;
+
+/**
+ * Initializes the Advapi32 function imports.
+ *
+ * \return TRUE if successful, FALSE otherwise.
+ */
+static BOOLEAN DiskDriveInitializeAdvapi32FunctionImports(
+    VOID
+    )
+{
+    if (PhBeginInitOnce(&Advapi32InitOnce))
+    {
+        if (Advapi32BaseAddress = PhLoadLibrary(L"advapi32.dll"))
+        {
+            WmiOpenBlock_I = PhGetProcedureAddress(Advapi32BaseAddress, "WmiOpenBlock", 0);
+            WmiQueryAllDataW_I = PhGetProcedureAddress(Advapi32BaseAddress, "WmiQueryAllDataW", 0);
+            WmiCloseBlock_I = PhGetProcedureAddress(Advapi32BaseAddress, "WmiCloseBlock", 0);
+        }
+
+        PhEndInitOnce(&Advapi32InitOnce);
+    }
+
+    if (
+        Advapi32BaseAddress &&
+        WmiOpenBlock_I &&
+        WmiQueryAllDataW_I &&
+        WmiCloseBlock_I
+        )
+    {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+/**
+ * Queries the disk performance statistics using WMI.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param Info A pointer to a variable that receives the disk performance statistics.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS DiskDriveQueryStatisticsWmi(
+    _In_ HANDLE DeviceHandle,
+    _Out_ PDISK_PERFORMANCE Info
+    )
+{
+    NTSTATUS status;
+    ULONG deviceNumber;
+    HANDLE dataBlockHandle;
+    ULONG bufferLength;
+    ULONG wmiStatus;
+    PWNODE_ALL_DATA allData;
+    PDISK_PERFORMANCE result;
+
+    deviceNumber = ULONG_MAX;
+    dataBlockHandle = NULL;
+    bufferLength = 0;
+    allData = NULL;
+    result = NULL;
+
+    memset(Info, 0, sizeof(DISK_PERFORMANCE));
+
+    if (!DiskDriveInitializeAdvapi32FunctionImports())
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    status = DiskDriveQueryDeviceTypeAndNumber(
+        DeviceHandle,
+        &deviceNumber,
+        NULL
+        );
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    wmiStatus = WmiOpenBlock_I(
+        &DiskPerfGuid,
+        GENERIC_READ,
+        &dataBlockHandle
+        );
+
+    if (wmiStatus != ERROR_SUCCESS)
+        return PhDosErrorToNtStatus(wmiStatus);
+
+    wmiStatus = WmiQueryAllDataW_I(
+        dataBlockHandle,
+        &bufferLength,
+        NULL
+        );
+
+    if (wmiStatus != ERROR_MORE_DATA && wmiStatus != ERROR_INSUFFICIENT_BUFFER)
+    {
+        status = PhDosErrorToNtStatus(wmiStatus);
+        goto CleanupExit;
+    }
+
+    allData = PhAllocateZero(bufferLength);
+
+    wmiStatus = WmiQueryAllDataW_I(
+        dataBlockHandle,
+        &bufferLength,
+        allData
+        );
+
+    if (wmiStatus != ERROR_SUCCESS)
+    {
+        status = PhDosErrorToNtStatus(wmiStatus);
+        goto CleanupExit;
+    }
+
+    if (!(allData->WnodeHeader.Flags & WNODE_FLAG_ALL_DATA) ||
+        allData->WnodeHeader.BufferSize > bufferLength)
+    {
+        status = STATUS_INFO_LENGTH_MISMATCH;
+        goto CleanupExit;
+    }
+
+    status = STATUS_WMI_INSTANCE_NOT_FOUND;
+
+    for (ULONG i = 0; i < allData->InstanceCount; i++)
+    {
+        ULONG instanceOffset;
+        ULONG instanceLength;
+        PDISK_PERFORMANCE instanceData;
+
+        if (FlagOn(allData->WnodeHeader.Flags, WNODE_FLAG_FIXED_INSTANCE_SIZE))
+        {
+            instanceOffset = allData->DataBlockOffset + (allData->FixedInstanceSize * i);
+            instanceLength = allData->FixedInstanceSize;
+        }
+        else
+        {
+            instanceOffset = allData->OffsetInstanceDataAndLength[i].OffsetInstanceData;
+            instanceLength = allData->OffsetInstanceDataAndLength[i].LengthInstanceData;
+        }
+
+        if (instanceOffset > bufferLength ||
+            instanceLength < sizeof(DISK_PERFORMANCE) ||
+            instanceOffset + sizeof(DISK_PERFORMANCE) > bufferLength)
+        {
+            continue;
+        }
+
+        instanceData = PTR_ADD_OFFSET(allData, instanceOffset);
+
+        if (instanceData->StorageDeviceNumber != deviceNumber)
+            continue;
+
+        result = instanceData;
+        status = STATUS_SUCCESS;
+        break;
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        *Info = *result;
+    }
+
+CleanupExit:
+
+    if (allData)
+        PhFree(allData);
+
+    if (dataBlockHandle)
+        WmiCloseBlock_I(dataBlockHandle);
+
+    return status;
+}
+
+/**
+ * Queries the disk geometry and capacity.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \return A string containing the disk capacity.
+ */
 PPH_STRING DiskDriveQueryGeometry(
     _In_ HANDLE DeviceHandle
     )
@@ -414,7 +650,7 @@ PPH_STRING DiskDriveQueryGeometry(
             NULL,
             0,
             &result,
-            sizeof(result),
+            sizeof(DISK_GEOMETRY_EX),
             NULL
             )))
         {
@@ -436,7 +672,7 @@ PPH_STRING DiskDriveQueryGeometry(
             NULL,
             0,
             &result,
-            sizeof(result),
+            sizeof(DISK_GEOMETRY),
             NULL
             )))
         {
@@ -455,7 +691,7 @@ PPH_STRING DiskDriveQueryGeometry(
             NULL,
             0,
             &result,
-            sizeof(result),
+            sizeof(GET_LENGTH_INFORMATION),
             NULL
             )))
         {
@@ -475,7 +711,7 @@ PPH_STRING DiskDriveQueryGeometry(
             NULL,
             0,
             &result,
-            sizeof(result),
+            sizeof(STORAGE_READ_CAPACITY),
             NULL
             )))
         {
@@ -489,6 +725,13 @@ PPH_STRING DiskDriveQueryGeometry(
     return PhReferenceEmptyString();
 }
 
+/**
+ * Queries for imminent disk failure and SMART attributes.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param DiskSmartAttributes A pointer to a variable that receives the SMART attributes list.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryImminentFailure(
     _In_ HANDLE DeviceHandle,
     _Out_ PPH_LIST* DiskSmartAttributes
@@ -510,7 +753,7 @@ NTSTATUS DiskDriveQueryImminentFailure(
         NULL,
         0,
         &storagePredictFailure,
-        sizeof(storagePredictFailure),
+        sizeof(STORAGE_PREDICT_FAILURE),
         NULL
         );
 
@@ -588,6 +831,13 @@ NTSTATUS DiskDriveQueryImminentFailure(
     return status;
 }
 
+/**
+ * Queries the NVMe health information log.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param HealthInfo A pointer to a variable that receives the NVMe health information.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryNvmeHealthInfo(
     _In_ HANDLE DeviceHandle,
     _Out_ PNVME_HEALTH_INFO_LOG HealthInfo
@@ -644,10 +894,18 @@ NTSTATUS DiskDriveQueryNvmeHealthInfo(
         protocolData->ProtocolDataLength < sizeof(NVME_HEALTH_INFO_LOG))
         return STATUS_UNSUCCESSFUL;
 
-    *HealthInfo = *(PNVME_HEALTH_INFO_LOG)((PCHAR)protocolData + protocolData->ProtocolDataOffset);
+    *HealthInfo = *(PNVME_HEALTH_INFO_LOG)PTR_ADD_OFFSET(protocolData, protocolData->ProtocolDataOffset);
     return STATUS_SUCCESS;
 }
 
+/**
+ * Queries the file system statistics.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param FileSystemType A pointer to a variable that receives the file system type.
+ * \param FileSystemStatistics A pointer to a variable that receives the file system statistics.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN DiskDriveQueryFileSystemInfo(
     _In_ HANDLE DosDeviceHandle,
@@ -721,6 +979,14 @@ BOOLEAN DiskDriveQueryFileSystemInfo(
     return FALSE;
 }
 
+/**
+ * Queries the extended file system statistics.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param FileSystemType A pointer to a variable that receives the file system type.
+ * \param FileSystemStatistics A pointer to a variable that receives the file system statistics.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN DiskDriveQueryFileSystemInfoEx(
     _In_ HANDLE DosDeviceHandle,
@@ -799,6 +1065,13 @@ BOOLEAN DiskDriveQueryFileSystemInfoEx(
     return FALSE;
 }
 
+/**
+ * Queries the NTFS volume information.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param VolumeInfo A pointer to a variable that receives the volume information.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN DiskDriveQueryNtfsVolumeInfo(
     _In_ HANDLE DosDeviceHandle,
@@ -815,7 +1088,7 @@ BOOLEAN DiskDriveQueryNtfsVolumeInfo(
         NULL,
         0,
         &result,
-        sizeof(result),
+        sizeof(NTFS_VOLUME_INFO),
         NULL
         )))
     {
@@ -826,6 +1099,13 @@ BOOLEAN DiskDriveQueryNtfsVolumeInfo(
     return FALSE;
 }
 
+/**
+ * Queries the ReFS volume information.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param VolumeInfo A pointer to a variable that receives the volume information.
+ * \return TRUE if successful, FALSE otherwise.
+ */
 _Success_(return)
 BOOLEAN DiskDriveQueryRefsVolumeInfo(
     _In_ HANDLE DosDeviceHandle,
@@ -842,7 +1122,7 @@ BOOLEAN DiskDriveQueryRefsVolumeInfo(
         NULL,
         0,
         &result,
-        sizeof(result),
+        sizeof(REFS_VOLUME_DATA_BUFFER),
         NULL
         )))
     {
@@ -853,6 +1133,13 @@ BOOLEAN DiskDriveQueryRefsVolumeInfo(
     return FALSE;
 }
 
+/**
+ * Queries the volume information.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param VolumeInfo A pointer to a variable that receives the volume information.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryVolumeInformation(
     _In_ HANDLE DosDeviceHandle,
     _Out_ PFILE_FS_VOLUME_INFORMATION* VolumeInfo
@@ -900,6 +1187,13 @@ NTSTATUS DiskDriveQueryVolumeInformation(
     return status;
 }
 
+/**
+ * Queries the volume attributes.
+ *
+ * \param DosDeviceHandle A handle to the DOS device.
+ * \param AttributeInfo A pointer to a variable that receives the attribute information.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryVolumeAttributes(
     _In_ HANDLE DosDeviceHandle,
     _Out_ PFILE_FS_ATTRIBUTE_INFORMATION* AttributeInfo
@@ -947,6 +1241,12 @@ NTSTATUS DiskDriveQueryVolumeAttributes(
     return status;
 }
 
+/**
+ * Gets the text representation of a SMART attribute ID.
+ *
+ * \param AttributeId The SMART attribute ID.
+ * \return The text representation.
+ */
 PCWSTR SmartAttributeGetText(
     _In_ SMART_ATTRIBUTE_ID AttributeId
     )
@@ -1119,7 +1419,7 @@ PCWSTR SmartAttributeGetText(
         return L"Background program page count";
     case SMART_ATTRIBUTE_ID_NAND_WRITES:
         return L"NAND writes";
-    case SMART_ATTRIBUTE_ID_READ_ERROR_RETY_RATE:
+    case SMART_ATTRIBUTE_ID_READ_ERROR_RETRY_RATE:
         return L"Read error retry rate";
     case SMART_ATTRIBUTE_ID_MIN_SPARES_REMAINING:
         return L"Minimum spares remaining";
@@ -1132,6 +1432,14 @@ PCWSTR SmartAttributeGetText(
     return L"Unknown";
 }
 
+/**
+ * Queries the unique ID and partition IDs of a disk.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param UniqueId A pointer to a variable that receives the unique ID.
+ * \param PartitionId A pointer to a variable that receives the partition IDs.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryUniqueId(
     _In_ HANDLE DeviceHandle,
     _Out_ PPH_STRING* UniqueId,
@@ -1193,6 +1501,13 @@ NTSTATUS DiskDriveQueryUniqueId(
     return status;
 }
 
+/**
+ * Queries the partition list of a disk.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param Partitions A pointer to a variable that receives the partition list.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryPartitionList(
     _In_ HANDLE DeviceHandle,
     _Out_ PPH_LIST *Partitions
@@ -1240,6 +1555,13 @@ NTSTATUS DiskDriveQueryPartitionList(
     return status;
 }
 
+/**
+ * Queries partition information.
+ *
+ * \param DeviceHandle A handle to the device.
+ * \param PartitionInfo A pointer to a variable that receives the partition information.
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveQueryPartitionInfo(
     _In_ HANDLE DeviceHandle,
     _Out_ PARTITION_INFORMATION_EX* PartitionInfo
@@ -1799,7 +2121,11 @@ NTSTATUS DiskDriveQueryPartitionInfo(
 //    return TRUE;
 //}
 
-
+/**
+ * Enables disk performance statistics.
+ *
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS DiskDriveEnableStatistics(
     VOID
     )

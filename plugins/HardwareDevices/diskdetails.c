@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2016-2024
+ *     dmex    2016-2026
  *
  */
 
@@ -277,7 +277,16 @@ VOID DiskDeviceQueryVolumeInfo(
 
         if (DiskDriveQueryNtfsVolumeInfo(DeviceHandle, &ntfsVolumeInfo))
         {
+            ULONG64 freePercentBasisPoints = 0;
+
             ntfsVolumeInfo.VolumeData.VolumeSerialNumber.QuadPart = _byteswap_uint64(ntfsVolumeInfo.VolumeData.VolumeSerialNumber.QuadPart);
+
+            PhMultiplyDivide64(
+                ntfsVolumeInfo.VolumeData.FreeClusters.QuadPart,
+                10000,
+                ntfsVolumeInfo.VolumeData.TotalClusters.QuadPart,
+                &freePercentBasisPoints
+                );
 
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_SERIAL_NUMBER, Column,
                 PhaFormatString(L"0x%s", PH_AUTO_T(PH_STRING, PhBufferToHexString((PUCHAR)&ntfsVolumeInfo.VolumeData.VolumeSerialNumber.QuadPart, sizeof(ntfsVolumeInfo.VolumeData.VolumeSerialNumber.QuadPart)))->Buffer)->Buffer);
@@ -291,11 +300,11 @@ VOID DiskDeviceQueryVolumeInfo(
                 PhaFormatSize(ntfsVolumeInfo.VolumeData.NumberSectors.QuadPart * ntfsVolumeInfo.VolumeData.BytesPerSector, ULONG_MAX)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_FREE, Column,
                 PhaFormatString(L"%s (%.2f%%)", PhaFormatSize(ntfsVolumeInfo.VolumeData.FreeClusters.QuadPart * ntfsVolumeInfo.VolumeData.BytesPerCluster, ULONG_MAX)->Buffer,
-                (FLOAT)(ntfsVolumeInfo.VolumeData.FreeClusters.QuadPart * 100.f) / ntfsVolumeInfo.VolumeData.TotalClusters.QuadPart)->Buffer);
+                (FLOAT)freePercentBasisPoints / 100.0f)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_USED, Column,
                 PhaFormatString(L"%s (%.2f%%)", PhaFormatSize(
                 (ntfsVolumeInfo.VolumeData.NumberSectors.QuadPart * ntfsVolumeInfo.VolumeData.BytesPerSector) - (ntfsVolumeInfo.VolumeData.FreeClusters.QuadPart * ntfsVolumeInfo.VolumeData.BytesPerCluster), ULONG_MAX)->Buffer,
-                100.f - (FLOAT)(ntfsVolumeInfo.VolumeData.FreeClusters.QuadPart * 100) / ntfsVolumeInfo.VolumeData.TotalClusters.QuadPart)->Buffer); // HACK (dmex)
+                100.0f - (FLOAT)freePercentBasisPoints / 100.0f)->Buffer); // HACK (dmex)
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_SECTORS, Column,
                 PhaFormatUInt64(ntfsVolumeInfo.VolumeData.NumberSectors.QuadPart, TRUE)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_CLUSTERS, Column,
@@ -338,7 +347,16 @@ VOID DiskDeviceQueryVolumeInfo(
 
         if (DiskDriveQueryRefsVolumeInfo(DeviceHandle, &refsVolumeInfo))
         {
+            ULONG64 freePercentBasisPoints = 0;
+
             refsVolumeInfo.VolumeSerialNumber.QuadPart = _byteswap_uint64(refsVolumeInfo.VolumeSerialNumber.QuadPart);
+
+            PhMultiplyDivide64(
+                refsVolumeInfo.FreeClusters.QuadPart,
+                10000,
+                refsVolumeInfo.TotalClusters.QuadPart,
+                &freePercentBasisPoints
+                );
 
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_SERIAL_NUMBER, Column,
                 PhaFormatString(L"0x%s", PH_AUTO_T(PH_STRING, PhBufferToHexString((PUCHAR)&refsVolumeInfo.VolumeSerialNumber.QuadPart, sizeof(LONGLONG)))->Buffer)->Buffer);
@@ -347,7 +365,7 @@ VOID DiskDeviceQueryVolumeInfo(
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_SIZE, Column,
                 PhaFormatSize(refsVolumeInfo.NumberSectors.QuadPart * refsVolumeInfo.BytesPerSector, ULONG_MAX)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_FREE, Column,
-                PhaFormatString(L"%s (%.2f%%)", PhaFormatSize(refsVolumeInfo.FreeClusters.QuadPart * refsVolumeInfo.BytesPerCluster, ULONG_MAX)->Buffer, (FLOAT)(refsVolumeInfo.FreeClusters.QuadPart * 100) / refsVolumeInfo.TotalClusters.QuadPart)->Buffer);
+                PhaFormatString(L"%s (%.2f%%)", PhaFormatSize(refsVolumeInfo.FreeClusters.QuadPart * refsVolumeInfo.BytesPerCluster, ULONG_MAX)->Buffer, (FLOAT)freePercentBasisPoints / 100.0f)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_SECTORS, Column,
                 PhaFormatUInt64(refsVolumeInfo.NumberSectors.QuadPart, TRUE)->Buffer);
             PhSetListViewSubItem(Context->ListViewHandle, DISKDRIVE_DETAILS_INDEX_TOTAL_CLUSTERS, Column,
@@ -616,8 +634,8 @@ VOID NTAPI DiskDeviceProcessesUpdatedHandler(
 }
 
 INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
@@ -626,30 +644,30 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
     LPPROPSHEETPAGE propSheetPage;
     PPV_PROPPAGECONTEXT propPageContext;
 
-    if (!PvPropPageDlgProcHeader(hwndDlg, uMsg, lParam, &propSheetPage, &propPageContext))
+    if (!PvPropPageDlgProcHeader(WindowHandle, WindowMessage, lParam, &propSheetPage, &propPageContext))
         return FALSE;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(DV_DISK_PAGE_CONTEXT));
         context->PageContext = (PCOMMON_PAGE_CONTEXT)propPageContext->Context;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->WindowHandle = context->PageContext->SysInfoContext->DetailsWindowDialogHandle = hwndDlg;
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_DETAILS_LIST);
+            context->WindowHandle = context->PageContext->SysInfoContext->DetailsWindowDialogHandle = WindowHandle;
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_DETAILS_LIST);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -663,9 +681,9 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
             PhLoadListViewColumnsFromSetting(SETTING_NAME_DISK_COUNTERS_COLUMNS, context->ListViewHandle);
 
             if (!!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT)) // TODO: Required for compat (dmex)
-                PhInitializeWindowTheme(GetParent(hwndDlg), !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+                PhInitializeWindowTheme(GetParent(WindowHandle), !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
             else
-                PhInitializeWindowTheme(hwndDlg, FALSE);
+                PhInitializeWindowTheme(WindowHandle, FALSE);
 
             PhRegisterCallback(
                 PhGetGeneralCallback(GeneralCallbackProcessProviderUpdatedEvent),
@@ -684,7 +702,7 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
             PhFree(context);
         }
         break;
@@ -694,10 +712,10 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
             {
                 PPH_LAYOUT_ITEM dialogItem;
 
-                dialogItem = PvAddPropPageLayoutItemEx(hwndDlg, hwndDlg, PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL, FALSE,
+                dialogItem = PvAddPropPageLayoutItemEx(WindowHandle, WindowHandle, PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL, FALSE,
                     SETTING_NAME_DISK_POSITION, SETTING_NAME_DISK_SIZE);
-                PvAddPropPageLayoutItem(hwndDlg, context->ListViewHandle, dialogItem, PH_ANCHOR_ALL);
-                PvDoPropPageLayout(hwndDlg);
+                PvAddPropPageLayoutItem(WindowHandle, context->ListViewHandle, dialogItem, PH_ANCHOR_ALL);
+                PvDoPropPageLayout(WindowHandle);
 
                 propPageContext->LayoutInitialized = TRUE;
             }
@@ -705,12 +723,12 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
         break;
     case WM_PH_SHOW_DIALOG:
         {
-            if (IsMinimized(hwndDlg))
-                ShowWindow(hwndDlg, SW_RESTORE);
+            if (IsMinimized(WindowHandle))
+                ShowWindow(WindowHandle, SW_RESTORE);
             else
-                ShowWindow(hwndDlg, SW_SHOW);
+                ShowWindow(WindowHandle, SW_SHOW);
 
-            SetForegroundWindow(hwndDlg);
+            SetForegroundWindow(WindowHandle);
         }
         break;
     case WM_PH_UPDATE_DIALOG:
@@ -742,9 +760,7 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -752,7 +768,7 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
 
                     item = PhShowEMenu(
                         menu,
-                        hwndDlg,
+                        WindowHandle,
                         PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         point.x,
@@ -776,9 +792,8 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     }
@@ -787,8 +802,8 @@ INT_PTR CALLBACK DiskDeviceFileSystemDetailsDlgProc(
 }
 
 INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
@@ -797,30 +812,30 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
     LPPROPSHEETPAGE propSheetPage;
     PPV_PROPPAGECONTEXT propPageContext;
 
-    if (!PvPropPageDlgProcHeader(hwndDlg, uMsg, lParam, &propSheetPage, &propPageContext))
+    if (!PvPropPageDlgProcHeader(WindowHandle, WindowMessage, lParam, &propSheetPage, &propPageContext))
         return FALSE;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(DV_DISK_PAGE_CONTEXT));
         context->PageContext = (PCOMMON_PAGE_CONTEXT)propPageContext->Context;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->WindowHandle = context->PageContext->SysInfoContext->DetailsWindowDialogHandle = hwndDlg;
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_DETAILS_LIST);
+            context->WindowHandle = context->PageContext->SysInfoContext->DetailsWindowDialogHandle = WindowHandle;
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_DETAILS_LIST);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -837,7 +852,7 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
 
             DiskDeviceQuerySmart(context);
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
         }
         break;
     case WM_DESTROY:
@@ -847,7 +862,7 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
         break;
     case WM_NCDESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
             PhFree(context);
         }
         break;
@@ -857,9 +872,9 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
             {
                 PPH_LAYOUT_ITEM dialogItem;
 
-                dialogItem = PvAddPropPageLayoutItem(hwndDlg, hwndDlg, PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL);
-                PvAddPropPageLayoutItem(hwndDlg, context->ListViewHandle, dialogItem, PH_ANCHOR_ALL);
-                PvDoPropPageLayout(hwndDlg);
+                dialogItem = PvAddPropPageLayoutItem(WindowHandle, WindowHandle, PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL);
+                PvAddPropPageLayoutItem(WindowHandle, context->ListViewHandle, dialogItem, PH_ANCHOR_ALL);
+                PvDoPropPageLayout(WindowHandle);
 
                 propPageContext->LayoutInitialized = TRUE;
             }
@@ -867,12 +882,12 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
         break;
     case WM_PH_SHOW_DIALOG:
         {
-            if (IsMinimized(hwndDlg))
-                ShowWindow(hwndDlg, SW_RESTORE);
+            if (IsMinimized(WindowHandle))
+                ShowWindow(WindowHandle, SW_RESTORE);
             else
-                ShowWindow(hwndDlg, SW_SHOW);
+                ShowWindow(WindowHandle, SW_SHOW);
 
-            SetForegroundWindow(hwndDlg);
+            SetForegroundWindow(WindowHandle);
         }
         break;
     case WM_NOTIFY:
@@ -896,9 +911,7 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -906,7 +919,7 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
 
                     item = PhShowEMenu(
                         menu,
-                        hwndDlg,
+                        WindowHandle,
                         PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         point.x,
@@ -930,9 +943,8 @@ INT_PTR CALLBACK DiskDeviceSmartDetailsDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
     }

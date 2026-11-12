@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2019-2022
+ *     dmex    2019-2026
  *
  */
 
@@ -27,6 +27,7 @@ typedef enum _PV_DIRECTORY_TREE_COLUMN_ITEM
     PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_START,
     PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_END,
     PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_SIZE,
+    PV_DIRECTORY_TREE_COLUMN_ITEM_SLACK_SIZE,
     PV_DIRECTORY_TREE_COLUMN_ITEM_SECTION,
     PV_DIRECTORY_TREE_COLUMN_ITEM_HASH,
     PV_DIRECTORY_TREE_COLUMN_ITEM_ENTROPY,
@@ -46,6 +47,7 @@ typedef struct _PV_DIRECTORY_NODE
     PVOID RvaStart;
     PVOID RvaEnd;
     ULONG RvaSize;
+    ULONG64 SlackSize;
     FLOAT DirectoryEntropy;
     PPH_STRING UniqueIdString;
     PPH_STRING DirectoryNameString;
@@ -54,6 +56,7 @@ typedef struct _PV_DIRECTORY_NODE
     PPH_STRING RvaStartString;
     PPH_STRING RvaEndString;
     PPH_STRING RvaSizeString;
+    PPH_STRING SlackSizeString;
     PPH_STRING SectionNameString;
     PPH_STRING HashString;
     PPH_STRING EntropyString;
@@ -86,6 +89,8 @@ typedef struct _PV_DIRECTORY_CONTEXT
     PH_TN_FILTER_SUPPORT FilterSupport;
     PPH_HASHTABLE NodeHashtable;
     PPH_LIST NodeList;
+
+    PH_RUNDOWN_PROTECT WorkerRundown;
 } PV_DIRECTORY_CONTEXT, *PPV_DIRECTORY_CONTEXT;
 
 BOOLEAN PvDirectoryNodeHashtableCompareFunction(
@@ -208,14 +213,18 @@ VOID PvpPeEnumerateImageDataDirectory(
             //directoryNode->RawEnd = ALIGN_UP_POINTER_BY(PTR_ADD_OFFSET(directoryNode->RawStart, directorySize), PvMappedImage.NtHeaders->OptionalHeader.FileAlignment);
             PhPrintPointer(value, directoryNode->RawEnd);
             directoryNode->RawEndString = PhCreateString(value);
+
+            if ((ULONG_PTR)directoryNode->RawEnd < PvMappedImage.ViewSize)
+                directoryNode->SlackSize = PvMappedImage.ViewSize - (ULONG_PTR)directoryNode->RawEnd;
         }
         else
         {
-            imageDirectoryData = PhMappedImageRvaToVa(&PvMappedImage, directoryAddress, &directorySection);
+            PhMappedImageRvaToSection(&PvMappedImage, directoryAddress, &directorySection);
+            PhMappedImageRvaToVa(&PvMappedImage, directoryAddress, &imageDirectoryData);
 
             if (directorySection)
             {
-                directoryNode->RawStart = PTR_ADD_OFFSET((directoryAddress - directorySection->VirtualAddress), directorySection->PointerToRawData);
+                directoryNode->RawStart = PTR_ADD_OFFSET(UInt32Sub32To64(directoryAddress, directorySection->VirtualAddress), directorySection->PointerToRawData);
                 PhPrintPointer(value, directoryNode->RawStart);
                 directoryNode->RawStartString = PhCreateString(value);
 
@@ -223,19 +232,28 @@ VOID PvpPeEnumerateImageDataDirectory(
                 //directoryNode->RawEnd = ALIGN_UP_POINTER_BY(PTR_ADD_OFFSET(directoryNode->RawStart, directorySize), PvMappedImage.NtHeaders->OptionalHeader.FileAlignment);
                 PhPrintPointer(value, directoryNode->RawEnd);
                 directoryNode->RawEndString = PhCreateString(value);
+
+                if (directorySection->SizeOfRawData)
+                {
+                    ULONG64 sectionRawEnd = UInt32Add32To64(directorySection->PointerToRawData, directorySection->SizeOfRawData);
+
+                    if ((ULONG_PTR)directoryNode->RawEnd < sectionRawEnd)
+                        directoryNode->SlackSize = sectionRawEnd - (ULONG_PTR)directoryNode->RawEnd;
+                }
             }
 
             directoryNode->RvaStart = UlongToPtr(directoryAddress);
             PhPrintPointer(value, directoryNode->RvaStart);
             directoryNode->RvaStartString = PhCreateString(value);
 
-            directoryNode->RvaEnd = PTR_ADD_OFFSET(directoryAddress, directorySize);
+            directoryNode->RvaEnd = (PVOID)(ULONG_PTR)UInt32Add32To64(directoryAddress, directorySize);
             PhPrintPointer(value, directoryNode->RvaEnd);
             directoryNode->RvaEndString = PhCreateString(value);
         }
 
         directoryNode->RvaSize = directorySize;
         directoryNode->RvaSizeString = PhFormatSize(directorySize, ULONG_MAX);
+        directoryNode->SlackSizeString = PhFormatSize(directoryNode->SlackSize, ULONG_MAX);
     }
 
     if (directorySection)
@@ -352,6 +370,7 @@ NTSTATUS PvpPeDirectoryEnumerateThread(
     PvpPeEnumerateImageDataDirectory(Context, 15, L"Reserved");
 
     PostMessage(Context->DialogHandle, WM_PV_SEARCH_FINISHED, 0, 0);
+    PhReleaseRundownProtection(&Context->WorkerRundown);
     return STATUS_SUCCESS;
 }
 
@@ -387,6 +406,7 @@ INT_PTR CALLBACK PvPeDirectoryDlgProc(
     if (uMsg == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(PV_DIRECTORY_CONTEXT));
+        PhInitializeRundownProtection(&context->WorkerRundown);
         PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
 
         if (lParam)
@@ -431,13 +451,19 @@ INT_PTR CALLBACK PvPeDirectoryDlgProc(
             PhAddLayoutItem(&context->LayoutManager, context->SearchHandle, NULL, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
             PhAddLayoutItem(&context->LayoutManager, context->TreeNewHandle, NULL, PH_ANCHOR_ALL);
 
-            PhCreateThread2(PvpPeDirectoryEnumerateThread, context);
+            PhAcquireRundownProtection(&context->WorkerRundown);
+
+            if (!NT_SUCCESS(PhCreateThread2(PvpPeDirectoryEnumerateThread, context)))
+                PhReleaseRundownProtection(&context->WorkerRundown);
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
         }
         break;
     case WM_DESTROY:
         {
+            // The worker only posts, so waiting here cannot deadlock.
+            PhWaitForRundownProtection(&context->WorkerRundown);
+
             PhSaveSettingsDirectoryList(context);
             PvDeleteDirectoryTree(context);
             PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
@@ -453,6 +479,12 @@ INT_PTR CALLBACK PvPeDirectoryDlgProc(
 
                 context->PropSheetContext->LayoutInitialized = TRUE;
             }
+        }
+        break;
+    case WM_DPICHANGED_AFTERPARENT:
+        {
+            PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
+            PhLayoutManagerLayout(&context->LayoutManager);
         }
         break;
     case WM_SIZE:
@@ -535,7 +567,7 @@ INT_PTR CALLBACK PvPeDirectoryDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     case WM_KEYDOWN:
@@ -708,10 +740,12 @@ VOID PvDestroyDirectoryNode(
     //    PhDereferenceObject(Node->RvaStartString);
     //if (Node->RvaEndString)
     //    PhDereferenceObject(Node->RvaEndString);
-    //if (Node->RvaSizeString)
-    //    PhDereferenceObject(Node->RvaSizeString);
-    //if (Node->HashString)
-    //    PhDereferenceObject(Node->HashString);
+//if (Node->RvaSizeString)
+//    PhDereferenceObject(Node->RvaSizeString);
+//if (Node->SlackSizeString)
+//    PhDereferenceObject(Node->SlackSizeString);
+//if (Node->HashString)
+//    PhDereferenceObject(Node->HashString);
     //if (Node->EntropyString)
     //    PhDereferenceObject(Node->EntropyString);
     //if (Node->SsdeepString)
@@ -782,6 +816,12 @@ BEGIN_SORT_FUNCTION(RvaSize)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(SlackSize)
+{
+    sortResult = uint64cmp(node1->SlackSize, node2->SlackSize);
+}
+END_SORT_FUNCTION
+
 BEGIN_SORT_FUNCTION(Section)
 {
     sortResult = PhCompareStringWithNull(node1->SectionNameString, node2->SectionNameString, FALSE);
@@ -839,7 +879,7 @@ BOOLEAN NTAPI PvDirectoryTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Index),
                     SORT_FUNCTION(Name),
@@ -848,13 +888,14 @@ BOOLEAN NTAPI PvDirectoryTreeNewCallback(
                     SORT_FUNCTION(RvaStart),
                     SORT_FUNCTION(RvaEnd),
                     SORT_FUNCTION(RvaSize),
+                    SORT_FUNCTION(SlackSize),
                     SORT_FUNCTION(Section),
                     SORT_FUNCTION(Hash),
                     SORT_FUNCTION(Entropy),
                     SORT_FUNCTION(Ssdeep),
                     SORT_FUNCTION(Tlsh),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PV_DIRECTORY_TREE_COLUMN_ITEM_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -916,6 +957,9 @@ BOOLEAN NTAPI PvDirectoryTreeNewCallback(
                 break;
             case PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_SIZE:
                 getCellText->Text = PhGetStringRef(node->RvaSizeString);
+                break;
+            case PV_DIRECTORY_TREE_COLUMN_ITEM_SLACK_SIZE:
+                getCellText->Text = PhGetStringRef(node->SlackSizeString);
                 break;
             case PV_DIRECTORY_TREE_COLUMN_ITEM_SECTION:
                 getCellText->Text = PhGetStringRef(node->SectionNameString);
@@ -1092,13 +1136,14 @@ VOID PvInitializeDirectoryTree(
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_START, TRUE, L"RVA (start)", 100, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_START, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_END, TRUE, L"RVA (end)", 100, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_END, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_SIZE, TRUE, L"Size", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_RVA_SIZE, 0, 0);
+    PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_SLACK_SIZE, TRUE, L"Slack space", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_SLACK_SIZE, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_SECTION, TRUE, L"Section", 100, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_SECTION, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_HASH, TRUE, L"Hash", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_HASH, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_ENTROPY, TRUE, L"Entropy", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_ENTROPY, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_SSDEEP, TRUE, L"SSDEEP", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_SSDEEP, 0, 0);
     PhAddTreeNewColumnEx2(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_TLSH, TRUE, L"TLSH", 80, PH_ALIGN_LEFT, PV_DIRECTORY_TREE_COLUMN_ITEM_TLSH, 0, 0);
 
-    TreeNew_SetRowHeight(Context->TreeNewHandle, PhGetDpi(22, PhGetWindowDpi(ParentWindowHandle)));
+    TreeNew_SetRowHeight(Context->TreeNewHandle, PvpGetTreeNewRowHeight(Context->TreeNewHandle));
 
     TreeNew_SetRedraw(TreeNewHandle, TRUE);
     TreeNew_SetSort(TreeNewHandle, PV_DIRECTORY_TREE_COLUMN_ITEM_INDEX, AscendingSortOrder);
@@ -1146,6 +1191,12 @@ BOOLEAN PvDirectoryTreeFilterCallback(
     if (!PhIsNullOrEmptyString(node->RvaSizeString))
     {
         if (PvSearchControlMatch(context->SearchMatchHandle, &node->RvaSizeString->sr))
+            return TRUE;
+    }
+
+    if (!PhIsNullOrEmptyString(node->SlackSizeString))
+    {
+        if (PvSearchControlMatch(context->SearchMatchHandle, &node->SlackSizeString->sr))
             return TRUE;
     }
 

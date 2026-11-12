@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -48,11 +48,13 @@ EXTERN_C CONST DECLSPEC_SELECTANY IN6_ADDR in6addr_any            = { 0x00 };
 EXTERN_C CONST DECLSPEC_SELECTANY IN6_ADDR in6addr_v4mappedprefix = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00 };
 
 #define PH_NETWORK_TYPE_NONE 0x0
+// ProtocolType includes protocol-type flags; use FlagOn to test IPv4/IPv6, not direct equality.
 #define PH_NETWORK_TYPE_IPV4 0x1
 #define PH_NETWORK_TYPE_IPV6 0x2
 #define PH_NETWORK_TYPE_HYPERV 0x4
-#define PH_NETWORK_TYPE_MASK 0x8
+#define PH_NETWORK_TYPE_MASK 0x7
 
+// ProtocolType includes network-type flags; use FlagOn to test TCP/UDP, not direct equality.
 #define PH_PROTOCOL_TYPE_NONE 0x0
 #define PH_PROTOCOL_TYPE_TCP  0x10
 #define PH_PROTOCOL_TYPE_UDP  0x20
@@ -263,7 +265,7 @@ typedef enum _PHHTTP_EVENT_TYPE
 } PHHTTP_EVENT_TYPE;
 
 typedef _Function_class_(PH_HTTP_EVENT_CALLBACK)
-VOID NTAPI PH_HTTP_EVENT_CALLBACK(
+NTSTATUS NTAPI PH_HTTP_EVENT_CALLBACK(
     _In_ PHHTTP_EVENT_TYPE Event,
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
@@ -291,7 +293,7 @@ PHLIBAPI
 VOID
 NTAPI
 PhHttpDestroy(
-    _In_ _Maybenull_ _Frees_ptr_ PPH_HTTP_CONTEXT HttpContext
+    _In_opt_ _Frees_ptr_opt_ PPH_HTTP_CONTEXT HttpContext
     );
 
 typedef enum _PH_HTTP_SOCKET_CLOSE_TYPE
@@ -496,8 +498,9 @@ NTSTATUS
 NTAPI
 PhHttpReadDataToBuffer(
     _In_ PVOID RequestHandle,
-    _Out_ PVOID* Buffer,
-    _Out_ ULONG* BufferLength
+    _In_opt_ ULONG TotalLength,
+    _Out_ PVOID *Buffer,
+    _Out_ ULONG *BufferLength
     );
 
 PHLIBAPI
@@ -517,10 +520,12 @@ typedef struct _PH_HTTPDOWNLOAD_CONTEXT
     DOUBLE Percent;
 } PH_HTTPDOWNLOAD_CONTEXT, *PPH_HTTPDOWNLOAD_CONTEXT;
 
-typedef BOOLEAN (NTAPI *PPH_HTTPDOWNLOAD_CALLBACK)(
+typedef _Function_class_(PH_HTTPDOWNLOAD_CALLBACK)
+BOOLEAN NTAPI PH_HTTPDOWNLOAD_CALLBACK(
     _In_opt_ PPH_HTTPDOWNLOAD_CONTEXT Parameter,
     _In_opt_ PVOID Context
     );
+typedef PH_HTTPDOWNLOAD_CALLBACK* PPH_HTTPDOWNLOAD_CALLBACK;
 
 PHLIBAPI
 NTSTATUS
@@ -528,8 +533,70 @@ NTAPI
 PhHttpDownloadToFile(
     _In_ PPH_HTTP_CONTEXT HttpContext,
     _In_ PPH_STRINGREF FileName,
-    _In_ PPH_HTTPDOWNLOAD_CALLBACK Callback,
+    _In_opt_ PPH_HTTPDOWNLOAD_CALLBACK Callback,
     _In_opt_ PVOID Context
+    );
+
+// MaximumLength bounds both Content-Length and streamed bytes, including chunked responses.
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhHttpDownloadToFileEx(
+    _In_ PPH_HTTP_CONTEXT HttpContext,
+    _In_ PPH_STRINGREF FileName,
+    _In_ ULONG64 MaximumLength,
+    _In_opt_ PPH_HTTPDOWNLOAD_CALLBACK Callback,
+    _In_opt_ PVOID Context
+    );
+
+typedef enum _PH_HTTPDOWNLOAD_EVENT_TYPE
+{
+    PH_HTTPDOWNLOAD_EVENT_BEGIN,
+    PH_HTTPDOWNLOAD_EVENT_DATA,
+    PH_HTTPDOWNLOAD_EVENT_PROGRESS,
+    PH_HTTPDOWNLOAD_EVENT_END
+} PH_HTTPDOWNLOAD_EVENT_TYPE;
+
+typedef struct _PH_HTTPDOWNLOAD_CALLBACK_CONTEXT
+{
+    ULONG StatusCode;
+    ULONG64 ReadLength;
+    ULONG64 TotalLength;
+    ULONG64 BitsPerSecond;
+    DOUBLE Percent;
+    PVOID Buffer;
+    ULONG BufferLength;
+} PH_HTTPDOWNLOAD_CALLBACK_CONTEXT, *PPH_HTTPDOWNLOAD_CALLBACK_CONTEXT;
+
+typedef _Function_class_(PH_HTTPDOWNLOAD_CALLBACK_EX)
+NTSTATUS NTAPI PH_HTTPDOWNLOAD_CALLBACK_EX(
+    _In_ PH_HTTPDOWNLOAD_EVENT_TYPE Event,
+    _In_ PPH_HTTPDOWNLOAD_CALLBACK_CONTEXT Parameter,
+    _In_opt_ PVOID Context
+    );
+typedef PH_HTTPDOWNLOAD_CALLBACK_EX* PPH_HTTPDOWNLOAD_CALLBACK_EX;
+
+typedef struct _PH_HTTP_DOWNLOAD_OPTIONS
+{
+    _Maybenull_ PCWSTR RequestMethod;
+    _Maybenull_ PPH_STRING UserAgent;
+    ULONG RequestFlags;
+    ULONG ProtocolFlags;
+    ULONG ProtocolTimeout;
+    ULONG SecurityFlags;
+    ULONG EnableFeatures;
+    ULONG DisableFeatures;
+    _Maybenull_ PPH_HTTP_EVENT_CALLBACK EventCallback;
+    _Maybenull_ PPH_HTTPDOWNLOAD_CALLBACK_EX DownloadCallback;
+    _Maybenull_ PVOID Context;
+} PH_HTTP_DOWNLOAD_OPTIONS, *PPH_HTTP_DOWNLOAD_OPTIONS;
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhHttpDownloadUrl(
+    _In_ PPH_STRING Url,
+    _In_opt_ PPH_HTTP_DOWNLOAD_OPTIONS Options
     );
 
 #define PH_HTTP_FEATURE_REDIRECTS 0x1
@@ -567,7 +634,7 @@ VOID CALLBACK PH_HTTP_STATUS_CALLBACK(
     _In_ PVOID InternetHandle,
     _In_ ULONG_PTR Context,
     _In_ ULONG InternetStatus,
-    _In_opt_ LPVOID StatusInformation,
+    _In_opt_ PVOID StatusInformation,
     _In_ ULONG StatusInformationLength
     );
 typedef PH_HTTP_STATUS_CALLBACK* PPH_HTTP_STATUS_CALLBACK;
@@ -641,6 +708,13 @@ PhHttpCrackUrl(
 PHLIBAPI
 PPH_STRING
 NTAPI
+PhWinHttpUserAgentString(
+    VOID
+    );
+
+PHLIBAPI
+PPH_STRING
+NTAPI
 PhHttpGetErrorMessage(
     _In_ ULONG ErrorCode
     );
@@ -695,6 +769,47 @@ PhHttpSetEventCallback(
 //
 // IPv4 and IPv6
 //
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhIpv4AddressToStringEx(
+    _In_ PCIN_ADDR Address,
+    _In_ USHORT Port,
+    _Out_writes_to_(*AddressStringLength, *AddressStringLength) PWSTR AddressString,
+    _Inout_ PULONG AddressStringLength
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhIpv4StringToAddressEx(
+    _In_ PCWSTR AddressString,
+    _In_ BOOLEAN Strict,
+    _Out_ PIN_ADDR Address,
+    _Out_ PUSHORT Port
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhIpv6AddressToStringEx(
+    _In_ PCIN6_ADDR Address,
+    _In_ ULONG ScopeId,
+    _In_ USHORT Port,
+    _Out_writes_to_(*AddressStringLength, *AddressStringLength) PWSTR AddressString,
+    _Inout_ PULONG AddressStringLength
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhIpv6StringToAddressEx(
+    _In_ PCWSTR AddressString,
+    _Out_ PIN6_ADDR Address,
+    _Out_ PULONG ScopeId,
+    _Out_ PUSHORT Port
+    );
 
 PHLIBAPI
 NTSTATUS
@@ -756,6 +871,17 @@ PhHttpDnsQuery(
     _In_opt_ PCWSTR DnsServerAddress,
     _In_ PCWSTR DnsQueryMessage,
     _In_ USHORT DnsQueryMessageType,
+    _Out_ PDNS_RECORD* DnsQueryRecord
+    );
+
+PHLIBAPI
+NTSTATUS
+NTAPI
+PhHttpDnsQueryEx(
+    _In_opt_ PCWSTR DnsServerAddress,
+    _In_ PCWSTR DnsQueryMessage,
+    _In_ USHORT DnsQueryMessageType,
+    _In_ USHORT DnsQueryMessageClass,
     _Out_ PDNS_RECORD* DnsQueryRecord
     );
 

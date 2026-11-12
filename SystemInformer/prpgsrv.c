@@ -91,6 +91,8 @@ INT_PTR CALLBACK PhpProcessServicesDlgProc(
             propPageContext->Context = serviceListHandle;
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, serviceListHandle);
         }
         break;
     case WM_SHOWWINDOW:
@@ -111,6 +113,12 @@ INT_PTR CALLBACK PhpProcessServicesDlgProc(
             PhpLayoutServiceListControl(hwndDlg, (HWND)propPageContext->Context);
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

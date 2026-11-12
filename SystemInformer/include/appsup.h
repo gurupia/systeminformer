@@ -6,12 +6,14 @@
  * Authors:
  *
  *     wj32    2016-2017
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
 #ifndef PH_APPSUP_H
 #define PH_APPSUP_H
+
+EXTERN_C_START
 
 DEFINE_GUID(XP_CONTEXT_GUID, 0xbeb1b341, 0x6837, 0x4c83, 0x83, 0x66, 0x2b, 0x45, 0x1e, 0x7c, 0xe6, 0x9b);
 DEFINE_GUID(VISTA_CONTEXT_GUID, 0xe2011457, 0x1546, 0x43c5, 0xa5, 0xfe, 0x00, 0x8d, 0xee, 0xe3, 0xd3, 0xf0);
@@ -19,6 +21,23 @@ DEFINE_GUID(WIN7_CONTEXT_GUID, 0x35138b9a, 0x5d96, 0x4fbd, 0x8e, 0x2d, 0xa2, 0x4
 DEFINE_GUID(WIN8_CONTEXT_GUID, 0x4a2f28e3, 0x53b9, 0x4441, 0xba, 0x9c, 0xd6, 0x9d, 0x4a, 0x4a, 0x6e, 0x38);
 DEFINE_GUID(WINBLUE_CONTEXT_GUID, 0x1f676c76, 0x80e1, 0x4239, 0x95, 0xbb, 0x83, 0xd0, 0xf6, 0xd0, 0xda, 0x78);
 DEFINE_GUID(WIN10_CONTEXT_GUID, 0x8e0f7a12, 0xbfb3, 0x4fe8, 0xb9, 0xa5, 0x48, 0xfd, 0x50, 0xa1, 0x5a, 0x9a);
+
+// Applies the given theme mode. For Custom mode the user's per-color theme
+// settings are composited onto the palette before it is applied; other modes
+// defer to phlib's PhApplyThemeMode. Pass RootWindow to re-theme live, or NULL
+// to only select the palette (startup, before the window exists).
+VOID
+PhApplyThemeModeWithColors(
+    _In_ ULONG Mode,
+    _In_opt_ HWND RootWindow
+    );
+
+// Whether the given theme mode resolves to a dark palette (Automatic follows
+// the Windows dark mode setting; Custom is seeded from the dark palette).
+BOOLEAN
+PhIsThemeModeDark(
+    _In_ ULONG Mode
+    );
 
 // begin_phapppub
 PHAPPAPI
@@ -233,14 +252,14 @@ VOID PhSetWindowOpacity(
 PHAPPAPI
 PPH_STRING
 NTAPI
-PhGetPhVersion(
+PhGetBuildVersion(
     VOID
     );
 
 PHAPPAPI
 VOID
 NTAPI
-PhGetPhVersionNumbers(
+PhGetBuildVersionNumbers(
     _Out_opt_ PULONG MajorVersion,
     _Out_opt_ PULONG MinorVersion,
     _Out_opt_ PULONG BuildNumber,
@@ -250,7 +269,13 @@ PhGetPhVersionNumbers(
 PHAPPAPI
 PPH_STRING
 NTAPI
-PhGetPhVersionHash(
+PhGetBuildCommit(
+    VOID
+    );
+
+PPH_STRING
+NTAPI
+PhGetBuildTime(
     VOID
     );
 
@@ -266,14 +291,14 @@ typedef enum _PH_RELEASE_CHANNEL
 PHAPPAPI
 PH_RELEASE_CHANNEL
 NTAPI
-PhGetPhReleaseChannel(
+PhGetBuildReleaseChannel(
     VOID
     );
 
 PHAPPAPI
 PCWSTR
 NTAPI
-PhGetPhReleaseChannelString(
+PhGetBuildReleaseChannelString(
     VOID
     );
 
@@ -293,7 +318,7 @@ NTAPI
 PhShellProcessHacker(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PCWSTR Parameters,
-    _In_ ULONG ShowWindowType,
+    _In_ LONG ShowWindowType,
     _In_ ULONG Flags,
     _In_ ULONG AppFlags,
     _In_opt_ ULONG Timeout,
@@ -305,7 +330,7 @@ NTSTATUS PhShellProcessHackerEx(
     _In_opt_ HWND WindowHandle,
     _In_opt_ PCWSTR FileName,
     _In_opt_ PCWSTR Parameters,
-    _In_ ULONG ShowWindowType,
+    _In_ LONG ShowWindowType,
     _In_ ULONG Flags,
     _In_ ULONG AppFlags,
     _In_opt_ ULONG Timeout,
@@ -521,15 +546,8 @@ PHAPPAPI
 HICON
 NTAPI
 PhGetApplicationIcon(
-    _In_ BOOLEAN SmallIcon
-    );
-
-PHAPPAPI
-HICON
-NTAPI
-PhGetApplicationIconEx(
     _In_ BOOLEAN SmallIcon,
-    _In_opt_ LONG WindowDpi
+    _In_ LONG WindowDpi
     );
 
 PHAPPAPI
@@ -599,6 +617,10 @@ NTSTATUS PhRunAsAdminTaskUIAccess(
     VOID
     );
 
+BOOLEAN PhIsLaunchedByTaskScheduler(
+    VOID
+    );
+
 // begin_phapppub
 PHAPPAPI
 BOOLEAN
@@ -636,6 +658,17 @@ PhWordMatchStringLongHintZ(
     PhInitializeStringRefLongHint(&text, Text);
 
     return PhWordMatchStringRef(&SearchText->sr, &text);
+}
+
+FORCEINLINE
+USHORT
+NTAPI
+PhGetWindowUniqueId(
+    _In_opt_ HWND WindowHandle
+    )
+{
+    // The upper word of a USER handle contains the entry's 15-bit uniqueness counter (wUniq).
+    return (USHORT)(HandleToUlong(WindowHandle) >> 16) & 0x7FFF;
 }
 
 PHAPPAPI
@@ -694,8 +727,10 @@ FORCEINLINE PVOID PhpGenericPropertyPageHeader(
     return context;
 }
 
-#define SWP_NO_ACTIVATE_MOVE_SIZE_ZORDER (SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER)
+#define SWP_NO_ACTIVATE_MOVE_SIZE_ZORDER (SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER)
 #define SWP_SHOWWINDOW_ONLY (SWP_NO_ACTIVATE_MOVE_SIZE_ZORDER | SWP_SHOWWINDOW)
 #define SWP_HIDEWINDOW_ONLY (SWP_NO_ACTIVATE_MOVE_SIZE_ZORDER | SWP_HIDEWINDOW)
+
+EXTERN_C_END
 
 #endif

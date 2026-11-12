@@ -6,13 +6,14 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *     jxy-s   2024
  *
  */
 
 #include <ph.h>
 #include <strsrch.h>
+#include <phintrin.h>
 
 typedef struct _PH_STRING_SEARCH_CONEXT
 {
@@ -67,6 +68,258 @@ PH_CHAR_TYPE PhpClassifyByte(
     }
 }
 
+// Combined per-byte classification LUT, indexed [ExtendedCharSet][byte]. Each
+// entry is PhpClassifyByte(byte, Ext, Ext) i.e. the classification assuming the
+// UTF-16-high check is enabled (the maximal result). The runtime gate only ever
+// downgrades a PhCharTypeUTF16High result to PhCharTypeNone, so a single LUT load
+// plus the cheap inline gate is exactly equivalent to PhpClassifyByte while
+// replacing its 4-5 boolean table loads per byte.
+static PH_INITONCE PhpCharTypeTableInitOnce = PH_INITONCE_INIT;
+static BYTE PhpCharTypeTable[2][256];
+
+static VOID PhpInitializeCharTypeTable(
+    VOID
+    )
+{
+    if (PhBeginInitOnce(&PhpCharTypeTableInitOnce))
+    {
+        ULONG ext;
+        ULONG value;
+
+        for (ext = 0; ext < 2; ext++)
+        {
+            for (value = 0; value < 256; value++)
+                PhpCharTypeTable[ext][value] = (BYTE)PhpClassifyByte((BYTE)value, (BOOLEAN)ext, (BOOLEAN)ext);
+        }
+
+        PhEndInitOnce(&PhpCharTypeTableInitOnce);
+    }
+}
+
+FORCEINLINE BOOLEAN PhpIsUtf8ContinuationByte(
+    _In_ BYTE Byte
+    )
+{
+    return (Byte & 0xc0) == 0x80;
+}
+
+// Consume only complete printable ASCII blocks. TAB, LF and CR match the
+// printable tables; non-ASCII bytes and transitions stay in the scalar parser.
+static ULONG PhpPrintableAsciiBlock(
+    _In_reads_bytes_(Length) PBYTE Buffer,
+    _In_ SIZE_T Length
+    )
+{
+#ifndef _ARM64_
+    if (PhHasAVX && Length >= 32)
+    {
+        __m256i bytes = _mm256_loadu_si256((__m256i const*)Buffer);
+        __m256i printable = _mm256_and_si256(
+            _mm256_cmpgt_epi8(bytes, _mm256_set1_epi8(0x1f)),
+            _mm256_cmpgt_epi8(_mm256_set1_epi8(0x7f), bytes)
+            );
+
+        printable = _mm256_or_si256(printable, _mm256_cmpeq_epi8(bytes, _mm256_set1_epi8('\t')));
+        printable = _mm256_or_si256(printable, _mm256_cmpeq_epi8(bytes, _mm256_set1_epi8('\n')));
+        printable = _mm256_or_si256(printable, _mm256_cmpeq_epi8(bytes, _mm256_set1_epi8('\r')));
+
+        ULONG mask = (ULONG)_mm256_movemask_epi8(printable);
+
+        PhZeroUpper();
+
+        if (mask == 0xffffffff)
+            return 32;
+    }
+#endif
+
+    if (PhHasIntrinsics && Length >= 16)
+    {
+        PH_INT128 bytes = PhLoadINT128U((PLONG)Buffer);
+        PH_INT128 printable = PhAndINT128(
+            PhCompareGtINT128by8(bytes, PhSetINT128by8(0x1f)),
+            PhCompareGtINT128by8(PhSetINT128by8(0x7f), bytes)
+            );
+
+        printable = PhOrINT128(printable, PhCompareEqINT128by8(bytes, PhSetINT128by8('\t')));
+        printable = PhOrINT128(printable, PhCompareEqINT128by8(bytes, PhSetINT128by8('\n')));
+        printable = PhOrINT128(printable, PhCompareEqINT128by8(bytes, PhSetINT128by8('\r')));
+
+        if ((USHORT)PhMoveMaskINT128by8(printable) == 0xffff)
+            return 16;
+    }
+
+    return 0;
+}
+
+static BOOLEAN PhpDecodeUtf8CodePoint(
+    _In_reads_bytes_(Length) PBYTE Buffer,
+    _In_ SIZE_T Length,
+    _Out_ PULONG CodePoint,
+    _Out_ PULONG Bytes
+    )
+{
+    BYTE byte;
+    ULONG codePoint;
+    ULONG bytes;
+
+    if (!Length)
+        return FALSE;
+
+    byte = Buffer[0];
+
+    if (byte < 0x80)
+    {
+        *CodePoint = byte;
+        *Bytes = 1;
+        return TRUE;
+    }
+    else if (byte >= 0xc2 && byte <= 0xdf)
+    {
+        bytes = 2;
+
+        if (Length < bytes || !PhpIsUtf8ContinuationByte(Buffer[1]))
+            return FALSE;
+
+        codePoint = ((ULONG)(byte & 0x1f) << 6) | (Buffer[1] & 0x3f);
+    }
+    else if (byte >= 0xe0 && byte <= 0xef)
+    {
+        bytes = 3;
+
+        if (Length < bytes ||
+            !PhpIsUtf8ContinuationByte(Buffer[1]) ||
+            !PhpIsUtf8ContinuationByte(Buffer[2]))
+            return FALSE;
+
+        if ((byte == 0xe0 && Buffer[1] < 0xa0) ||
+            (byte == 0xed && Buffer[1] >= 0xa0))
+            return FALSE;
+
+        codePoint =
+            ((ULONG)(byte & 0x0f) << 12) |
+            ((ULONG)(Buffer[1] & 0x3f) << 6) |
+            (Buffer[2] & 0x3f);
+    }
+    else if (byte >= 0xf0 && byte <= 0xf4)
+    {
+        bytes = 4;
+
+        if (Length < bytes ||
+            !PhpIsUtf8ContinuationByte(Buffer[1]) ||
+            !PhpIsUtf8ContinuationByte(Buffer[2]) ||
+            !PhpIsUtf8ContinuationByte(Buffer[3]))
+            return FALSE;
+
+        if ((byte == 0xf0 && Buffer[1] < 0x90) ||
+            (byte == 0xf4 && Buffer[1] >= 0x90))
+            return FALSE;
+
+        codePoint =
+            ((ULONG)(byte & 0x07) << 18) |
+            ((ULONG)(Buffer[1] & 0x3f) << 12) |
+            ((ULONG)(Buffer[2] & 0x3f) << 6) |
+            (Buffer[3] & 0x3f);
+    }
+    else
+    {
+        return FALSE;
+    }
+
+    *CodePoint = codePoint;
+    *Bytes = bytes;
+    return TRUE;
+}
+
+BOOLEAN PhpSearchUtf8Strings(
+    _In_ PPH_STRING_SEARCH_CONEXT Context,
+    _In_reads_bytes_(Length) PBYTE Buffer,
+    _In_ SIZE_T Length
+    )
+{
+    SIZE_T i;
+
+    for (i = 0; i < Length;)
+    {
+        SIZE_T start;
+        SIZE_T runBytes;
+        SIZE_T convertBytes;
+        ULONG characters;
+        BOOLEAN hasNonAscii;
+
+        start = i;
+        runBytes = 0;
+        convertBytes = 0;
+        characters = 0;
+        hasNonAscii = FALSE;
+
+        while (i < Length)
+        {
+            ULONG codePoint;
+            ULONG bytes;
+
+            if (Length - i >= 16 && characters <= ULONG_MAX - 32 &&
+                (bytes = PhpPrintableAsciiBlock(&Buffer[i], Length - i)) != 0)
+            {
+                if (characters < RTL_NUMBER_OF(Context->Buffer))
+                    convertBytes = runBytes + min(bytes, RTL_NUMBER_OF(Context->Buffer) - characters);
+
+                i += bytes;
+                runBytes += bytes;
+                characters += bytes;
+                continue;
+            }
+
+            if (!PhpDecodeUtf8CodePoint(&Buffer[i], Length - i, &codePoint, &bytes))
+                break;
+
+            if (bytes == 1 && !PhCharIsPrintable[Buffer[i]])
+                break;
+
+            if (bytes != 1)
+                hasNonAscii = TRUE;
+
+            i += bytes;
+            runBytes += bytes;
+            characters++;
+
+            if (characters <= RTL_NUMBER_OF(Context->Buffer))
+                convertBytes = runBytes;
+        }
+
+        if (hasNonAscii && characters >= Context->MinimumLength)
+        {
+            PH_STRING_SEARCH_RESULT result;
+            SIZE_T bytesInUtf16String;
+            BOOLEAN isFinished;
+
+            if (NT_SUCCESS(PhConvertUtf8ToUtf16Buffer(
+                Context->Buffer,
+                sizeof(Context->Buffer),
+                &bytesInUtf16String,
+                &Buffer[start],
+                convertBytes
+                )))
+            {
+                result.Encoding = PH_STRING_SEARCH_ENCODING_UTF8;
+                result.Address = PTR_ADD_OFFSET(Buffer, start);
+                result.Length = runBytes;
+                result.String.Buffer = Context->Buffer;
+                result.String.Length = bytesInUtf16String;
+
+                isFinished = Context->Callback(&result, Context->CallbackContext);
+
+                if (isFinished)
+                    return TRUE;
+            }
+        }
+
+        if (i == start)
+            i++;
+    }
+
+    return FALSE;
+}
+
 BOOLEAN PhpSearchStrings(
     _In_ PPH_STRING_SEARCH_CONEXT Context,
     _In_reads_bytes_(Length) PBYTE Buffer,
@@ -88,6 +341,31 @@ BOOLEAN PhpSearchStrings(
     {
         BOOLEAN checkUTF8High = FALSE;
 
+        // Once the ASCII pattern is established, a printable block cannot
+        // change state. Keep the final three bytes for the scalar transition.
+        if (pattern == PhCharPatternASCII &&
+            charType1 == PhCharTypePrintable && charType2 == PhCharTypePrintable &&
+            Length - i >= 16)
+        {
+            ULONG count = PhpPrintableAsciiBlock(&Buffer[i], Length - i);
+
+            if (count)
+            {
+                ULONG copyCount = min(count, RTL_NUMBER_OF(Context->Buffer) - length);
+
+                PhZeroExtendToUtf16Buffer((PSTR)&Buffer[i], copyCount, &Context->Buffer[length]);
+                length += copyCount;
+                byte1 = Buffer[i + count - 1];
+                byte2 = Buffer[i + count - 2];
+                byte3 = Buffer[i + count - 3];
+                charType1 = PhCharTypePrintable;
+                charType2 = PhCharTypePrintable;
+                charType3 = PhCharTypePrintable;
+                i += count - 1;
+                continue;
+            }
+        }
+
         byte = Buffer[i];
 
         // Classify the current byte.
@@ -102,7 +380,10 @@ BOOLEAN PhpSearchStrings(
             checkUTF8High = TRUE;
         }
 
-        charType = PhpClassifyByte(byte, Context->ExtendedCharSet, checkUTF8High);
+        charType = (PH_CHAR_TYPE)PhpCharTypeTable[Context->ExtendedCharSet ? 1 : 0][byte];
+
+        if (charType == PhCharTypeUTF16High && !checkUTF8High)
+            charType = PhCharTypeNone;
 
         // Pattern: [Printable][Printable][Printable] - ANSI string detection
         if (charType2 == PhCharTypePrintable &&
@@ -256,17 +537,14 @@ CreateResult:
                 lengthInBytes *= 2;
             }
 
-            result.Unicode = isWide;
+            result.Encoding = isWide ? PH_STRING_SEARCH_ENCODING_UTF16 : PH_STRING_SEARCH_ENCODING_ANSI;
             result.Address = PTR_ADD_OFFSET(Buffer, i - bias - lengthInBytes);
             result.Length = lengthInBytes;
-            result.String = PhCreateStringEx(
-                Context->Buffer,
-                2 * min(length, RTL_NUMBER_OF(Context->Buffer))
-                );
+            result.String.Buffer = Context->Buffer;
+            result.String.Length = min(length, RTL_NUMBER_OF(Context->Buffer)) * sizeof(WCHAR);
 
             isFinished = Context->Callback(&result, Context->CallbackContext);
 
-            PhClearReference(&result.String);
             pattern = PhCharPatternNone;
             length = 0;
 
@@ -302,6 +580,8 @@ NTSTATUS PhSearchStrings(
     if (!MinimumLength)
         return STATUS_INVALID_PARAMETER;
 
+    PhpInitializeCharTypeTable();
+
     context = PhAllocateZero(sizeof(PH_STRING_SEARCH_CONEXT));
     context->MinimumLength = MinimumLength;
     context->ExtendedCharSet = ExtendedCharSet;
@@ -311,13 +591,23 @@ NTSTATUS PhSearchStrings(
     buffer = NULL;
     length = 0;
 
-    while (NT_SUCCESS(status = NextBuffer(&buffer, &length, Context)))
+    __try
     {
-        if (!length)
-            break;
-
-        if (PhpSearchStrings(context, buffer, length))
-            break;
+        while (NT_SUCCESS(status = NextBuffer(&buffer, &length, Context)))
+        {
+            if (!length)
+                break;
+    
+            if (PhpSearchUtf8Strings(context, buffer, length))
+                break;
+    
+            if (PhpSearchStrings(context, buffer, length))
+                break;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        status = GetExceptionCode();
     }
 
     PhFree(context);

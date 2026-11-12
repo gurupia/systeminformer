@@ -279,6 +279,20 @@ VOID EtAddSMBIOSEnum(
 #define ET_SMBIOS_FLAGS(n, v, f)        EtAddSMBIOSFlags(Context, group, n, f, RTL_NUMBER_OF(f), v)
 #define ET_SMBIOS_ENUM(n, v, e)         EtAddSMBIOSEnum(Context, group, n, e, sizeof(e), v);
 
+// Count fields are firmware controlled and are not guaranteed to agree with the
+// formatted section they index into. PH_SMBIOS_CONTAINS_FIELD only validates the
+// count field itself, so derive the maximum representable element count from
+// Header.Length and the array offset, then clamp the declared count. (COR-02)
+#define ET_SMBIOS_ARRAY_MAX_COUNT(Entry, Array) \
+    (((ULONG)(Entry)->Header.Length > (ULONG)((ULONG_PTR)(Array) - (ULONG_PTR)(Entry))) ? \
+     (((ULONG)(Entry)->Header.Length - (ULONG)((ULONG_PTR)(Array) - (ULONG_PTR)(Entry))) / (ULONG)sizeof((Array)[0])) : 0)
+
+// TRUE when a variable-length record of Size bytes starting at Pointer lies
+// wholly inside the formatted section that ends at End. (COR-02)
+#define ET_SMBIOS_RECORD_FITS(Pointer, Size, End) \
+    (((ULONG_PTR)(Pointer) < (ULONG_PTR)(End)) && \
+     ((ULONG_PTR)(End) - (ULONG_PTR)(Pointer) >= (ULONG_PTR)(Size)))
+
 VOID EtSMBIOSFirmware(
     _In_ ULONG_PTR EnumHandle,
     _In_ PPH_SMBIOS_ENTRY Entry,
@@ -522,10 +536,15 @@ VOID EtSMBIOSBaseboard(
     {
         PH_STRING_BUILDER sb;
         PPH_STRING string;
+        ULONG count;
+
+        // Clamp the firmware-declared count to the formatted section. (COR-02)
+        count = min((ULONG)Entry->Baseboard.NumberOfHandles,
+            ET_SMBIOS_ARRAY_MAX_COUNT(Entry, Entry->Baseboard.Handles));
 
         PhInitializeStringBuilder(&sb, 10);
 
-        for (ULONG i = 0; i < Entry->Baseboard.NumberOfHandles; i++)
+        for (ULONG i = 0; i < count; i++)
         {
             WCHAR buffer[PH_PTR_STR_LEN_1];
 
@@ -715,7 +734,7 @@ VOID EtSMBIOSProcessor(
     {
         ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_UNKNOWN, L"Unknown"),
         ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_64_BIT_CAPABLE, L"64-bit capable"),
-        ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_MILT_CORE, L"Multi-core"),
+        ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_MULTI_CORE, L"Multi-core"),
         ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_HARDWARE_THREADED, L"Hardware threaded"),
         ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_EXECUTE_PROTECTION, L"Execute protection"),
         ET_SMBIOS_FLAG(SMBIOS_PROCESSOR_FLAG_ENHANCED_VIRTUALIZATION, L"Enhanced virtualization"),
@@ -992,10 +1011,15 @@ VOID EtSMBIOSMemoryController(
     {
         PH_STRING_BUILDER sb;
         PPH_STRING string;
+        ULONG count;
+
+        // Clamp the firmware-declared count to the formatted section. (COR-02)
+        count = min((ULONG)Entry->MemoryController.NumberOfSlots,
+            ET_SMBIOS_ARRAY_MAX_COUNT(Entry, Entry->MemoryController.SlotHandles));
 
         PhInitializeStringBuilder(&sb, 10);
 
-        for (ULONG i = 0; i < Entry->MemoryController.NumberOfSlots; i++)
+        for (ULONG i = 0; i < count; i++)
         {
             WCHAR buffer[PH_PTR_STR_LEN_1];
 
@@ -3369,7 +3393,7 @@ VOID EtSMBIOSIPMIDevice(
 {
     static const PH_KEY_VALUE_PAIR types[] =
     {
-        SIP(L"Unknown", SMBIOS_IPMI_INTERFACE_TYPE_UNKONWN),
+        SIP(L"Unknown", SMBIOS_IPMI_INTERFACE_TYPE_UNKNOWN),
         SIP(L"KCS", SMBIOS_IPMI_INTERFACE_TYPE_KCS),
         SIP(L"SMIC", SMBIOS_IPMI_INTERFACE_TYPE_SMIC),
         SIP(L"BT", SMBIOS_IPMI_INTERFACE_TYPE_BT),
@@ -3560,6 +3584,16 @@ VOID EtSMBIOSAdditionalInformation(
             PH_FORMAT format[3];
             PPH_STRING name;
 
+            // The fixed part of the record must lie inside the formatted section
+            // before any of its fields are read. (COR-02)
+            if (!ET_SMBIOS_RECORD_FITS(entry, FIELD_OFFSET(SMBIOS_ADDITIONAL_ENTRY, Value), end))
+                break;
+
+            // A zero or short length would also stall the walk below. (COR-02)
+            if (entry->Length < FIELD_OFFSET(SMBIOS_ADDITIONAL_ENTRY, Value) ||
+                !ET_SMBIOS_RECORD_FITS(entry, entry->Length, end))
+                break;
+
             PhInitFormatC(&format[0], L'#');
             PhInitFormatU(&format[1], i + 1);
 
@@ -3621,7 +3655,7 @@ VOID EtSMBIOSOnboardDevice(
         SIP(L"Bluetooth", SMBIOS_ONBOARD_DEVICE_TYPE_BLUETOOTH),
         SIP(L"WWAN", SMBIOS_ONBOARD_DEVICE_TYPE_WWAN),
         SIP(L"eMMC", SMBIOS_ONBOARD_DEVICE_TYPE_EMMC),
-        SIP(L"NVMe", SMBIOS_ONBOARD_DEIVCE_TYPE_NVME),
+        SIP(L"NVMe", SMBIOS_ONBOARD_DEVICE_TYPE_NVME),
         SIP(L"UFS", SMBIOS_ONBOARD_DEVICE_TYPE_UFS),
     };
 
@@ -3718,6 +3752,13 @@ VOID EtSMBIOSMCHInterface(
         PH_FORMAT format[3];
         PPH_STRING name;
 
+        // Bound each variable-length record by the formatted section. (COR-02)
+        if (!ET_SMBIOS_RECORD_FITS(record, FIELD_OFFSET(SMBIOS_MCHI_PROTOCOL_RECORD, Data), end))
+            break;
+
+        if (!ET_SMBIOS_RECORD_FITS(record->Data, record->Length, end))
+            break;
+
         PhInitFormatC(&format[0], L'#');
         PhInitFormatU(&format[1], i + 1);
 
@@ -3741,8 +3782,11 @@ VOID EtSMBIOSMCHInterface(
             PhDereferenceObject(data);
         }
 
+        // The record is Type, Length, then Length bytes of data, so advance past
+        // the fixed part and the data (this previously advanced one byte short,
+        // desynchronizing every record after the first). (COR-02)
         pointer = PTR_ADD_OFFSET(pointer, record->Length);
-        pointer = PTR_ADD_OFFSET(pointer, FIELD_OFFSET(SMBIOS_MCHI_PROTOCOL_RECORD, Length));
+        pointer = PTR_ADD_OFFSET(pointer, FIELD_OFFSET(SMBIOS_MCHI_PROTOCOL_RECORD, Data));
         record = pointer;
     }
 }
@@ -3859,6 +3903,13 @@ VOID EtSMBIOSProcessorAdditional(
             PH_FORMAT format[3];
             PPH_STRING name;
 
+            // Bound each variable-length block by the formatted section. (COR-02)
+            if (!ET_SMBIOS_RECORD_FITS(block, FIELD_OFFSET(SMBIOS_PROCESSOR_SPECIFIC_BLOCK, Data), end))
+                break;
+
+            if (!ET_SMBIOS_RECORD_FITS(block->Data, block->Length, end))
+                break;
+
             PhInitFormatC(&format[0], L'#');
             PhInitFormatU(&format[1], ++count);
 
@@ -3957,10 +4008,15 @@ VOID EtSMBIOSFirmwareInventory(
     {
         PH_STRING_BUILDER sb;
         PPH_STRING string;
+        ULONG count;
+
+        // Clamp the firmware-declared count to the formatted section. (COR-02)
+        count = min((ULONG)Entry->FirmwareInventory.AssociatedComponents,
+            ET_SMBIOS_ARRAY_MAX_COUNT(Entry, Entry->FirmwareInventory.AssociatedComponentHandles));
 
         PhInitializeStringBuilder(&sb, 10);
 
-        for (UCHAR i = 0; i < Entry->FirmwareInventory.AssociatedComponents; i++)
+        for (ULONG i = 0; i < count; i++)
         {
             WCHAR buffer[PH_PTR_STR_LEN_1];
 
@@ -3990,7 +4046,7 @@ VOID EtSMBIOSStringProperty(
     static const PH_KEY_VALUE_PAIR identifiers[] =
     {
         SIP(L"Reserved", SMBIOS_STRING_PROPERTY_ID_RESERVED),
-        SIP(L"UEFI device path", SMBIOS_STRING_PROPERTY_ID_UEIF_DEVICE_PATH),
+        SIP(L"UEFI device path", SMBIOS_STRING_PROPERTY_ID_UEFI_DEVICE_PATH),
     };
 
     ET_SMBIOS_GROUP(L"String property");
@@ -4224,38 +4280,38 @@ VOID EtEnumerateSMBIOSEntries(
 }
 
 INT_PTR CALLBACK EtSMBIOSDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PSMBIOS_WINDOW_CONTEXT context = NULL;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(SMBIOS_WINDOW_CONTEXT));
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->WindowHandle = hwndDlg;
+            context->WindowHandle = WindowHandle;
             context->ParentWindowHandle = (HWND)lParam;
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_SMBIOS_INFO);
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_SMBIOS_INFO);
 
             context->ShowUndefinedTypes = !!PhGetIntegerSetting(SETTING_NAME_SMBIOS_SHOW_UNDEFINED_TYPES);
 
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetApplicationWindowIcon(WindowHandle);
 
             PhSetListViewStyle(context->ListViewHandle, FALSE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
@@ -4263,27 +4319,27 @@ INT_PTR CALLBACK EtSMBIOSDlgProc(
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 300, L"Value");
             PhSetExtendedListView(context->ListViewHandle);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
 
             PhLoadListViewColumnsFromSetting(SETTING_NAME_SMBIOS_INFO_COLUMNS, context->ListViewHandle);
             if (PhValidWindowPlacementFromSetting(SETTING_NAME_SMBIOS_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(SETTING_NAME_SMBIOS_WINDOW_POSITION, SETTING_NAME_SMBIOS_WINDOW_SIZE, hwndDlg);
+                PhLoadWindowPlacementFromSetting(SETTING_NAME_SMBIOS_WINDOW_POSITION, SETTING_NAME_SMBIOS_WINDOW_SIZE, WindowHandle);
             else
-                PhCenterWindow(hwndDlg, context->ParentWindowHandle);
+                PhCenterWindow(WindowHandle, context->ParentWindowHandle);
 
             EtEnumerateSMBIOSEntries(context);
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
         }
         break;
     case WM_DESTROY:
         {
             PhSaveListViewColumnsToSetting(SETTING_NAME_SMBIOS_INFO_COLUMNS, context->ListViewHandle);
-            PhSaveWindowPlacementToSetting(SETTING_NAME_SMBIOS_WINDOW_POSITION, SETTING_NAME_SMBIOS_WINDOW_SIZE, hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_NAME_SMBIOS_WINDOW_POSITION, SETTING_NAME_SMBIOS_WINDOW_SIZE, WindowHandle);
             PhDeleteLayoutManager(&context->LayoutManager);
 
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
             PhFree(context);
         }
         break;
@@ -4303,7 +4359,7 @@ INT_PTR CALLBACK EtSMBIOSDlgProc(
             switch (LOWORD(wParam))
             {
             case IDCANCEL:
-                EndDialog(hwndDlg, IDOK);
+                EndDialog(WindowHandle, IDOK);
                 break;
             }
         }
@@ -4329,9 +4385,7 @@ INT_PTR CALLBACK EtSMBIOSDlgProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(context->ListViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, PHAPP_IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -4339,7 +4393,7 @@ INT_PTR CALLBACK EtSMBIOSDlgProc(
 
                     item = PhShowEMenu(
                         menu,
-                        hwndDlg,
+                        WindowHandle,
                         PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         point.x,
@@ -4363,18 +4417,17 @@ INT_PTR CALLBACK EtSMBIOSDlgProc(
 
                     PhDestroyEMenu(menu);
                 }
-
-                PhFree(listviewItems);
-            }
+                    PhFree(listviewItems);
+                }
         }
         break;
 
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
@@ -4392,3 +4445,5 @@ VOID EtShowSMBIOSDialog(
         ParentWindowHandle
         );
 }
+
+

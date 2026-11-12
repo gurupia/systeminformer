@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *     jxy-s   2021-2022
  *
  */
@@ -61,7 +61,7 @@ KphSetParameters(
     );
 
 PHLIBAPI
-VOID
+NTSTATUS
 NTAPI
 KphSetServiceSecurity(
     _In_ SC_HANDLE ServiceHandle
@@ -210,7 +210,7 @@ KphEnumerateProcessHandles(
     _In_ HANDLE ProcessHandle,
     _Out_writes_bytes_(BufferLength) PVOID Buffer,
     _In_opt_ ULONG BufferLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -268,7 +268,7 @@ NTAPI
 KphOpenDriver(
     _Out_ PHANDLE DriverHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_ PCOBJECT_ATTRIBUTES ObjectAttributes
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes
     );
 
 PHLIBAPI
@@ -279,7 +279,7 @@ KphQueryInformationDriver(
     _In_ KPH_DRIVER_INFORMATION_CLASS DriverInformationClass,
     _Out_writes_bytes_opt_(DriverInformationLength) PVOID DriverInformation,
     _In_ ULONG DriverInformationLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -290,7 +290,7 @@ KphQueryInformationProcess(
     _In_ KPH_PROCESS_INFORMATION_CLASS ProcessInformationClass,
     _Out_writes_bytes_opt_(ProcessInformationLength) PVOID ProcessInformation,
     _In_ ULONG ProcessInformationLength,
-    _Inout_opt_ PULONG ReturnLength
+    _Out_opt_ PULONG ReturnLength
     );
 
 PHLIBAPI
@@ -440,7 +440,7 @@ NTAPI
 KphCreateFile(
     _Out_ PHANDLE FileHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_ PCOBJECT_ATTRIBUTES ObjectAttributes,
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes,
     _Out_ PIO_STATUS_BLOCK IoStatusBlock,
     _In_opt_ PLARGE_INTEGER AllocationSize,
     _In_ ULONG FileAttributes,
@@ -469,7 +469,7 @@ NTAPI
 KphQuerySection(
     _In_ HANDLE SectionHandle,
     _In_ KPH_SECTION_INFORMATION_CLASS SectionInformationClass,
-    _Out_writes_bytes_(SectionInformationLength) PVOID SectionInformation,
+    _Out_writes_bytes_opt_(SectionInformationLength) PVOID SectionInformation,
     _In_ ULONG SectionInformationLength,
     _Out_opt_ PULONG ReturnLength
     );
@@ -494,15 +494,15 @@ KphCompareObjects(
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphGetMessageSettings(
-    _Out_ PKPH_MESSAGE_SETTINGS Settings
+KphGetInformerClientSettings(
+    _Out_ PKPH_INFORMER_CLIENT_SETTINGS Settings
     );
 
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphSetMessageSettings(
-    _In_ PKPH_MESSAGE_SETTINGS Settings
+KphSetInformerClientSettings(
+    _In_ PKPH_INFORMER_CLIENT_SETTINGS Settings
     );
 
 PHLIBAPI
@@ -578,7 +578,7 @@ NTSTATUS
 NTAPI
 KphGetInformerProcessSettings(
     _In_ HANDLE ProcessHandle,
-    _In_ PKPH_INFORMER_SETTINGS Settings
+    _Out_ PKPH_INFORMER_SETTINGS Settings
     );
 
 PHLIBAPI
@@ -658,8 +658,8 @@ KphGetInformerStats(
 PHLIBAPI
 NTSTATUS
 NTAPI
-KphGetMessageStats(
-    _Out_ PKPH_INFORMER_STATS Stats
+KphGetInformerClientStats(
+    _Out_ PKPH_INFORMER_CLIENT_STATS Stats
     );
 
 EXTERN_C_END

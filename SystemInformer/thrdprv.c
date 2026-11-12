@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -187,7 +187,10 @@ VOID PhpThreadProviderDeleteProcedure(
             data = CONTAINING_RECORD(entry, PH_THREAD_QUERY_DATA, ListEntry);
             entry = entry->Next;
 
+            PhClearReference(&data->StartAddressWin32String);
+            PhClearReference(&data->StartAddressWin32FileName);
             PhClearReference(&data->StartAddressString);
+            PhClearReference(&data->StartAddressFileName);
             PhClearReference(&data->ServiceName);
             PhDereferenceObject(data->ThreadItem);
             PhFree(data);
@@ -243,7 +246,7 @@ VOID PhLoadSymbolsThreadProvider(
 }
 
 PPH_THREAD_ITEM PhCreateThreadItem(
-    _In_ CLIENT_ID ClientId
+    _In_ PCLIENT_ID ClientId
     )
 {
     PPH_THREAD_ITEM threadItem;
@@ -253,10 +256,10 @@ PPH_THREAD_ITEM PhCreateThreadItem(
         PhThreadItemType
         );
     memset(threadItem, 0, sizeof(PH_THREAD_ITEM));
-    threadItem->ClientId = ClientId;
+    threadItem->ClientId = *ClientId;
 
-    PhPrintUInt32(threadItem->ThreadIdString, HandleToUlong(ClientId.UniqueThread));
-    PhPrintUInt32IX(threadItem->ThreadIdHexString, HandleToUlong(ClientId.UniqueThread));
+    PhPrintUInt32(threadItem->ThreadIdString, HandleToUlong(ClientId->UniqueThread));
+    PhPrintUInt32IX(threadItem->ThreadIdHexString, HandleToUlong(ClientId->UniqueThread));
 
     PhEmCallObjectOperation(EmThreadItemType, threadItem, EmObjectCreate);
 
@@ -274,8 +277,11 @@ VOID PhpThreadItemDeleteProcedure(
     PhEmCallObjectOperation(EmThreadItemType, threadItem, EmObjectDelete);
 
     if (threadItem->ThreadHandle) NtClose(threadItem->ThreadHandle);
+    if (threadItem->FreezeHandle) NtClose(threadItem->FreezeHandle);
     if (threadItem->StartAddressWin32String) PhDereferenceObject(threadItem->StartAddressWin32String);
     if (threadItem->StartAddressWin32FileName) PhDereferenceObject(threadItem->StartAddressWin32FileName);
+    if (threadItem->StartAddressString) PhDereferenceObject(threadItem->StartAddressString);
+    if (threadItem->StartAddressFileName) PhDereferenceObject(threadItem->StartAddressFileName);
     if (threadItem->ServiceName) PhDereferenceObject(threadItem->ServiceName);
 
     if (!PhSystemProcessorInformation.SingleProcessorGroup)
@@ -845,7 +851,7 @@ VOID PhpThreadProviderUpdate(
 
         if (!threadItem)
         {
-            threadItem = PhCreateThreadItem(thread->ClientId);
+            threadItem = PhCreateThreadItem(&thread->ClientId);
             threadItem->KernelTime = thread->KernelTime;
             PhUpdateDelta(&threadItem->CpuKernelDelta, threadItem->KernelTime.QuadPart);
             threadItem->UserTime = thread->UserTime;
@@ -1044,15 +1050,22 @@ VOID PhpThreadProviderUpdate(
             if (WindowsVersion >= WINDOWS_11_22H2 && threadItem->ThreadHandle)
             {
                 POWER_THROTTLING_THREAD_STATE powerThrottlingState;
+                BOOLEAN powerThrottling = FALSE;
 
                 if (NT_SUCCESS(PhGetThreadPowerThrottlingState(threadItem->ThreadHandle, &powerThrottlingState)))
                 {
                     if (powerThrottlingState.ControlMask & POWER_THROTTLING_THREAD_EXECUTION_SPEED &&
                         powerThrottlingState.StateMask & POWER_THROTTLING_THREAD_EXECUTION_SPEED)
                     {
-                        threadItem->PowerThrottling = TRUE;
+                        powerThrottling = TRUE;
                     }
                 }
+
+                threadItem->PowerThrottling = powerThrottling;
+            }
+            else
+            {
+                threadItem->PowerThrottling = FALSE;
             }
 
             PhpQueueThreadQuery(threadProvider, threadItem);

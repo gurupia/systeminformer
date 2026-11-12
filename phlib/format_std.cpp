@@ -5,17 +5,29 @@
  *
  * Authors:
  *
- *     dmex    2020-2024
+ *     dmex    2020-2026
  *
  */
 
 #include <phbase.h>
+#include <utility>
 #include <charconv>
 
 extern NTSTATUS PhErrcToNtStatus(
     _In_ std::errc ec
     );
 
+/**
+ * Converts a single-precision floating point value to a UTF-8 string.
+ * 
+ * \param Value The value to convert.
+ * \param Type The format type (e.g., FormatStandardForm, FormatHexadecimalForm).
+ * \param Precision The number of digits after the decimal point. If -1, finds the shortest representation.
+ * \param Buffer The output buffer.
+ * \param BufferLength The size of the buffer in bytes.
+ * \param ReturnLength Contains the number of bytes written (excluding null terminator).
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhFormatSingleToUtf8(
     _In_ FLOAT Value,
     _In_ ULONG Type,
@@ -26,35 +38,50 @@ NTSTATUS PhFormatSingleToUtf8(
     )
 {
 #if defined(PH_TOCHARS_BUFFER)
-    chars_format format = chars_format::fixed;
-    to_chars_result result;
+    std::chars_format format;
+    std::to_chars_result result;
     SIZE_T returnLength;
     CHAR buffer[_CVTBUFSIZE + 1];
 
-    if (Type & FormatStandardForm)
-        format = chars_format::general;
-    else if (Type & FormatHexadecimalForm)
-        format = chars_format::hex;
+    if (std::cmp_less(Precision, 0))
+    {
+        // This overload finds the shortest string that converts back to the exact same value.
+        result = std::to_chars(
+            buffer,
+            buffer + sizeof(buffer) - sizeof(ANSI_NULL),
+            Value
+            );
+    }
+    else
+    {
+        if (FlagOn(Type, FormatStandardForm))
+            format = std::chars_format::general;
+        else if (FlagOn(Type, FormatHexadecimalForm))
+            format = std::chars_format::hex;
+        else
+            format = std::chars_format::fixed;
 
-    result = std::to_chars(
-        buffer,
-        Buffer + BufferLength - sizeof(ANSI_NULL), // Reserve space for null terminator // end(buffer)
-        Value,
-        format,
-        Precision
-        );
+        result = std::to_chars(
+            buffer,
+            buffer + sizeof(buffer) - sizeof(ANSI_NULL),
+            Value,
+            format,
+            Precision
+            );
+    }
 
     if (result.ec != static_cast<std::errc>(0))
         return PhErrcToNtStatus(result.ec);
 
     returnLength = result.ptr - buffer;
 
-    if (returnLength == 0)
+    if (std::cmp_equal(returnLength, 0))
         return STATUS_UNSUCCESSFUL;
+    if (std::cmp_greater_equal(returnLength, BufferLength))
+        return STATUS_BUFFER_TOO_SMALL;
 
-    // This could be removed in favor of directly passing the input buffer to std:to_chars but
-    // for now use memcpy so that failures writing a value don't touch the input buffer (dmex)
-    memcpy_s(Buffer, BufferLength, buffer, returnLength);
+    // Format into the local buffer so that failures writing a value don't touch the input buffer (dmex)
+    memcpy(Buffer, buffer, returnLength);
     Buffer[returnLength] = ANSI_NULL;
 
     if (ReturnLength)
@@ -66,7 +93,7 @@ NTSTATUS PhFormatSingleToUtf8(
     std::to_chars_result result;
     SIZE_T returnLength;
 
-    if (Precision < 0)
+    if (std::cmp_less(Precision, 0))
     {
         // This overload finds the shortest string that converts back to the exact same double.
         // It is roughly 2x faster than the version with explicit precision.
@@ -110,6 +137,17 @@ NTSTATUS PhFormatSingleToUtf8(
 #endif
 }
 
+/**
+ * Converts a double-precision floating point value to a UTF-8 string.
+ * 
+ * \param Value The value to convert.
+ * \param Type The format type (e.g., FormatStandardForm, FormatHexadecimalForm).
+ * \param Precision The number of digits after the decimal point. If -1, finds the shortest representation.
+ * \param Buffer The output buffer.
+ * \param BufferLength The size of the buffer in bytes.
+ * \param ReturnLength Contains the number of bytes written (excluding null terminator).
+ * \return NTSTATUS Successful or errant status.
+ */
 NTSTATUS PhFormatDoubleToUtf8(
     _In_ DOUBLE Value,
     _In_ ULONG Type,
@@ -120,18 +158,18 @@ NTSTATUS PhFormatDoubleToUtf8(
     )
 {
 #if defined(PH_TOCHARS_BUFFER)
-    chars_format format = chars_format::fixed;
-    to_chars_result result;
+    std::chars_format format;
+    std::to_chars_result result;
     SIZE_T returnLength;
     CHAR buffer[_CVTBUFSIZE + 1];
 
-    if (Precision < 0)
+    if (std::cmp_less(Precision, 0))
     {
         // This overload finds the shortest string that converts back to the exact same double.
         // It is roughly 2x faster than the version with explicit precision.
         result = std::to_chars(
-            Buffer,
-            Buffer + BufferLength - sizeof(ANSI_NULL),
+            buffer,
+            buffer + sizeof(buffer) - sizeof(ANSI_NULL),
             Value
             );
     }
@@ -144,9 +182,9 @@ NTSTATUS PhFormatDoubleToUtf8(
         else
             format = std::chars_format::fixed;
 
-        result = to_chars(
+        result = std::to_chars(
             buffer,
-            Buffer + BufferLength - sizeof(ANSI_NULL), // end(buffer)
+            buffer + sizeof(buffer) - sizeof(ANSI_NULL),
             Value,
             format,
             Precision
@@ -154,16 +192,17 @@ NTSTATUS PhFormatDoubleToUtf8(
     }
 
     if (result.ec != static_cast<std::errc>(0))
-        return STATUS_UNSUCCESSFUL;
+        return PhErrcToNtStatus(result.ec);
 
     returnLength = result.ptr - buffer;
 
-    if (returnLength == 0)
+    if (std::cmp_equal(returnLength, 0))
         return STATUS_UNSUCCESSFUL;
+    if (std::cmp_greater_equal(returnLength, BufferLength))
+        return STATUS_BUFFER_TOO_SMALL;
 
-    // This could be removed in favor of directly passing the input buffer to std:to_chars but
-    // for now use memcpy so that failures writing a value don't touch the input buffer (dmex)
-    memcpy_s(Buffer, BufferLength, buffer, returnLength);
+    // Format into the local buffer so that failures writing a value don't touch the input buffer (dmex)
+    memcpy(Buffer, buffer, returnLength);
     Buffer[returnLength] = ANSI_NULL;
 
     if (ReturnLength)
@@ -175,7 +214,7 @@ NTSTATUS PhFormatDoubleToUtf8(
     std::to_chars_result result;
     SIZE_T returnLength;
 
-    if (Precision < 0)
+    if (std::cmp_less(Precision, 0))
     {
         // This overload finds the shortest string that converts back to the exact same double.
         // It is roughly 2x faster than the version with explicit precision.
@@ -228,6 +267,7 @@ NTSTATUS PhFormatDoubleToUtf8(
  * \param Buffer The output buffer.
  * \param BufferLength The size of the buffer in bytes.
  * \param ReturnLength Contains the number of bytes written (excluding null terminator).
+ * \return NTSTATUS Successful or errant status.
  */
 NTSTATUS PhIntegerToUtf8Buffer(
     _In_ LONG64 Integer,
@@ -239,11 +279,11 @@ NTSTATUS PhIntegerToUtf8Buffer(
     )
 {
     std::to_chars_result result;
-    INT radix = (Base == 0) ? 10 : (INT)Base;
+    INT radix = (std::cmp_equal(Base, 0)) ? 10 : static_cast<INT>(Base);
 
-    if (!Buffer || BufferLength == 0)
+    if (!Buffer || std::cmp_equal(BufferLength, 0))
         return STATUS_BUFFER_TOO_SMALL;
-    if (radix < 2 || radix > 36)
+    if (std::cmp_less(radix, 2) || std::cmp_greater(radix, 36))
         return STATUS_INVALID_PARAMETER;
 
     // Reserve 1 byte for null terminator
@@ -254,7 +294,7 @@ NTSTATUS PhIntegerToUtf8Buffer(
         result = std::to_chars(
             Buffer, 
             endBuffer, 
-            (long long)Integer, 
+            static_cast<long long>(Integer),
             radix
             );
     }
@@ -263,7 +303,7 @@ NTSTATUS PhIntegerToUtf8Buffer(
         result = std::to_chars(
             Buffer, 
             endBuffer, 
-            (unsigned long long)Integer, 
+            static_cast<unsigned long long>(Integer),
             radix
             );
     }
@@ -288,6 +328,11 @@ NTSTATUS PhIntegerToUtf8Buffer(
     return STATUS_SUCCESS;
 }
 
+/**
+ * Converts a std::errc error code to an NTSTATUS.
+ * 
+ * \param ec The error code to convert.
+ */
 NTSTATUS PhErrcToNtStatus(
     _In_ std::errc ec
     )
@@ -442,4 +487,143 @@ NTSTATUS PhErrcToNtStatus(
     default:
         return STATUS_UNSUCCESSFUL;
     }
+}
+
+/**
+ * Converts a UTF-8 string to a 64-bit integer.
+ * 
+ * \param String The string to process.
+ * \param Length The length of the string, in bytes.
+ * \param Base The radix (e.g., 10, 16, 8). If 0, defaults to 10.
+ * \param Integer The resulting integer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToInteger64Utf8Ex(
+    _In_reads_bytes_(Length) PCSTR String,
+    _In_ SIZE_T Length,
+    _In_opt_ ULONG Base,
+    _Out_ PLONG64 Integer
+    )
+{
+    INT radix = (std::cmp_equal(Base, 0)) ? 10 : static_cast<INT>(Base);
+
+    auto result = std::from_chars(
+        String,
+        String + Length,
+        *reinterpret_cast<long long*>(Integer),
+        radix
+        );
+
+    if (result.ec != std::errc())
+        return PhErrcToNtStatus(result.ec);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * Converts a UTF-8 string to a 64-bit integer.
+ * 
+ * \param String The string to process.
+ * \param Base The radix (e.g., 10, 16, 8). If 0, defaults to 10.
+ * \param Integer The resulting integer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToInteger64Utf8(
+    _In_ PCSTR String,
+    _In_opt_ ULONG Base,
+    _Out_ PLONG64 Integer
+    )
+{
+    return PhStringToInteger64Utf8Ex(String, strlen(String), Base, Integer);
+}
+
+/**
+ * Converts a UTF-8 string to an unsigned 64-bit integer.
+ * 
+ * \param String The string to process.
+ * \param Length The length of the string, in bytes.
+ * \param Base The radix (e.g., 10, 16, 8). If 0, defaults to 10.
+ * \param Integer The resulting integer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToUInt64Utf8Ex(
+    _In_reads_bytes_(Length) PCSTR String,
+    _In_ SIZE_T Length,
+    _In_opt_ ULONG Base,
+    _Out_ PULONG64 Integer
+    )
+{
+    INT radix = (std::cmp_equal(Base, 0)) ? 10 : static_cast<INT>(Base);
+
+    auto result = std::from_chars(
+        String,
+        String + Length,
+        *reinterpret_cast<unsigned long long*>(Integer),
+        radix
+        );
+
+    if (result.ec != std::errc())
+        return PhErrcToNtStatus(result.ec);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * Converts a UTF-8 string to an unsigned 64-bit integer.
+ * 
+ * \param String The string to process.
+ * \param Base The radix (e.g., 10, 16, 8). If 0, defaults to 10.
+ * \param Integer The resulting integer.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToUInt64Utf8(
+    _In_ PCSTR String,
+    _In_opt_ ULONG Base,
+    _Out_ PULONG64 Integer
+    )
+{
+    return PhStringToUInt64Utf8Ex(String, strlen(String), Base, Integer);
+}
+
+/**
+ * Converts a UTF-8 string to a double-precision floating point value.
+ * 
+ * \param String The string to process.
+ * \param Length The length of the string, in bytes.
+ * \param Double The resulting double.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToDoubleUtf8Ex(
+    _In_reads_bytes_(Length) PCSTR String,
+    _In_ SIZE_T Length,
+    _Out_ DOUBLE* Double
+    )
+{
+    std::from_chars_result result;
+
+    result = std::from_chars(
+        String,
+        String + Length,
+        *Double
+        );
+
+    if (result.ec != std::errc())
+        return PhErrcToNtStatus(result.ec);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * Converts a UTF-8 string to a double-precision floating point value.
+ * 
+ * \param String The string to process.
+ * \param Double The resulting double.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhStringToDoubleUtf8(
+    _In_ PCSTR String,
+    _Out_ DOUBLE* Double
+    )
+{
+    return PhStringToDoubleUtf8Ex(String, strlen(String), Double);
 }

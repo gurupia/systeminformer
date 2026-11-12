@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2024
+ *     dmex    2017-2026
  *
  */
 
@@ -42,7 +42,7 @@ NTSTATUS PhOpenThread(
 
     level = KsiLevel();
 
-    if ((level >= KphLevelMed) && (DesiredAccess & KPH_THREAD_READ_ACCESS) == DesiredAccess)
+    if ((DesiredAccess & KPH_THREAD_READ_ACCESS) == DesiredAccess && (level >= KphLevelMed))
     {
         status = KphOpenThread(
             ThreadHandle,
@@ -52,7 +52,14 @@ NTSTATUS PhOpenThread(
     }
     else
     {
-        InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+        InitializeObjectAttributes(
+            &objectAttributes,
+            NULL,
+            0,
+            NULL,
+            NULL
+            );
+
         status = NtOpenThread(
             ThreadHandle,
             DesiredAccess,
@@ -62,6 +69,9 @@ NTSTATUS PhOpenThread(
 
         if (status == STATUS_ACCESS_DENIED && (level == KphLevelMax))
         {
+            clientId.UniqueProcess = NULL;
+            clientId.UniqueThread = ThreadId;
+
             status = KphOpenThread(
                 ThreadHandle,
                 DesiredAccess,
@@ -89,7 +99,11 @@ NTSTATUS PhOpenThreadClientId(
 {
     NTSTATUS status;
     OBJECT_ATTRIBUTES objectAttributes;
+    CLIENT_ID clientId;
     KPH_LEVEL level;
+
+    clientId.UniqueProcess = ClientId->UniqueProcess;
+    clientId.UniqueThread = ClientId->UniqueThread;
 
     level = KsiLevel();
 
@@ -98,25 +112,35 @@ NTSTATUS PhOpenThreadClientId(
         status = KphOpenThread(
             ThreadHandle,
             DesiredAccess,
-            ClientId
+            &clientId
             );
     }
     else
     {
-        InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+        InitializeObjectAttributes(
+            &objectAttributes,
+            NULL,
+            0,
+            NULL,
+            NULL
+            );
+
         status = NtOpenThread(
             ThreadHandle,
             DesiredAccess,
             &objectAttributes,
-            ClientId
+            &clientId
             );
 
         if (status == STATUS_ACCESS_DENIED && (level == KphLevelMax))
         {
+            clientId.UniqueProcess = ClientId->UniqueProcess;
+            clientId.UniqueThread = ClientId->UniqueThread;
+
             status = KphOpenThread(
                 ThreadHandle,
                 DesiredAccess,
-                ClientId
+                &clientId
                 );
         }
     }
@@ -144,7 +168,13 @@ NTSTATUS PhOpenThreadPublic(
     clientId.UniqueProcess = NULL;
     clientId.UniqueThread = ThreadId;
 
-    InitializeObjectAttributes(&objectAttributes, NULL, 0, NULL, NULL);
+    InitializeObjectAttributes(
+        &objectAttributes,
+        NULL,
+        0,
+        NULL,
+        NULL
+        );
 
     return NtOpenThread(
         ThreadHandle,
@@ -573,6 +603,204 @@ NTSTATUS PhGetThreadArm32Context(
 #endif
 
 /**
+ * Retrieves the XState feature mask for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread whose XState features are to be retrieved.
+ * \param[out] FeatureMask A pointer to a variable that receives the XState feature mask.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_GET_CONTEXT access.
+ * \sa https://learn.microsoft.com/en-us/windows/win32/debug/working-with-xstate-context
+ */
+NTSTATUS PhGetThreadXStateFeatures(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG64 FeatureMask
+    )
+{
+    NTSTATUS status;
+    ULONG contextFlags;
+    ULONG contextLength;
+    PCONTEXT_EX contextEx;
+    PCONTEXT context;
+
+    contextFlags = CONTEXT_ALL | CONTEXT_XSTATE | CONTEXT_EXCEPTION_REQUEST;
+
+    status = RtlGetExtendedContextLength(
+        contextFlags,
+        &contextLength
+        );
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    context = PhAllocate(contextLength);
+    contextEx = NULL;
+
+    status = RtlInitializeExtendedContext(
+        context,
+        contextFlags,
+        &contextEx
+        );
+
+    if (!NT_SUCCESS(status))
+        goto CleanupExit;
+
+    // Request all enabled extended features before querying the thread context.
+
+    RtlSetExtendedFeaturesMask(
+        contextEx,
+        RtlGetEnabledExtendedFeatures(MAXULONG64)
+        );
+
+    status = NtGetContextThread(
+        ThreadHandle,
+        context
+        );
+
+    if (!NT_SUCCESS(status))
+        goto CleanupExit;
+
+    *FeatureMask = RtlGetExtendedFeaturesMask(contextEx);
+
+CleanupExit:
+    PhFree(context);
+
+    return status;
+}
+
+/**
+ * Retrieves the CET user-mode shadow stack state (XSTATE_CET_U) for a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread.
+ * \param[out] XStateCetUserState A pointer to a structure that receives the IA32_U_CET and IA32_PL3_SSP values.
+ * Both values are zero when shadow stacks are not active for the thread.
+ * \return Successful or errant status.
+ * \remarks The handle must have THREAD_GET_CONTEXT access. CET_U is a user-visible supervisor
+ * state component and is only available on x64 with hardware-enforced stack protection enabled.
+ */
+NTSTATUS PhGetThreadCetUserState(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PXSAVE_CET_U_FORMAT XStateCetUserState
+    )
+{
+#if defined(_M_X64)
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static typeof(&RtlGetExtendedContextLength2) RtlGetExtendedContextLength2_I = NULL;
+    static typeof(&RtlInitializeExtendedContext2) RtlInitializeExtendedContext2_I = NULL;
+    static typeof(&RtlGetEnabledExtendedAndSupervisorFeatures) RtlGetEnabledExtendedAndSupervisorFeatures_I = NULL;
+    NTSTATUS status;
+    ULONG64 featureMask;
+    ULONG contextFlags;
+    ULONG contextLength;
+    PVOID buffer;
+    PCONTEXT_EX contextEx;
+    PCONTEXT context;
+    PXSAVE_CET_U_FORMAT xStateUserCet;
+    ULONG xStateUserCetLength = 0;
+
+    if (PhBeginInitOnce(&initOnce))
+    {
+        PVOID baseAddress;
+
+        if (baseAddress = PhGetLoaderEntryDllBaseZ(L"ntdll.dll"))
+        {
+            RtlGetExtendedContextLength2_I = PhGetDllBaseProcedureAddress(baseAddress, "RtlGetExtendedContextLength2", 0);
+            RtlInitializeExtendedContext2_I = PhGetDllBaseProcedureAddress(baseAddress, "RtlInitializeExtendedContext2", 0);
+            RtlGetEnabledExtendedAndSupervisorFeatures_I = PhGetDllBaseProcedureAddress(baseAddress, "RtlGetEnabledExtendedAndSupervisorFeatures", 0);
+        }
+
+        PhEndInitOnce(&initOnce);
+    }
+
+    if (!RtlGetExtendedContextLength2_I || !RtlInitializeExtendedContext2_I)
+        return STATUS_PROCEDURE_NOT_FOUND;
+
+    featureMask = RtlGetEnabledExtendedFeatures(XSTATE_MASK_CET_U);
+
+    if (!featureMask && RtlGetEnabledExtendedAndSupervisorFeatures_I)
+    {
+        featureMask = RtlGetEnabledExtendedAndSupervisorFeatures_I(XSTATE_MASK_CET_U);
+    }
+
+    if (!featureMask)
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    contextFlags = CONTEXT_CONTROL | CONTEXT_XSTATE;
+
+    status = RtlGetExtendedContextLength2_I(
+        contextFlags,
+        &contextLength,
+        featureMask
+        );
+
+    if (!NT_SUCCESS(status))
+        return status;
+
+    buffer = PhAllocateZero(contextLength);
+    contextEx = NULL;
+
+    status = RtlInitializeExtendedContext2_I(
+        buffer,
+        contextFlags,
+        &contextEx,
+        featureMask
+        );
+
+    if (!NT_SUCCESS(status))
+        goto CleanupExit;
+
+    context = RtlLocateLegacyContext(contextEx, NULL);
+
+    if (!context)
+    {
+        status = STATUS_INVALID_PARAMETER;
+        goto CleanupExit;
+    }
+
+    RtlSetExtendedFeaturesMask(contextEx, featureMask);
+
+    status = NtGetContextThread(
+        ThreadHandle,
+        context
+        );
+
+    if (!NT_SUCCESS(status))
+        goto CleanupExit;
+
+    // A feature bit clear in the post-get mask means the component is in its INIT (all zero) state.
+
+    if (FlagOn(RtlGetExtendedFeaturesMask(contextEx), XSTATE_MASK_CET_U))
+    {
+        xStateUserCet = RtlLocateExtendedFeature(
+            contextEx, 
+            XSTATE_CET_U, 
+            &xStateUserCetLength
+            );
+
+        if (!xStateUserCet || xStateUserCetLength < sizeof(XSAVE_CET_U_FORMAT))
+        {
+            status = STATUS_INFO_LENGTH_MISMATCH;
+            goto CleanupExit;
+        }
+
+        *XStateCetUserState = *xStateUserCet;
+    }
+    else
+    {
+        memset(XStateCetUserState, 0, sizeof(XSAVE_CET_U_FORMAT));
+    }
+
+CleanupExit:
+    PhFree(buffer);
+
+    return status;
+#else
+    return STATUS_NOT_SUPPORTED;
+#endif
+}
+
+/**
  * Retrieves the break on termination state for a thread.
  *
  * \param[in] ThreadHandle A handle to the thread.
@@ -648,7 +876,7 @@ NTSTATUS PhGetThreadContainerId(
         ThreadHandle,
         ThreadContainerId,
         &threadContainerId,
-        sizeof(ULONG),
+        sizeof(GUID),
         NULL
         );
 
@@ -759,7 +987,7 @@ BOOLEAN PhGetThreadIsTerminated2(
     NTSTATUS status;
     LARGE_INTEGER timeout;
 
-    memset(&timeout, 0, sizeof(LARGE_INTEGER));
+    RtlZeroMemory(&timeout, sizeof(LARGE_INTEGER));
 
     status = NtWaitForSingleObject(
         ThreadHandle,
@@ -835,6 +1063,50 @@ NTSTATUS PhTerminateThread(
     status = NtTerminateThread(
         ThreadHandle,
         ExitStatus
+        );
+
+    return status;
+}
+
+/**
+ * Suspends a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread to be suspended.
+ * \param[out,opt] PreviousSuspendCount A pointer to a variable that receives the previous suspend count.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhSuspendThread(
+    _In_ HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+    )
+{
+    NTSTATUS status;
+
+    status = NtSuspendThread(
+        ThreadHandle,
+        PreviousSuspendCount
+        );
+
+    return status;
+}
+
+/**
+ * Resumes a thread.
+ *
+ * \param[in] ThreadHandle A handle to the thread to be resumed.
+ * \param[out,opt] PreviousSuspendCount A pointer to a variable that receives the previous suspend count.
+ * \return NTSTATUS Successful or errant status.
+ */
+NTSTATUS PhResumeThread(
+    _In_ HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+    )
+{
+    NTSTATUS status;
+
+    status = NtResumeThread(
+        ThreadHandle,
+        PreviousSuspendCount
         );
 
     return status;
@@ -981,7 +1253,7 @@ NTSTATUS PhSetThreadName(
     if (WindowsVersion < WINDOWS_10)
         return STATUS_NOT_SUPPORTED;
 
-    memset(&threadNameInfo, 0, sizeof(THREAD_NAME_INFORMATION));
+    RtlZeroMemory(&threadNameInfo, sizeof(THREAD_NAME_INFORMATION));
 
     status = RtlInitUnicodeStringEx(
         &threadNameInfo.ThreadName,
@@ -1078,14 +1350,15 @@ NTSTATUS PhSetThreadAffinityMask(
  * \return NTSTATUS Successful or errant status.
  */
 NTSTATUS PhSetThreadBasePriorityClientId(
-    _In_ CLIENT_ID ClientId,
+    _In_ PCLIENT_ID ClientId,
     _In_ KPRIORITY Increment
     )
 {
     NTSTATUS status;
     SYSTEM_THREAD_CID_PRIORITY_INFORMATION threadInfo;
 
-    threadInfo.ClientId = ClientId;
+    RtlZeroMemory(&threadInfo, sizeof(SYSTEM_THREAD_CID_PRIORITY_INFORMATION));
+    threadInfo.ClientId = *ClientId;
     threadInfo.Priority = Increment;
 
     status = NtSetSystemInformation(
@@ -1184,6 +1457,7 @@ NTSTATUS PhSetThreadPagePriority(
     NTSTATUS status;
     PAGE_PRIORITY_INFORMATION pagePriorityInfo;
 
+    RtlZeroMemory(&pagePriorityInfo, sizeof(PAGE_PRIORITY_INFORMATION));
     pagePriorityInfo.PagePriority = PagePriority;
 
     status = NtSetInformationThread(
@@ -1258,7 +1532,7 @@ NTSTATUS PhGetThreadPowerThrottlingState(
     NTSTATUS status;
     POWER_THROTTLING_THREAD_STATE threadPowerThrottlingState;
 
-    memset(&threadPowerThrottlingState, 0, sizeof(POWER_THROTTLING_THREAD_STATE));
+    RtlZeroMemory(&threadPowerThrottlingState, sizeof(POWER_THROTTLING_THREAD_STATE));
     threadPowerThrottlingState.Version = POWER_THROTTLING_THREAD_CURRENT_VERSION;
 
     status = NtQueryInformationThread(
@@ -1406,6 +1680,7 @@ NTSTATUS PhCreateImpersonationToken(
     if (!NT_SUCCESS(status))
         return status;
 
+    RtlZeroMemory(&securityService, sizeof(SECURITY_QUALITY_OF_SERVICE));
     securityService.Length = sizeof(SECURITY_QUALITY_OF_SERVICE);
     securityService.ImpersonationLevel = SecurityImpersonation;
     securityService.ContextTrackingMode = SECURITY_DYNAMIC_TRACKING;
@@ -1469,7 +1744,7 @@ NTSTATUS PhImpersonateToken(
         OBJECT_ATTRIBUTES objectAttributes;
         HANDLE tokenHandle;
 
-        memset(&securityService, 0, sizeof(SECURITY_QUALITY_OF_SERVICE));
+        RtlZeroMemory(&securityService, sizeof(SECURITY_QUALITY_OF_SERVICE));
         securityService.Length = sizeof(SECURITY_QUALITY_OF_SERVICE);
         securityService.ImpersonationLevel = SecurityImpersonation;
         securityService.ContextTrackingMode = SECURITY_DYNAMIC_TRACKING;
@@ -2035,6 +2310,9 @@ NTSTATUS PhGetThreadApartmentCallState(
             PhEndInitOnce(&initOnce);
         }
 
+        if (!CoGetCallState_I)
+            return STATUS_PROCEDURE_NOT_FOUND;
+
         if (HR_SUCCESS(CoGetCallState_I(CALL_STATE_TYPE_OUTGOING, &outgoingCallDataOffset)) && outgoingCallDataOffset)
         {
             PhReadVirtualMemory(
@@ -2068,7 +2346,7 @@ NTSTATUS PhGetThreadApartmentCallState(
                 );
         }
 
-        memset(ApartmentCallState, 0, sizeof(PH_COM_CALLSTATE));
+        RtlZeroMemory(ApartmentCallState, sizeof(PH_COM_CALLSTATE));
         ApartmentCallState->ServerPID = outgoingCallData.dwServerPID != 0 ? outgoingCallData.dwServerPID : ULONG_MAX;
         ApartmentCallState->ServerTID = outgoingCallData.dwServerTID != 0 ? outgoingCallData.dwServerTID : ULONG_MAX;
         ApartmentCallState->ClientPID = incomingCallData.dwClientPID != 0 ? incomingCallData.dwClientPID : ULONG_MAX;
@@ -2550,7 +2828,7 @@ NTSTATUS PhGetThreadStackSize(
     {
         MEMORY_BASIC_INFORMATION memoryBasicInformation;
 
-        memset(&memoryBasicInformation, 0, sizeof(MEMORY_BASIC_INFORMATION));
+        RtlZeroMemory(&memoryBasicInformation, sizeof(MEMORY_BASIC_INFORMATION));
 
         status = NtQueryVirtualMemory(
             ProcessHandle,
@@ -2644,7 +2922,7 @@ NTSTATUS PhGetThreadIsFiber(
  *
  * \remarks The operating system will not switch execution to another processor, even if that processor is idle or is running a thread of lower priority.
  * \return If calling the SwitchToThread function caused the operating system to switch execution to another thread, the return value is nonzero.
- * \rthere are no other threads ready to execute, the operating system does not switch execution to another thread, and the return value is zero.
+ * If there are no other threads ready to execute, the operating system does not switch execution to another thread, and the return value is zero.
  */
 BOOLEAN PhSwitchToThread(
     VOID
@@ -3368,7 +3646,7 @@ CleanupExit:
  * \param[in] ProcessHandle A handle to the process to be terminated.
  * \param[in] ExitStatus The exit status code to be used when terminating the process.
  * \param[in] Timeout Optional. The timeout, in milliseconds, to wait for the termination thread to complete.
- * If NULL, the function will wait indefinitely.
+ * If zero, the function will wait indefinitely.
  * \return NTSTATUS Successful or errant status.
  * \remarks This function attempts to terminate the specified process by creating a remote thread
  * that calls RtlExitUserProcess. On Windows 8 and later, it creates an execution required power request
@@ -3432,6 +3710,13 @@ NTSTATUS PhTerminateProcessAlternative(
         goto CleanupExit;
 
     status = PhWaitForSingleObject(threadHandle, Timeout);
+
+    // A finite wait can return an informational success code (e.g. STATUS_TIMEOUT)
+    // when the remote thread has not finished, meaning the process was not confirmed
+    // terminated. Normalize these so callers using NT_SUCCESS() don't treat an
+    // unfinished termination as success. (dmex)
+    if (status != STATUS_SUCCESS && NT_SUCCESS(status))
+        status = STATUS_UNSUCCESSFUL;
 
 CleanupExit:
 
@@ -4375,6 +4660,7 @@ CleanupExit:
  * \param[in] RemoteHandle Handle value in remote process.
  * \param[in] Mask Bitmask of flags to modify.
  * \param[in] Flags New flag values.
+ * \param[in,opt] Timeout The timeout, in milliseconds, for the process to set the handle information.
  * \return NTSTATUS Successful or errant status.
  * \remarks Invokes SetHandleInformation via APC onto suspended thread.
  */
@@ -4382,7 +4668,8 @@ NTSTATUS PhSetHandleInformationRemote(
     _In_ HANDLE ProcessHandle,
     _In_ HANDLE RemoteHandle,
     _In_ ULONG Mask,
-    _In_ ULONG Flags
+    _In_ ULONG Flags,
+    _In_opt_ PLARGE_INTEGER Timeout
     )
 {
     NTSTATUS status;
@@ -4400,7 +4687,7 @@ NTSTATUS PhSetHandleInformationRemote(
         ProcessHandle,
         &runtimeLibrary,
 #ifdef _WIN64
-        & isWow64
+        &isWow64
 #else
         NULL
 #endif
@@ -4488,7 +4775,7 @@ NTSTATUS PhSetHandleInformationRemote(
     if (!NT_SUCCESS(status))
         goto CleanupExit;
 
-    status = PhWaitForSingleObject(threadHandle, 5000);
+    status = NtWaitForSingleObject(threadHandle, FALSE, Timeout);
 
     if (!NT_SUCCESS(status))
         goto CleanupExit;

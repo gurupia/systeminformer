@@ -13,6 +13,10 @@ set(SI_UM_CLANG_NO_DIAGNOSTICS
     -Wno-c23-extensions
     -Wno-incompatible-pointer-types
     -Wno-missing-braces
+    # With CONST_VTABLE defined, DECLARE_INTERFACE_ expands to
+    # 'const struct IFooVtbl { ... };' - a const with no declarator. MSVC accepts
+    # it silently; clang reports 'const ignored on this declaration'.
+    -Wno-missing-declarations
     -Wno-parentheses
     -Wno-pointer-sign
     -Wno-switch
@@ -39,17 +43,31 @@ function(_si_set_target_defaults target)
         message(FATAL_ERROR "Invalid target type: ${arg_TYPE}")
     endif()
 
-    target_link_options(${target} PRIVATE /NATVIS:${SI_ROOT}/SystemInformer.natvis)
+    if(MSVC)
+        target_link_options(${target} PRIVATE /NATVIS:${SI_ROOT}/SystemInformer.natvis)
+    endif()
+
+    if(MSVC_NOT_CLANG)
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:/std:clatest>
+            $<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>
+            $<$<COMPILE_LANGUAGE:C,CXX>:/Zc:preprocessor>
+            $<$<COMPILE_LANGUAGE:C,CXX>:/permissive->
+            $<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>
+        )
+    endif()
 
     if(NOT SI_OUTPUT_DIR STREQUAL "" AND NOT SI_OUTPUT_DIR STREQUAL "OFF")
         if(arg_PLUGIN)
             set_target_properties(${target} PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}/plugins"
+                ARCHIVE_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}/plugins"
                 PDB_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}/plugins"
             )
         else()
             set_target_properties(${target} PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}"
+                ARCHIVE_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}"
                 PDB_OUTPUT_DIRECTORY "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}"
             )
         endif()
@@ -60,11 +78,47 @@ function(_si_set_target_defaults target)
         set(_target_sources "")
     endif()
 
+    #
+    # User-mode preprocessor definitions. These mirror the shared definitions in
+    # Common.User.props, which is canonical for MSBuild; keep the two in sync.
+    # CONST_VTABLE makes MIDL-generated C interfaces declare lpVtbl as a pointer
+    # to const, as required by the const vtables in phlib/webview.
+    #
+    # thirdparty.vcxproj inherits Common.User.props through tools/Directory.Build.props
+    # and preserves its definitions alongside the project-specific architecture macros.
+    # Apply the shared definitions to thirdparty here as well. The user-mode clang
+    # options above suppress the CONST_VTABLE-related SDK declaration warning.
+    if(arg_TYPE MATCHES "^UM_")
+        if(SI_PLATFORM STREQUAL "Win32")
+            set(_si_um_bitness WIN32)
+        else()
+            set(_si_um_bitness WIN64)
+        endif()
+        target_compile_definitions(${target} PRIVATE
+            ${_si_um_bitness}
+            _WINDOWS
+            _USRDLL
+            ENABLE_RESTRICTED
+            CONST_VTABLE
+            $<$<CONFIG:Debug>:DEBUG>
+            $<$<CONFIG:Debug>:_DEBUG>
+            $<$<CONFIG:Debug>:_DBG_MEMCPY_INLINE_>
+            $<$<CONFIG:Release>:NDEBUG>
+        )
+        unset(_si_um_bitness)
+    endif()
+
     if(arg_TYPE STREQUAL "UM_LIB")
-        target_compile_options(${target} PRIVATE /Gz) # __stcall calling convention
-        target_link_options(${target} PRIVATE /SUBSYSTEM:WINDOWS,6.1)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:/Gz>) # __stdcall calling convention
+            target_link_options(${target} PRIVATE /SUBSYSTEM:WINDOWS,6.1)
+        else()
+            target_link_options(${target} PRIVATE -mwindows)
+        endif()
         if(MSVC_CLANG)
-            target_compile_options(${target} PRIVATE ${SI_UM_CLANG_NO_DIAGNOSTICS})
+            foreach(noDiagnostic IN LISTS SI_UM_CLANG_NO_DIAGNOSTICS)
+                target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${noDiagnostic}>)
+            endforeach()
         endif()
         if(SI_WITH_WPP_USER)
             si_target_tracewpp(${target} WPP_USER_MODE
@@ -77,10 +131,16 @@ function(_si_set_target_defaults target)
             target_compile_definitions(${target} PRIVATE SI_NO_WPP)
         endif()
     elseif(arg_TYPE STREQUAL "UM_BIN")
-        target_compile_options(${target} PRIVATE /Gz) # __stcall calling convention
-        target_link_options(${target} PRIVATE /SUBSYSTEM:WINDOWS,6.1)
+        if(MSVC)
+            target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:/Gz>) # __stdcall calling convention
+            target_link_options(${target} PRIVATE /SUBSYSTEM:WINDOWS,6.1)
+        else()
+            target_link_options(${target} PRIVATE -mwindows)
+        endif()
         if(MSVC_CLANG)
-            target_compile_options(${target} PRIVATE ${SI_UM_CLANG_NO_DIAGNOSTICS})
+            foreach(noDiagnostic IN LISTS SI_UM_CLANG_NO_DIAGNOSTICS)
+                target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${noDiagnostic}>)
+            endforeach()
         endif()
         if(SI_WITH_WPP_USER)
             si_target_tracewpp(${target} WPP_USER_MODE
@@ -117,11 +177,20 @@ function(_si_set_target_defaults target)
     endif()
 
     if (arg_PLUGIN)
-        target_link_libraries(${target} PRIVATE SystemInformer)
-        target_include_directories(${target} PRIVATE "${SI_ROOT}/plugins/include")
+        target_link_libraries(${target} PRIVATE SystemInformer thirdparty ntdll)
+        target_include_directories(${target} PRIVATE
+            "${SI_ROOT}/plugins/include"
+            "${SI_ROOT}/phnt/include"
+            "${SI_ROOT}/sdk/include/$<CONFIG>${SI_PLATFORM_SHORT}"
+            "${SI_ROOT}/kphlib/include"
+        )
+        target_link_directories(${target} PRIVATE
+            "${SI_ROOT}/sdk/lib/$<CONFIG>${SI_PLATFORM_SHORT}"
+            "${SI_OUTPUT_DIR}/$<CONFIG>${SI_PLATFORM_SHORT}"
+        )
     endif()
 
-    if(SI_WITH_PREFAST)
+    if(SI_WITH_PREFAST AND MSVC)
         # TODO configure this with the additional analysis options and ruleset
         # once the kph-staging branch is merged into master.
         target_compile_options(${target} PRIVATE /analyze)

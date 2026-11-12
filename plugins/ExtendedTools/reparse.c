@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2023
+ *     dmex    2020-2026
  *
  */
 
@@ -28,6 +28,7 @@ typedef struct _REPARSE_WINDOW_CONTEXT
     PH_LAYOUT_MANAGER LayoutManager;
     ULONG Count;
     PPH_LIST Items;
+    PH_RUNDOWN_PROTECT WorkerRundown;
 } REPARSE_WINDOW_CONTEXT, *PREPARSE_WINDOW_CONTEXT;
 
 typedef struct _REPARSE_LISTVIEW_ENTRY
@@ -65,6 +66,7 @@ VOID EtFreeReparseListViewEntries(
     NULL \
     )
 
+_Function_class_(PH_TYPE_DELETE_PROCEDURE)
 VOID EtReparseDialogContextDeleteProcedure(
     _In_ PVOID Object,
     _In_ ULONG Flags
@@ -91,6 +93,7 @@ PREPARSE_WINDOW_CONTEXT EtReparseCreateDialogContext(
 
     context = PhCreateObject(sizeof(REPARSE_WINDOW_CONTEXT), EtReparseItemType);
     memset(context, 0, sizeof(REPARSE_WINDOW_CONTEXT));
+    PhInitializeRundownProtection(&context->WorkerRundown);
 
     return context;
 }
@@ -481,6 +484,7 @@ PCWSTR EtReparseTagToString(
     return PhaFormatString(L"UNKNOWN: %lu", Tag)->Buffer;
 }
 
+_Function_class_(PH_ENUM_REPARSE_POINT)
 NTSTATUS NTAPI EtEnumVolumeReparseCallback(
     _In_ HANDLE RootDirectory,
     _In_ PVOID Information,
@@ -498,7 +502,7 @@ NTSTATUS NTAPI EtEnumVolumeReparseCallback(
         PH_FILE_ID_DESCRIPTOR fileName;
 
         fileName.Type = FileIdType;
-        fileName.FileId.QuadPart = entry->FileReference;
+        fileName.FileId.QuadPart = entry->FileReference.QuadPart;
 
         status = PhOpenFileById(
             &reparseHandle,
@@ -548,7 +552,7 @@ NTSTATUS NTAPI EtEnumVolumeReparseCallback(
             }
 
             result = PhAllocateZero(sizeof(REPARSE_LISTVIEW_ENTRY));
-            result->FileReference = entry->FileReference;
+            result->FileReference = entry->FileReference.QuadPart;
             result->Tag = entry->Tag;
             result->RootDirectory = rootFileName;
             PhSetReference(&result->BestObjectName, bestObjectName);
@@ -561,6 +565,7 @@ NTSTATUS NTAPI EtEnumVolumeReparseCallback(
     return STATUS_SUCCESS;
 }
 
+_Function_class_(PH_ENUM_OBJECT_ID)
 NTSTATUS NTAPI EtEnumVolumeObjectIdCallback(
     _In_ HANDLE RootDirectory,
     _In_ PVOID Information,
@@ -578,7 +583,7 @@ NTSTATUS NTAPI EtEnumVolumeObjectIdCallback(
         PH_FILE_ID_DESCRIPTOR fileName;
 
         fileName.Type = FileIdType;
-        fileName.FileId.QuadPart = entry->FileReference;
+        fileName.FileId.QuadPart = entry->FileReference.QuadPart;
 
         status = PhOpenFileById(
             &reparseHandle,
@@ -610,7 +615,7 @@ NTSTATUS NTAPI EtEnumVolumeObjectIdCallback(
             }
 
             result = PhAllocateZero(sizeof(REPARSE_LISTVIEW_ENTRY));
-            result->FileReference = entry->FileReference;
+            result->FileReference = entry->FileReference.QuadPart;
             result->RootDirectory = rootFileName;
             PhSetReference(&result->BestObjectName, bestObjectName);
             memcpy_s(result->ObjectId, sizeof(entry->ObjectId), entry->ObjectId, sizeof(entry->ObjectId));
@@ -895,14 +900,14 @@ NTSTATUS EtEnumerateVolumeDirectoryObjects(
         NtClose(directoryHandle);
     }
 
-    if (Context->WindowHandle)
-    {
-        if (NT_SUCCESS(status))
-            PostMessage(Context->WindowHandle, ET_REPARSE_UPDATE_MSG, 0, 0);
-        else
-            PostMessage(Context->WindowHandle, ET_REPARSE_UPDATE_ERROR, 0, status);
-    }
+    // The window handle is only cleared after the rundown wait in WM_DESTROY,
+    // so it is stable for as long as this worker holds the rundown protection.
+    if (NT_SUCCESS(status))
+        PostMessage(Context->WindowHandle, ET_REPARSE_UPDATE_MSG, 0, 0);
+    else
+        PostMessage(Context->WindowHandle, ET_REPARSE_UPDATE_ERROR, 0, status);
 
+    PhReleaseRundownProtection(&Context->WorkerRundown);
     PhDereferenceObject(Context);
 
     return status;
@@ -912,7 +917,7 @@ VOID EtFreeReparseListViewEntries(
     _In_ PREPARSE_WINDOW_CONTEXT Context
     )
 {
-    //INT index = INT_ERROR;
+    //LONG index = INT_ERROR;
     //
     //while ((index = PhFindListViewItemByFlags(
     //    Context->ListViewHandle,
@@ -961,47 +966,47 @@ typedef struct _REPARSE_SECURITYID_CONTEXT
 } REPARSE_SECURITYID_CONTEXT, *PREPARSE_SECURITYID_CONTEXT;
 
 INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PREPARSE_SECURITYID_CONTEXT context;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = PhAllocateZero(sizeof(REPARSE_SECURITYID_CONTEXT));
         context->FileList = (PPH_LIST)lParam;
 
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_REPARSE_LIST);
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_REPARSE_LIST);
 
-            PhSetWindowText(hwndDlg, L"NTFS SecurityID");
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetWindowText(WindowHandle, L"NTFS SecurityID");
+            PhSetApplicationWindowIcon(WindowHandle);
 
-            ShowWindow(GetDlgItem(hwndDlg, IDRETRY), SW_HIDE);
+            ShowWindow(GetDlgItem(WindowHandle, IDRETRY), SW_HIDE);
 
-            PhCenterWindow(hwndDlg, GetParent(hwndDlg));
+            PhCenterWindow(WindowHandle, GetParent(WindowHandle));
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDRETRY), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
-            //PhLoadWindowPlacementFromSetting(SETTING_NAME_WINDOW_POSITION, SETTING_NAME_WINDOW_SIZE, hwndDlg);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDRETRY), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
+            //PhLoadWindowPlacementFromSetting(SETTING_NAME_WINDOW_POSITION, SETTING_NAME_WINDOW_SIZE, WindowHandle);
 
             PhSetExtendedListView(context->ListViewHandle);
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
@@ -1009,13 +1014,13 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"#");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 250, L"Filename");
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 
             if (context->FileList)
             {
                 for (ULONG i = 0; i < context->FileList->Count; i++)
                 {
-                    INT index;
+                    LONG index;
                     WCHAR number[PH_PTR_STR_LEN_1];
 
                     PhPrintUInt32(number, i);
@@ -1033,7 +1038,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
         break;
     case WM_DESTROY:
         {
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhDeleteLayoutManager(&context->LayoutManager);
 
@@ -1048,7 +1053,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
             switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
-                EndDialog(hwndDlg, IDOK);
+                EndDialog(WindowHandle, IDOK);
                 break;
             }
         }
@@ -1072,9 +1077,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
                         if (!PhGetCursorPos(&point))
                             break;
 
-                        PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                        if (numberOfItems == 0)
+                        if (!PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                             break;
 
                         menu = PhCreateEMenu();
@@ -1083,7 +1086,7 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
 
                         selectedItem = PhShowEMenu(
                             menu,
-                            hwndDlg,
+                            WindowHandle,
                             PH_EMENU_SHOW_LEFTRIGHT,
                             PH_ALIGN_LEFT | PH_ALIGN_TOP,
                             point.x,
@@ -1114,70 +1117,70 @@ INT_PTR CALLBACK EtFindSecurityIdsDlgProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
 INT_PTR CALLBACK EtReparseDlgProc(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
 {
     PREPARSE_WINDOW_CONTEXT context;
 
-    if (uMsg == WM_INITDIALOG)
+    if (WindowMessage == WM_INITDIALOG)
     {
         context = (PREPARSE_WINDOW_CONTEXT)lParam;
-        PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, context);
+        PhSetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT, context);
     }
     else
     {
-        context = PhGetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+        context = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
     }
 
     if (!context)
         return FALSE;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_INITDIALOG:
         {
-            context->WindowHandle = hwndDlg;
-            context->ListViewHandle = GetDlgItem(hwndDlg, IDC_REPARSE_LIST);
+            context->WindowHandle = WindowHandle;
+            context->ListViewHandle = GetDlgItem(WindowHandle, IDC_REPARSE_LIST);
             context->Items = PhCreateList(100);
 
             switch (context->MenuItemIndex)
             {
             case ID_REPARSE_POINTS:
-                PhSetWindowText(hwndDlg, L"NTFS Reparse Points");
+                PhSetWindowText(WindowHandle, L"NTFS Reparse Points");
                 break;
             case ID_REPARSE_OBJID:
-                PhSetWindowText(hwndDlg, L"NTFS Object Identifiers");
+                PhSetWindowText(WindowHandle, L"NTFS Object Identifiers");
                 break;
             case ID_REPARSE_SDDL:
-                PhSetWindowText(hwndDlg, L"NTFS Security Descriptors");
+                PhSetWindowText(WindowHandle, L"NTFS Security Descriptors");
                 break;
             }
 
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhSetApplicationWindowIcon(WindowHandle);
 
-            PhInitializeLayoutManager(&context->LayoutManager, hwndDlg);
+            PhInitializeLayoutManager(&context->LayoutManager, WindowHandle);
             PhAddLayoutItem(&context->LayoutManager, context->ListViewHandle, NULL, PH_ANCHOR_ALL);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDRETRY), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
-            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDRETRY), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(WindowHandle, IDCANCEL), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
 
             if (PhValidWindowPlacementFromSetting(SETTING_NAME_REPARSE_WINDOW_POSITION))
-                PhLoadWindowPlacementFromSetting(SETTING_NAME_REPARSE_WINDOW_POSITION, SETTING_NAME_REPARSE_WINDOW_SIZE, hwndDlg);
+                PhLoadWindowPlacementFromSetting(SETTING_NAME_REPARSE_WINDOW_POSITION, SETTING_NAME_REPARSE_WINDOW_SIZE, WindowHandle);
             else
-                PhCenterWindow(hwndDlg, context->ParentWindowHandle);
+                PhCenterWindow(WindowHandle, context->ParentWindowHandle);
 
             PhSetExtendedListView(context->ListViewHandle);
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
@@ -1209,10 +1212,11 @@ INT_PTR CALLBACK EtReparseDlgProc(
                 break;
             }
 
-            PhInitializeWindowTheme(hwndDlg, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
+            PhInitializeWindowTheme(WindowHandle, !!PhGetIntegerSetting(SETTING_ENABLE_THEME_SUPPORT));
 
-            EnableWindow(GetDlgItem(hwndDlg, IDRETRY), FALSE);
+            EnableWindow(GetDlgItem(WindowHandle, IDRETRY), FALSE);
 
+            PhAcquireRundownProtection(&context->WorkerRundown);
             PhReferenceObject(context);
             PhCreateThread2(EtEnumerateVolumeDirectoryObjects, context);
         }
@@ -1230,11 +1234,13 @@ INT_PTR CALLBACK EtReparseDlgProc(
         break;
     case WM_DESTROY:
         {
+            // Wait for the workers (they only post) before clearing the handle they read.
+            PhWaitForRundownProtection(&context->WorkerRundown);
             context->WindowHandle = NULL;
 
-            PhRemoveWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
-            PhSaveWindowPlacementToSetting(SETTING_NAME_REPARSE_WINDOW_POSITION, SETTING_NAME_REPARSE_WINDOW_SIZE, hwndDlg);
+            PhSaveWindowPlacementToSetting(SETTING_NAME_REPARSE_WINDOW_POSITION, SETTING_NAME_REPARSE_WINDOW_SIZE, WindowHandle);
 
             switch (context->MenuItemIndex)
             {
@@ -1257,7 +1263,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
     case ET_REPARSE_UPDATE_MSG:
         {
             WCHAR number[PH_PTR_STR_LEN_1];
-            INT index;
+            LONG index;
 
             ExtendedListView_SetRedraw(context->ListViewHandle, FALSE);
 
@@ -1333,7 +1339,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
 
             ExtendedListView_SetRedraw(context->ListViewHandle, TRUE);
 
-            EnableWindow(GetDlgItem(hwndDlg, IDRETRY), TRUE);
+            EnableWindow(GetDlgItem(WindowHandle, IDRETRY), TRUE);
         }
         break;
     case ET_REPARSE_UPDATE_ERROR:
@@ -1342,10 +1348,10 @@ INT_PTR CALLBACK EtReparseDlgProc(
 
             if (!NT_SUCCESS(status))
             {
-                PhShowStatus(hwndDlg, L"Unable to enumerate the objects.", status, 0);
+                PhShowStatus(WindowHandle, L"Unable to enumerate the objects.", status, 0);
             }
 
-            EnableWindow(GetDlgItem(hwndDlg, IDRETRY), TRUE);
+            EnableWindow(GetDlgItem(WindowHandle, IDRETRY), TRUE);
         }
         break;
     case WM_COMMAND:
@@ -1353,7 +1359,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
             switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
-                EndDialog(hwndDlg, IDOK);
+                EndDialog(WindowHandle, IDOK);
                 break;
             case IDRETRY:
                 {
@@ -1364,8 +1370,9 @@ INT_PTR CALLBACK EtReparseDlgProc(
                     context->Items = PhCreateList(100);
                     ExtendedListView_SetRedraw(context->ListViewHandle, TRUE);
 
-                    EnableWindow(GetDlgItem(hwndDlg, IDRETRY), FALSE);
+                    EnableWindow(GetDlgItem(WindowHandle, IDRETRY), FALSE);
 
+                    PhAcquireRundownProtection(&context->WorkerRundown);
                     PhReferenceObject(context);
                     PhCreateThread2(EtEnumerateVolumeDirectoryObjects, context);
                 }
@@ -1386,7 +1393,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                     listview->dwFlags = EMF_CENTERED;
                     wcsncpy_s(listview->szMarkup, RTL_NUMBER_OF(listview->szMarkup), L"Querying objects...", _TRUNCATE);
 
-                    SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, TRUE);
+                    SetWindowLongPtr(WindowHandle, DWLP_MSGRESULT, TRUE);
                     return TRUE;
                 }
                 break;
@@ -1403,9 +1410,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                         if (!PhGetCursorPos(&point))
                             break;
 
-                        PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems);
-
-                        if (numberOfItems == 0)
+                        if (!PhGetSelectedListViewItemParams(context->ListViewHandle, &listviewItems, &numberOfItems))
                             break;
 
                         menu = PhCreateEMenu();
@@ -1427,7 +1432,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
 
                         selectedItem = PhShowEMenu(
                             menu,
-                            hwndDlg,
+                            WindowHandle,
                             PH_EMENU_SHOW_LEFTRIGHT,
                             PH_ALIGN_LEFT | PH_ALIGN_TOP,
                             point.x,
@@ -1450,7 +1455,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                     case ID_REPARSE_POINTS:
                                         {
                                             if (PhGetIntegerSetting(SETTING_ENABLE_WARNINGS) && !PhShowConfirmMessage(
-                                                hwndDlg,
+                                                WindowHandle,
                                                 L"remove",
                                                 L"the repase point",
                                                 L"The repase point will be permanently deleted.",
@@ -1465,7 +1470,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                     case ID_REPARSE_OBJID:
                                         {
                                             if (PhGetIntegerSetting(SETTING_ENABLE_WARNINGS) && !PhShowConfirmMessage(
-                                                hwndDlg,
+                                                WindowHandle,
                                                 L"remove",
                                                 L"the object identifier",
                                                 L"The object identifier will be permanently deleted.",
@@ -1487,7 +1492,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                     for (ULONG i = 0; i < numberOfItems; i++)
                                     {
                                         PREPARSE_LISTVIEW_ENTRY entry = listviewItems[i];
-                                        INT index = PhFindListViewItemByParam(context->ListViewHandle, INT_ERROR, entry);
+                                        LONG index = PhFindListViewItemByParam(context->ListViewHandle, INT_ERROR, entry);
 
                                         if (index != INT_ERROR)
                                         {
@@ -1505,7 +1510,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                                     }
                                                     else
                                                     {
-                                                        PhShowStatus(hwndDlg, L"Unable to remove the reparse point.", status, 0);
+                                                        PhShowStatus(WindowHandle, L"Unable to remove the reparse point.", status, 0);
                                                     }
                                                 }
                                                 break;
@@ -1521,7 +1526,7 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                                     }
                                                     else
                                                     {
-                                                        PhShowStatus(hwndDlg, L"Unable to remove the object identifier.", status, 0);
+                                                        PhShowStatus(WindowHandle, L"Unable to remove the object identifier.", status, 0);
                                                     }
                                                 }
                                                 break;
@@ -1534,14 +1539,14 @@ INT_PTR CALLBACK EtReparseDlgProc(
                                                         PhDialogBox(
                                                             NtCurrentImageBase(),
                                                             MAKEINTRESOURCE(IDD_REPARSEDIALOG),
-                                                            hwndDlg,
+                                                            WindowHandle,
                                                             EtFindSecurityIdsDlgProc,
                                                             fileNames
                                                             );
                                                     }
                                                     else
                                                     {
-                                                        PhShowStatus(hwndDlg, L"Unable to locate files with the SecurityId.", STATUS_NOT_FOUND, 0);
+                                                        PhShowStatus(WindowHandle, L"Unable to locate files with the SecurityId.", STATUS_NOT_FOUND, 0);
                                                     }
                                                 }
                                                 break;
@@ -1569,11 +1574,11 @@ INT_PTR CALLBACK EtReparseDlgProc(
         }
         break;
     case WM_CTLCOLORBTN:
-        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORBTN(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORDLG:
-        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORDLG(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     case WM_CTLCOLORSTATIC:
-        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+        return HANDLE_WM_CTLCOLORSTATIC(WindowHandle, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;

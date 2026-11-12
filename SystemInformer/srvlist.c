@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2015
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -67,11 +67,17 @@ static PH_CM_MANAGER ServiceTreeListCm;
 
 static PPH_HASHTABLE ServiceNodeHashtable; // hashtable of all nodes
 static PPH_LIST ServiceNodeList; // list of all nodes
+static PPH_LIST ServiceGroupNodeList; // list of synthetic group-header nodes
+static ULONG ServiceTreeListGroupMode; // 0 = None, 1 = Type, 2 = Load order group, 3 = Svchost group, 4 = Start type
+static PPH_HASHTABLE ServiceSvchostGroupMap = NULL; // service short name -> svchost group name
 static PH_TN_FILTER_SUPPORT FilterSupport;
 
 BOOLEAN PhServiceTreeListStateHighlighting = TRUE;
 static PPH_POINTER_LIST ServiceNodeStateList = NULL; // list of nodes which need to be processed
 
+/**
+ * Initializes the service tree list.
+ */
 VOID PhServiceTreeListInitialization(
     VOID
     )
@@ -83,8 +89,16 @@ VOID PhServiceTreeListInitialization(
         100
         );
     ServiceNodeList = PhCreateList(100);
+    ServiceGroupNodeList = PhCreateList(20);
 }
 
+/**
+ * Hashtable equality function for service nodes.
+ *
+ * \param Entry1 The first entry.
+ * \param Entry2 The second entry.
+ * \return TRUE if the entries are equal, otherwise FALSE.
+ */
 _Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
 BOOLEAN PhpServiceNodeHashtableEqualFunction(
     _In_ PVOID Entry1,
@@ -97,6 +111,12 @@ BOOLEAN PhpServiceNodeHashtableEqualFunction(
     return serviceNode1->ServiceItem == serviceNode2->ServiceItem;
 }
 
+/**
+ * Hashtable hash function for service nodes.
+ *
+ * \param Entry The entry to hash.
+ * \return The hash value.
+ */
 _Function_class_(PH_HASHTABLE_HASH_FUNCTION)
 ULONG PhpServiceNodeHashtableHashFunction(
     _In_ PVOID Entry
@@ -105,6 +125,11 @@ ULONG PhpServiceNodeHashtableHashFunction(
     return PhHashIntPtr((ULONG_PTR)(*(PPH_SERVICE_NODE *)Entry)->ServiceItem);
 }
 
+/**
+ * Initializes the service tree list control.
+ *
+ * \param hwnd The handle to the tree list control.
+ */
 VOID PhInitializeServiceTreeList(
     _In_ HWND hwnd
     )
@@ -134,6 +159,7 @@ VOID PhInitializeServiceTreeList(
     PhAddTreeNewColumn(hwnd, PHSVTLC_FILENAME, FALSE, L"File name", 100, PH_ALIGN_LEFT, ULONG_MAX, DT_PATH_ELLIPSIS);
     PhAddTreeNewColumnEx2(hwnd, PHSVTLC_TIMELINE, FALSE, L"Timeline", 100, PH_ALIGN_LEFT, ULONG_MAX, 0, TN_COLUMN_FLAG_CUSTOMDRAW | TN_COLUMN_FLAG_SORTDESCENDING);
     PhAddTreeNewColumn(hwnd, PHSVTLC_EXITCODE, FALSE, L"Exit code", 100, PH_ALIGN_LEFT, ULONG_MAX, 0);
+    PhAddTreeNewColumn(hwnd, PHSVTLC_USERNAME, FALSE, L"Username", 120, PH_ALIGN_LEFT, ULONG_MAX, 0);
 
     PhCmInitializeManager(&ServiceTreeListCm, hwnd, PHSVTLC_MAXIMUM, PhpServiceTreeNewPostSortFunction);
     PhInitializeTreeNewFilterSupport(&FilterSupport, hwnd, ServiceNodeList);
@@ -151,6 +177,9 @@ VOID PhInitializeServiceTreeList(
     }
 }
 
+/**
+ * Loads settings for the service tree list.
+ */
 VOID PhLoadSettingsServiceTreeList(
     VOID
     )
@@ -164,12 +193,17 @@ VOID PhLoadSettingsServiceTreeList(
     PhDereferenceObject(settings);
     PhDereferenceObject(sortSettings);
 
+    ServiceTreeListGroupMode = PhGetIntegerSetting(SETTING_SERVICE_TREE_LIST_GROUP_MODE);
+
     if (PhGetIntegerSetting(SETTING_ENABLE_INSTANT_TOOLTIPS))
         SendMessage(TreeNew_GetTooltips(ServiceTreeListHandle), TTM_SETDELAYTIME, TTDT_INITIAL, 0);
     else
         SendMessage(TreeNew_GetTooltips(ServiceTreeListHandle), TTM_SETDELAYTIME, TTDT_AUTOPOP, MAXSHORT);
 }
 
+/**
+ * Saves settings for the service tree list.
+ */
 VOID PhSaveSettingsServiceTreeList(
     VOID
     )
@@ -184,6 +218,41 @@ VOID PhSaveSettingsServiceTreeList(
     PhDereferenceObject(sortSettings);
 }
 
+/**
+ * Gets the current service tree list grouping mode.
+ *
+ * \return 0 = None, 1 = Type, 2 = Load order group, 3 = Svchost group, 4 = Start type.
+ */
+ULONG PhGetServiceTreeListGroupMode(
+    VOID
+    )
+{
+    return ServiceTreeListGroupMode;
+}
+
+/**
+ * Sets the service tree list grouping mode and rebuilds the tree.
+ *
+ * \param GroupMode 0 = None, 1 = Type, 2 = Load order group, 3 = Svchost group, 4 = Start type.
+ */
+VOID PhSetServiceTreeListGroupMode(
+    _In_ ULONG GroupMode
+    )
+{
+    if (ServiceTreeListGroupMode == GroupMode)
+        return;
+
+    ServiceTreeListGroupMode = GroupMode;
+    PhSetIntegerSetting(SETTING_SERVICE_TREE_LIST_GROUP_MODE, GroupMode);
+
+    TreeNew_NodesStructured(ServiceTreeListHandle);
+}
+
+/**
+ * Gets the filter support for the service tree list.
+ *
+ * \return A pointer to the filter support structure.
+ */
 struct _PH_TN_FILTER_SUPPORT *PhGetFilterSupportServiceTreeList(
     VOID
     )
@@ -191,6 +260,13 @@ struct _PH_TN_FILTER_SUPPORT *PhGetFilterSupportServiceTreeList(
     return &FilterSupport;
 }
 
+/**
+ * Adds a service node to the tree list.
+ *
+ * \param ServiceItem The service item to add.
+ * \param RunId The current run ID.
+ * \return The created service node.
+ */
 PPH_SERVICE_NODE PhAddServiceNode(
     _In_ PPH_SERVICE_ITEM ServiceItem,
     _In_ ULONG RunId
@@ -214,8 +290,8 @@ PPH_SERVICE_NODE PhAddServiceNode(
             );
     }
 
-    serviceNode->ServiceItem = ServiceItem;
     PhReferenceObject(ServiceItem);
+    serviceNode->ServiceItem = ServiceItem;
 
     memset(serviceNode->TextCache, 0, sizeof(PH_STRINGREF) * PHSVTLC_MAXIMUM);
     serviceNode->Node.TextCache = serviceNode->TextCache;
@@ -234,6 +310,12 @@ PPH_SERVICE_NODE PhAddServiceNode(
     return serviceNode;
 }
 
+/**
+ * Finds a service node in the tree list.
+ *
+ * \param ServiceItem The service item to find.
+ * \return The service node, or NULL if not found.
+ */
 PPH_SERVICE_NODE PhFindServiceNode(
     _In_ PPH_SERVICE_ITEM ServiceItem
     )
@@ -255,6 +337,11 @@ PPH_SERVICE_NODE PhFindServiceNode(
         return NULL;
 }
 
+/**
+ * Removes a service node from the tree list.
+ *
+ * \param ServiceNode The service node to remove.
+ */
 VOID PhRemoveServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     )
@@ -279,6 +366,12 @@ VOID PhRemoveServiceNode(
     }
 }
 
+/**
+ * Internal function to remove a service node.
+ *
+ * \param ServiceNode The service node to remove.
+ * \param Context An optional context.
+ */
 VOID PhpRemoveServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode,
     _In_opt_ PVOID Context
@@ -295,6 +388,7 @@ VOID PhpRemoveServiceNode(
 
     PhClearReference(&ServiceNode->BinaryPath);
     PhClearReference(&ServiceNode->LoadOrderGroup);
+    PhClearReference(&ServiceNode->UserName);
     PhClearReference(&ServiceNode->Description);
     PhClearReference(&ServiceNode->TooltipText);
     PhClearReference(&ServiceNode->KeyModifiedTimeText);
@@ -307,6 +401,11 @@ VOID PhpRemoveServiceNode(
     TreeNew_NodesStructured(ServiceTreeListHandle);
 }
 
+/**
+ * Updates a service node.
+ *
+ * \param ServiceNode The service node to update.
+ */
 VOID PhUpdateServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     )
@@ -320,19 +419,40 @@ VOID PhUpdateServiceNode(
     TreeNew_InvalidateNode(ServiceTreeListHandle, &ServiceNode->Node);
 }
 
+/**
+ * Ticks the service nodes.
+ */
 VOID PhTickServiceNodes(
     VOID
     )
 {
+    BOOLEAN fullyInvalidated = FALSE;
+
     if (ServiceTreeListSortOrder != NoSortOrder)
     {
         // Force a rebuild to sort the items.
         TreeNew_NodesStructured(ServiceTreeListHandle);
+        fullyInvalidated = TRUE;
     }
 
-    PH_TICK_SH_STATE_TN(PH_SERVICE_NODE, ShState, ServiceNodeStateList, PhpRemoveServiceNode, PhCsHighlightingDuration, ServiceTreeListHandle, TRUE, NULL, NULL);
+    PH_TICK_SH_STATE_TN(
+        PH_SERVICE_NODE,
+        ShState,
+        ServiceNodeStateList,
+        PhpRemoveServiceNode,
+        PhCsHighlightingDuration,
+        ServiceTreeListHandle,
+        TRUE,
+        &fullyInvalidated,
+        NULL
+        );
 }
 
+/**
+ * Internal function to update service node configuration.
+ *
+ * \param ServiceNode The service node to update.
+ */
 static VOID PhpUpdateServiceNodeConfig(
     _Inout_ PPH_SERVICE_NODE ServiceNode
     )
@@ -342,6 +462,10 @@ static VOID PhpUpdateServiceNodeConfig(
         SC_HANDLE serviceHandle;
         LPQUERY_SERVICE_CONFIG serviceConfig;
 
+        PhClearReference(&ServiceNode->BinaryPath);
+        PhClearReference(&ServiceNode->LoadOrderGroup);
+        PhClearReference(&ServiceNode->UserName);
+
         if (NT_SUCCESS(PhOpenService(&serviceHandle, SERVICE_QUERY_CONFIG, PhGetString(ServiceNode->ServiceItem->Name))))
         {
             if (NT_SUCCESS(PhGetServiceConfig(serviceHandle, &serviceConfig)))
@@ -350,6 +474,8 @@ static VOID PhpUpdateServiceNodeConfig(
                     PhMoveReference(&ServiceNode->BinaryPath, PhCreateString(serviceConfig->lpBinaryPathName));
                 if (serviceConfig->lpLoadOrderGroup)
                     PhMoveReference(&ServiceNode->LoadOrderGroup, PhCreateString(serviceConfig->lpLoadOrderGroup));
+                if (serviceConfig->lpServiceStartName)
+                    PhMoveReference(&ServiceNode->UserName, PhCreateString(serviceConfig->lpServiceStartName));
 
                 PhFree(serviceConfig);
             }
@@ -361,6 +487,11 @@ static VOID PhpUpdateServiceNodeConfig(
     }
 }
 
+/**
+ * Internal function to update service node description.
+ *
+ * \param ServiceNode The service node to update.
+ */
 static VOID PhpUpdateServiceNodeDescription(
     _Inout_ PPH_SERVICE_NODE ServiceNode
     )
@@ -385,6 +516,11 @@ static VOID PhpUpdateServiceNodeDescription(
     //}
 }
 
+/**
+ * Internal function to update service node key information.
+ *
+ * \param ServiceNode The service node to update.
+ */
 static VOID PhpUpdateServiceNodeKey(
     _Inout_ PPH_SERVICE_NODE ServiceNode
     )
@@ -436,6 +572,15 @@ static VOID PhpUpdateServiceNodeKey(
     return PhModifySort(sortResult, ServiceTreeListSortOrder); \
 }
 
+/**
+ * Internal function for post-sort operations.
+ *
+ * \param Result The initial comparison result.
+ * \param Node1 The first node.
+ * \param Node2 The second node.
+ * \param SortOrder The sort order.
+ * \return The comparison result.
+ */
 _Function_class_(PH_CM_POST_SORT_FUNCTION)
 LONG PhpServiceTreeNewPostSortFunction(
     _In_ LONG Result,
@@ -490,9 +635,9 @@ BEGIN_SORT_FUNCTION(StartType)
     sortResult = uintcmp(serviceItem1->StartType, serviceItem2->StartType);
 
     if (sortResult == 0)
-        sortResult = ucharcmp(serviceItem1->DelayedStart, serviceItem2->DelayedStart);
+        sortResult = ucharcmp(!!serviceItem1->DelayedStart, !!serviceItem2->DelayedStart);
     if (sortResult == 0)
-        sortResult = ucharcmp(serviceItem1->HasTriggers, serviceItem2->HasTriggers);
+        sortResult = ucharcmp(!!serviceItem1->HasTriggers, !!serviceItem2->HasTriggers);
 }
 END_SORT_FUNCTION
 
@@ -568,6 +713,290 @@ BEGIN_SORT_FUNCTION(ExitCode)
 }
 END_SORT_FUNCTION
 
+BEGIN_SORT_FUNCTION(UserName)
+{
+    PhpUpdateServiceNodeConfig(node1);
+    PhpUpdateServiceNodeConfig(node2);
+    sortResult = PhCompareStringWithNullSortOrder(node1->UserName, node2->UserName, ServiceTreeListSortOrder, TRUE);
+}
+END_SORT_FUNCTION
+
+typedef struct _PH_SVCHOST_GROUP_ENTRY
+{
+    PPH_STRING ServiceName; // svchost member service short name (hashtable key)
+    PPH_STRING GroupName;   // owning svchost group (shared across members)
+} PH_SVCHOST_GROUP_ENTRY, *PPH_SVCHOST_GROUP_ENTRY;
+
+_Function_class_(PH_HASHTABLE_EQUAL_FUNCTION)
+static BOOLEAN NTAPI PhpSvchostGroupEqualFunction(
+    _In_ PVOID Entry1,
+    _In_ PVOID Entry2
+    )
+{
+    PPH_SVCHOST_GROUP_ENTRY entry1 = Entry1;
+    PPH_SVCHOST_GROUP_ENTRY entry2 = Entry2;
+
+    return PhEqualString(entry1->ServiceName, entry2->ServiceName, TRUE);
+}
+
+_Function_class_(PH_HASHTABLE_HASH_FUNCTION)
+static ULONG NTAPI PhpSvchostGroupHashFunction(
+    _In_ PVOID Entry
+    )
+{
+    PPH_SVCHOST_GROUP_ENTRY entry = Entry;
+
+    return PhHashStringRefEx(&entry->ServiceName->sr, TRUE, PH_STRING_HASH_X65599);
+}
+
+/**
+ * Enumeration callback for the Svchost registry key. Each value NAME is an svchost group and
+ * its REG_MULTI_SZ data lists the member service short names.
+ */
+_Function_class_(PH_ENUM_KEY_CALLBACK)
+static BOOLEAN NTAPI PhpEnumSvchostGroupCallback(
+    _In_ HANDLE RootDirectory,
+    _In_ PKEY_VALUE_FULL_INFORMATION Information,
+    _In_ PVOID Context
+    )
+{
+    PPH_HASHTABLE hashtable = Context;
+    PPH_STRING groupName;
+    PWCHAR cursor;
+    PWCHAR end;
+
+    if (Information->Type != REG_MULTI_SZ)
+        return TRUE;
+    if (Information->DataLength % sizeof(WCHAR))
+        return TRUE;
+
+    groupName = PhCreateStringEx(Information->Name, Information->NameLength);
+
+    cursor = (PWCHAR)PTR_ADD_OFFSET(Information, Information->DataOffset);
+    end = (PWCHAR)PTR_ADD_OFFSET(cursor, Information->DataLength);
+
+    while (cursor < end)
+    {
+        PH_STRINGREF name;
+
+        name.Buffer = cursor;
+        name.Length = 0;
+
+        while (cursor < end && *cursor != UNICODE_NULL)
+        {
+            name.Length += sizeof(WCHAR);
+            cursor++;
+        }
+
+        if (cursor < end)
+            cursor++; // skip the string's null terminator
+
+        if (name.Length != 0)
+        {
+            PH_SVCHOST_GROUP_ENTRY entry;
+
+            entry.ServiceName = PhCreateString2(&name);
+            entry.GroupName = groupName;
+            PhReferenceObject(groupName);
+
+            if (!PhAddEntryHashtable(hashtable, &entry))
+            {
+                // A service already mapped to a group (duplicate); keep the first.
+                PhDereferenceObject(entry.ServiceName);
+                PhDereferenceObject(entry.GroupName);
+            }
+        }
+    }
+
+    PhDereferenceObject(groupName);
+    return TRUE;
+}
+
+/**
+ * Builds a service-short-name -> svchost-group-name map from
+ * HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Svchost.
+ */
+static PPH_HASHTABLE PhpBuildSvchostGroupMap(
+    VOID
+    )
+{
+    static CONST PH_STRINGREF keyName = PH_STRINGREF_INIT(L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Svchost");
+    PPH_HASHTABLE hashtable;
+    HANDLE keyHandle;
+
+    hashtable = PhCreateHashtable(
+        sizeof(PH_SVCHOST_GROUP_ENTRY),
+        PhpSvchostGroupEqualFunction,
+        PhpSvchostGroupHashFunction,
+        64
+        );
+
+    if (NT_SUCCESS(PhOpenKey(&keyHandle, KEY_READ, PH_KEY_LOCAL_MACHINE, &keyName, 0)))
+    {
+        PhEnumerateValueKey(keyHandle, KeyValueFullInformation, PhpEnumSvchostGroupCallback, hashtable);
+        NtClose(keyHandle);
+    }
+
+    return hashtable;
+}
+
+/**
+ * Returns the cached svchost group map, building it on first use.
+ */
+static PPH_HASHTABLE PhpGetSvchostGroupMap(
+    VOID
+    )
+{
+    // Svchost group membership is effectively static at runtime, so the registry is not
+    // re-read on every tick/restructure; the map is built once and cached for reuse.
+    if (!ServiceSvchostGroupMap)
+        ServiceSvchostGroupMap = PhpBuildSvchostGroupMap();
+
+    return ServiceSvchostGroupMap;
+}
+
+/**
+ * Frees all synthetic group-header nodes.
+ */
+static VOID PhpClearServiceGroupTree(
+    VOID
+    )
+{
+    ULONG i;
+
+    for (i = 0; i < ServiceGroupNodeList->Count; i++)
+    {
+        PPH_SERVICE_NODE groupNode = ServiceGroupNodeList->Items[i];
+
+        if (groupNode->Children)
+            PhDereferenceObject(groupNode->Children);
+        PhClearReference(&groupNode->GroupText);
+        PhFree(groupNode);
+    }
+
+    PhClearList(ServiceGroupNodeList);
+}
+
+/**
+ * Creates a synthetic group-header node with the given label.
+ *
+ * \param GroupText The header label. A reference is taken.
+ * \return The created group node.
+ */
+static PPH_SERVICE_NODE PhpCreateServiceGroupNode(
+    _In_ PPH_STRING GroupText
+    )
+{
+    PPH_SERVICE_NODE groupNode;
+
+    groupNode = PhAllocateZero(sizeof(PH_SERVICE_NODE));
+    PhInitializeTreeNewNode(&groupNode->Node);
+    groupNode->Node.Expanded = TRUE;
+
+    groupNode->IsGroupNode = TRUE;
+    PhSetReference(&groupNode->GroupText, GroupText);
+    groupNode->Children = PhCreateList(8);
+
+    memset(groupNode->TextCache, 0, sizeof(PH_STRINGREF) * PHSVTLC_MAXIMUM);
+    groupNode->Node.TextCache = groupNode->TextCache;
+    groupNode->Node.TextCacheSize = PHSVTLC_MAXIMUM;
+
+    PhAddItemList(ServiceGroupNodeList, groupNode);
+
+    return groupNode;
+}
+
+/**
+ * Buckets the visible service nodes into group-header nodes according to the
+ * current grouping mode. Rebuilt on demand from the flat ServiceNodeList.
+ */
+static VOID PhpBuildServiceGroupTree(
+    VOID
+    )
+{
+    ULONG i;
+
+    PhpClearServiceGroupTree();
+
+    for (i = 0; i < ServiceNodeList->Count; i++)
+    {
+        PPH_SERVICE_NODE node = ServiceNodeList->Items[i];
+        PH_STRINGREF keySr;
+        PPH_SERVICE_NODE groupNode = NULL;
+        ULONG j;
+
+        if (!node->Node.Visible)
+            continue;
+
+        if (ServiceTreeListGroupMode == 1) // Type
+        {
+            PCPH_STRINGREF string = PhGetServiceTypeString(node->ServiceItem->Type);
+            keySr.Buffer = string->Buffer;
+            keySr.Length = string->Length;
+        }
+        else if (ServiceTreeListGroupMode == 4) // Start type
+        {
+            PCPH_STRINGREF string = PhGetServiceStartTypeString(node->ServiceItem->StartType);
+            keySr.Buffer = string->Buffer;
+            keySr.Length = string->Length;
+        }
+        else if (ServiceTreeListGroupMode == 3) // Svchost group
+        {
+            PH_SVCHOST_GROUP_ENTRY lookupEntry;
+            PPH_SVCHOST_GROUP_ENTRY foundEntry;
+
+            lookupEntry.ServiceName = node->ServiceItem->Name;
+            lookupEntry.GroupName = NULL;
+
+            foundEntry = PhFindEntryHashtable(PhpGetSvchostGroupMap(), &lookupEntry);
+
+            if (foundEntry)
+                keySr = foundEntry->GroupName->sr;
+            else
+                PhInitializeStringRef(&keySr, L"(No group)");
+        }
+        else // Load order group
+        {
+            PhpUpdateServiceNodeConfig(node);
+
+            if (!PhIsNullOrEmptyString(node->LoadOrderGroup))
+                keySr = node->LoadOrderGroup->sr;
+            else
+                PhInitializeStringRef(&keySr, L"(No group)");
+        }
+
+        for (j = 0; j < ServiceGroupNodeList->Count; j++)
+        {
+            PPH_SERVICE_NODE existing = ServiceGroupNodeList->Items[j];
+
+            if (PhEqualStringRef(&existing->GroupText->sr, &keySr, TRUE))
+            {
+                groupNode = existing;
+                break;
+            }
+        }
+
+        if (!groupNode)
+        {
+            PPH_STRING groupText = PhCreateString2(&keySr);
+            groupNode = PhpCreateServiceGroupNode(groupText);
+            PhDereferenceObject(groupText);
+        }
+
+        PhAddItemList(groupNode->Children, node);
+    }
+}
+
+/**
+ * Callback function for the service tree list control.
+ *
+ * \param hwnd The handle to the tree list control.
+ * \param Message The message being processed.
+ * \param Parameter1 Message-specific parameter.
+ * \param Parameter2 Message-specific parameter.
+ * \param Context An optional context.
+ * \return TRUE if the message was handled, otherwise FALSE.
+ */
 BOOLEAN NTAPI PhpServiceTreeNewCallback(
     _In_ HWND hwnd,
     _In_ PH_TREENEW_MESSAGE Message,
@@ -587,9 +1016,29 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
         {
             PPH_TREENEW_GET_CHILDREN getChildren = Parameter1;
 
+            // Grouped view is only shown while unsorted (mirrors the memory tab).
+            if (ServiceTreeListGroupMode != 0 && ServiceTreeListSortOrder == NoSortOrder)
+            {
+                node = (PPH_SERVICE_NODE)getChildren->Node;
+
+                if (!node)
+                {
+                    PhpBuildServiceGroupTree();
+                    getChildren->Children = (PPH_TREENEW_NODE *)ServiceGroupNodeList->Items;
+                    getChildren->NumberOfChildren = ServiceGroupNodeList->Count;
+                }
+                else if (node->IsGroupNode)
+                {
+                    getChildren->Children = (PPH_TREENEW_NODE *)node->Children->Items;
+                    getChildren->NumberOfChildren = node->Children->Count;
+                }
+
+                return TRUE;
+            }
+
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtNonSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Name),
                     SORT_FUNCTION(Pid),
@@ -607,8 +1056,9 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
                     SORT_FUNCTION(FileName),
                     SORT_FUNCTION(KeyModifiedTime), // Timeline
                     SORT_FUNCTION(ExitCode),
+                    SORT_FUNCTION(UserName),
                 };
-                int (__cdecl *sortFunction)(const void *, const void *);
+                _CoreCrtNonSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PHSVTLC_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -640,7 +1090,12 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
         {
             PPH_TREENEW_IS_LEAF isLeaf = Parameter1;
 
-            isLeaf->IsLeaf = TRUE;
+            node = (PPH_SERVICE_NODE)isLeaf->Node;
+
+            if (ServiceTreeListGroupMode != 0 && ServiceTreeListSortOrder == NoSortOrder)
+                isLeaf->IsLeaf = !node->IsGroupNode;
+            else
+                isLeaf->IsLeaf = TRUE;
         }
         return TRUE;
     case TreeNewGetCellText:
@@ -649,6 +1104,16 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
             PPH_SERVICE_ITEM serviceItem;
 
             node = (PPH_SERVICE_NODE)getCellText->Node;
+
+            if (node->IsGroupNode)
+            {
+                if (getCellText->Id == PHSVTLC_NAME)
+                    getCellText->Text = PhGetStringRef(node->GroupText);
+
+                getCellText->Flags = TN_CACHE;
+                return TRUE;
+            }
+
             serviceItem = node->ServiceItem;
 
             switch (getCellText->Id)
@@ -807,6 +1272,12 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
                     }
                 }
                 break;
+            case PHSVTLC_USERNAME:
+                {
+                    PhpUpdateServiceNodeConfig(node);
+                    getCellText->Text = PhGetStringRef(node->UserName);
+                }
+                break;
             default:
                 return FALSE;
             }
@@ -818,6 +1289,9 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
         {
             PPH_TREENEW_GET_NODE_ICON getNodeIcon = Parameter1;
             node = (PPH_SERVICE_NODE)getNodeIcon->Node;
+
+            if (node->IsGroupNode)
+                return FALSE;
 
             if (node->ServiceItem->IconEntry)
             {
@@ -869,6 +1343,9 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
             PPH_TREENEW_GET_CELL_TOOLTIP getCellTooltip = Parameter1;
             node = (PPH_SERVICE_NODE)getCellTooltip->Node;
 
+            if (node->IsGroupNode)
+                return FALSE;
+
             if (getCellTooltip->Column->Id != 0)
                 return FALSE;
 
@@ -894,6 +1371,10 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
             RECT rect;
 
             node = (PPH_SERVICE_NODE)customDraw->Node;
+
+            if (node->IsGroupNode)
+                return TRUE;
+
             serviceItem = node->ServiceItem;
             rect = customDraw->CellRect;
 
@@ -990,6 +1471,11 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
     return FALSE;
 }
 
+/**
+ * Gets the selected service item.
+ *
+ * \return The selected service item, or NULL if no item is selected.
+ */
 PPH_SERVICE_ITEM PhGetSelectedServiceItem(
     VOID
     )
@@ -1011,6 +1497,12 @@ PPH_SERVICE_ITEM PhGetSelectedServiceItem(
     return serviceItem;
 }
 
+/**
+ * Gets the selected service items.
+ *
+ * \param Services A variable which receives a pointer to an array of service items.
+ * \param NumberOfServices A variable which receives the number of service items.
+ */
 VOID PhGetSelectedServiceItems(
     _Out_ PPH_SERVICE_ITEM **Services,
     _Out_ PULONG NumberOfServices
@@ -1033,6 +1525,9 @@ VOID PhGetSelectedServiceItems(
     *Services = PhFinalArrayItems(&array);
 }
 
+/**
+ * Deselects all service nodes.
+ */
 VOID PhDeselectAllServiceNodes(
     VOID
     )
@@ -1040,6 +1535,12 @@ VOID PhDeselectAllServiceNodes(
     TreeNew_DeselectRange(ServiceTreeListHandle, 0, -1);
 }
 
+/**
+ * Selects a service node and ensures it is visible.
+ *
+ * \param ServiceNode The service node to select.
+ * \return TRUE if the node was selected, otherwise FALSE.
+ */
 BOOLEAN PhSelectAndEnsureVisibleServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     )
@@ -1063,6 +1564,9 @@ BOOLEAN PhSelectAndEnsureVisibleServiceNode(
     }
 }
 
+/**
+ * Copies the service list to the clipboard.
+ */
 VOID PhCopyServiceList(
     VOID
     )
@@ -1074,6 +1578,12 @@ VOID PhCopyServiceList(
     PhDereferenceObject(text);
 }
 
+/**
+ * Writes the service list to a file stream.
+ *
+ * \param FileStream The file stream to write to.
+ * \param Mode The write mode.
+ */
 VOID PhWriteServiceList(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ ULONG Mode

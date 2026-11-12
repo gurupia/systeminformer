@@ -22,6 +22,7 @@
 #include <sistatus.h>
 #include <informer.h>
 #include <phsvccl.h>
+#include <phutil.h>
 #include <svcsup.h>
 
 #include <ksisup.h>
@@ -60,20 +61,6 @@ static BOOLEAN KsiEnableLoadFilter = FALSE;
 static PPH_STRING KsiServiceName = NULL;
 static PPH_STRING KsiFileName = NULL;
 static PPH_STRING KsiObjectName = NULL;
-
-#ifdef DEBUG
-//#define KSI_DEBUG_DELAY_SPLASHSCREEN 1
-
-extern // ksidbg.c
-VOID KsiDebugLogInitialize(
-    VOID
-    );
-
-extern // ksidbg.c
-VOID KsiDebugLogFinalize(
-    VOID
-    );
-#endif
 
 /**
  * Get the kernel file name for the running system.
@@ -152,13 +139,17 @@ PCWSTR KsiGetWindowsVersionString(
         return L"Windows 11 24H2";
     case WINDOWS_11_25H2:
         return L"Windows 11 25H2";
+    case WINDOWS_11_26H2:
+        return L"Windows 11 26H2";
     case WINDOWS_11_26H1:
         return L"Windows 11 26H1";
+    case WINDOWS_11_27H2:
+        return L"Windows 11 27H2";
     case WINDOWS_NEW:
         return L"Windows Insider Preview";
     }
 
-    static_assert(WINDOWS_MAX == WINDOWS_11_26H1, "KsiGetWindowsVersionString must include all versions");
+    static_assert(WINDOWS_MAX == WINDOWS_11_27H2, "KsiGetWindowsVersionString must include all versions");
 
     return L"Windows";
 }
@@ -252,9 +243,19 @@ VOID KsiGetKernelSupportData(
 
             if (NT_SUCCESS(PhLoadMappedImageHeaderPageSize(&fileName->sr, NULL, &mappedImage)))
             {
-                KsiSupportData.Machine = mappedImage.NtHeaders->FileHeader.Machine;
-                KsiSupportData.TimeDateStamp = mappedImage.NtHeaders->FileHeader.TimeDateStamp;
-                KsiSupportData.SizeOfImage = mappedImage.NtHeaders->OptionalHeader.SizeOfImage;
+                KSI_SUPPORT_DATA supportData = KsiSupportData;
+
+                __try
+                {
+                    supportData.Machine = mappedImage.NtHeaders->FileHeader.Machine;
+                    supportData.TimeDateStamp = mappedImage.NtHeaders->FileHeader.TimeDateStamp;
+                    supportData.SizeOfImage = mappedImage.NtHeaders->OptionalHeader.SizeOfImage;
+                    KsiSupportData = supportData;
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    NOTHING;
+                }
 
                 PhUnloadMappedImage(&mappedImage);
             }
@@ -347,6 +348,10 @@ VOID PhShowKsiStatus(
         if (!BooleanFlagOn(processState, KPH_PROCESS_NOT_BEING_DEBUGGED))
         {
             PhAppendStringBuilder2(&stringBuilder, L"    - process is being debugged\r\n");
+        }
+        if (!BooleanFlagOn(processState, KPH_PROCESS_CREATE_NOTIFICATION))
+        {
+            PhAppendStringBuilder2(&stringBuilder, L"    - no create notification\r\n");
         }
         if ((processState & KPH_PROCESS_STATE_MINIMUM) != KPH_PROCESS_STATE_MINIMUM)
         {
@@ -635,26 +640,45 @@ LONG PhpShowKsiMessage(
     else
     {
         BOOLEAN checked;
-        LONG bufferLength;
-        WCHAR buffer[0x100];
 
-        bufferLength = _snwprintf(
-            buffer,
-            ARRAYSIZE(buffer) - sizeof(UNICODE_NULL),
-            L"%s (0x%08x)",
-            Title,
-            Status
-            );
-        buffer[bufferLength] = UNICODE_NULL;
+        if (Status != STATUS_SUCCESS)
+        {
+            INT bufferLength;
+            WCHAR buffer[0x100];
 
-        result = PhShowMessageOneTime2(
-            WindowHandle,
-            Buttons,
-            Icon,
-            buffer,
-            &checked,
-            PhGetString(errorMessage)
-            );
+            bufferLength = _snwprintf(
+                buffer,
+                ARRAYSIZE(buffer),
+                L"%s (0x%08x)",
+                Title,
+                Status
+                );
+
+            if (bufferLength >= 0 && bufferLength < ARRAYSIZE(buffer))
+                buffer[bufferLength] = UNICODE_NULL;
+            else
+                buffer[ARRAYSIZE(buffer) - 1] = UNICODE_NULL;
+
+            result = PhShowMessageOneTime2(
+                WindowHandle,
+                Buttons,
+                Icon,
+                buffer,
+                &checked,
+                PhGetString(errorMessage)
+                );
+        }
+        else
+        {
+            result = PhShowMessageOneTime2(
+                WindowHandle,
+                Buttons,
+                Icon,
+                Title,
+                &checked,
+                PhGetString(errorMessage)
+                );
+        }
 
         if (checked)
         {
@@ -838,7 +862,10 @@ NTSTATUS KsiSvcConnectToServer(
     PhDereferenceObject(fileName);
 
     if (!NT_SUCCESS(status))
+    {
+        PhDereferenceObject(serviceName);
         return status;
+    }
 
     PhStartService(serviceHandle, 0, NULL);
     PhDeleteService(serviceHandle);
@@ -861,6 +888,7 @@ NTSTATUS KsiSvcConnectToServer(
     } while (--attempts != 0);
 
     PhDereferenceObject(portName);
+    PhDereferenceObject(serviceName);
 
     PhCloseServiceHandle(serviceHandle);
 
@@ -933,7 +961,7 @@ NTSTATUS PhRestartSelf(
     status = PhInitializeProcThreadAttributeList(&attributeList, 1);
 
     if (!NT_SUCCESS(status))
-        return status;
+        goto CleanupExit;
 
     if (WindowsVersion >= WINDOWS_10_22H2)
     {
@@ -956,7 +984,7 @@ NTSTATUS PhRestartSelf(
 #endif
 
     if (!NT_SUCCESS(status))
-        return status;
+        goto CleanupExit;
 
     memset(&startupInfo, 0, sizeof(STARTUPINFOEX));
     startupInfo.StartupInfo.cb = sizeof(STARTUPINFOEX);
@@ -968,7 +996,8 @@ NTSTATUS PhRestartSelf(
         NULL,
         NULL,
         &startupInfo,
-        PH_CREATE_PROCESS_DEFAULT_ERROR_MODE | PH_CREATE_PROCESS_EXTENDED_STARTUPINFO,
+        PH_CREATE_PROCESS_DEFAULT_ERROR_MODE | PH_CREATE_PROCESS_EXTENDED_STARTUPINFO |
+        PH_CREATE_PROCESS_DETACHED_PROCESS,
         NULL,
         NULL,
         NULL,
@@ -980,51 +1009,14 @@ NTSTATUS PhRestartSelf(
         PhExitApplication(STATUS_SUCCESS);
     }
 
+CleanupExit:
+
     if (attributeList)
         PhDeleteProcThreadAttributeList(attributeList);
 
     PhDereferenceObject(commandline);
 
     return status;
-}
-
-/**
- * Determine if an old temporary driver file 'ksi.dll-old' exists and try to delete it.
- *
- * This function checks the application directory for the existence of the
- * legacy filename 'ksi.dll-old'. If it exists the function attempts to delete
- * it; if deletion fails the function returns TRUE indicating that a reboot
- * is likely required (the file is still locked).
- * \return TRUE if an old KSI file remains (and may require reboot), FALSE if
- *         no old file exists or deletion succeeded.
- */
-BOOLEAN PhDoesOldKsiExist(
-    VOID
-    )
-{
-    static CONST PH_STRINGREF ksiOld = PH_STRINGREF_INIT(L"ksi.dll-old");
-    BOOLEAN result = FALSE;
-    PPH_STRING applicationDirectory;
-    PPH_STRING fileName;
-
-    if (!(applicationDirectory = PhGetApplicationDirectory()))
-        return FALSE;
-
-    if (fileName = PhConcatStringRef2(&applicationDirectory->sr, &ksiOld))
-    {
-        if (result = PhDoesFileExist(&fileName->sr))
-        {
-            // If the file exists try to delete it. If we can't a reboot is
-            // still required since it's likely still mapped into the kernel.
-            if (NT_SUCCESS(PhDeleteFile(&fileName->sr)))
-                result = FALSE;
-        }
-
-        PhDereferenceObject(fileName);
-    }
-
-    PhDereferenceObject(applicationDirectory);
-    return result;
 }
 
 /**
@@ -1161,6 +1153,7 @@ NTSTATUS KsiValidateDynamicConfiguration(
             supportData.TimeDateStamp,
             supportData.SizeOfImage,
             NULL,
+            0,
             NULL
             );
 
@@ -1283,7 +1276,7 @@ VOID KsiActivateDynData(
 #if defined(KSI_ONLINE_PLATFORM_SUPPORT)
         KsiShowKernelSupportCheckDialog(WindowHandle);
 #else
-        if (PhGetPhReleaseChannel() < PhCanaryChannel)
+        if (PhGetBuildReleaseChannel() < PhCanaryChannel)
         {
             PhShowKsiMessageEx(
                 WindowHandle,
@@ -1591,6 +1584,28 @@ NTSTATUS KsiConnect(
         }
     }
 
+    //
+    // An explicit check for KSIDLL version mismatch or a missing procedure
+    // indicates the loaded KSIDLL is out of date relative to the driver.
+    // STATUS_PROCEDURE_NOT_FOUND could in theory occur if the driver imported
+    // something absent from the kernel, but in practice it means the new
+    // driver depends on a new export from KSIDLL and the updated KSIDLL has
+    // not been loaded yet - the user must reboot.
+    //
+    if ((status == STATUS_SI_KSIDLL_VERSION_MISMATCH) ||
+        (status == STATUS_PROCEDURE_NOT_FOUND))
+    {
+        PhShowKsiMessageEx(
+            NULL,
+            TD_SHIELD_ERROR_ICON,
+            STATUS_SI_KSIDLL_VERSION_MISMATCH,
+            FALSE,
+            L"Unable to load kernel driver",
+            L"The last System Informer update requires a reboot."
+            );
+        goto CleanupExit;
+    }
+
     if (!NT_SUCCESS(status))
     {
         PPH_STRING randomServiceName;
@@ -1741,65 +1756,7 @@ NTSTATUS KsiConnect(
             KphStripProtectedProcessMasks(NtCurrentProcess(), process, thread);
     }
 
-    if (PhEnableProcessMonitor)
-    {
-        KPH_INFORMER_SETTINGS settings;
-        KPH_RATE_LIMIT_POLICY unlimited = KPH_RATE_LIMIT_UNLIMITED;
-        KPH_RATE_LIMIT_POLICY disable = KPH_RATE_LIMIT_DENY_ALL;
-
-        settings.Options.Flags = ULONG_MAX;
-        for (ULONG i = 0; i < KPH_INFORMER_COUNT; i++)
-        {
-            settings.Policy[i] = unlimited;
-        }
-
-        //
-        // Conservative settings for now.
-        //
-
-        settings.Options.EnableStackTraces = FALSE;
-
-        settings.Policy[KPH_INFORMER_INDEX(DebugPrint)] = disable;
-
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreCreateProcess)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostCreateProcess)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreDuplicateProcess)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostDuplicateProcess)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreCreateThread)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostCreateThread)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreDuplicateThread)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostDuplicateThread)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreCreateDesktop)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostCreateDesktop)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePreDuplicateDesktop)] = disable;
-        settings.Policy[KPH_INFORMER_INDEX(HandlePostDuplicateDesktop)] = disable;
-
-        settings.Options.EnableProcessCreateReply = FALSE;
-        settings.Options.FileEnablePreCreateReply = FALSE;
-        settings.Options.FileEnablePostCreateReply = FALSE;
-
-        settings.Options.FileEnablePostFileNames = FALSE;
-        settings.Options.FileEnableIoControlBuffers = FALSE;
-        settings.Options.FileEnableFsControlBuffers = FALSE;
-        settings.Options.FileEnableDirControlBuffers = FALSE;
-
-        settings.Options.RegEnablePostObjectNames = FALSE;
-        settings.Options.RegEnablePostValueNames = FALSE;
-        settings.Options.RegEnableValueBuffers = FALSE;
-
-        KphSetInformerSettings(&settings);
-    }
-    else
-    {
-        KPH_INFORMER_SETTINGS settings;
-        KPH_RATE_LIMIT_POLICY unlimited = KPH_RATE_LIMIT_UNLIMITED;
-
-        memset(&settings, 0, sizeof(settings));
-
-        settings.Policy[KPH_INFORMER_INDEX(RequiredStateFailure)] = unlimited;
-
-        KphSetInformerSettings(&settings);
-    }
+    PhInformerActivate();
 
     status = STATUS_SUCCESS;
 
@@ -1810,10 +1767,6 @@ CleanupExit:
     PhClearReference(&altitude);
     PhClearReference(&ksiFileName);
     PhClearReference(&tempDriverDir);
-
-#ifdef DEBUG
-    KsiDebugLogInitialize();
-#endif
 
     return status;
 }
@@ -1829,10 +1782,6 @@ NTSTATUS KsiInitializeCallbackThread(
     _In_opt_ PVOID CallbackContext
     )
 {
-#ifdef KSI_DEBUG_DELAY_SPLASHSCREEN
-    if (CallbackContext) PhDelayExecution(1000);
-#endif
-
     KsiConnect(CallbackContext);
 
     if (CallbackContext)
@@ -1928,7 +1877,7 @@ VOID KsiShowInitializingSplashScreen(
     config.cbSize = sizeof(TASKDIALOGCONFIG);
     config.dwFlags = TDF_USE_HICON_MAIN | TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CAN_BE_MINIMIZED | TDF_CALLBACK_TIMER;
     config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
-    config.hMainIcon = PhGetApplicationIcon(FALSE);
+    config.hMainIcon = PhGetApplicationIcon(FALSE, USER_DEFAULT_SCREEN_DPI);
     config.pfCallback = KsiSplashScreenDialogCallbackProc;
     config.pszWindowTitle = PhApplicationName;
     config.pszMainInstruction = L"Initializing System Informer kernel driver...";
@@ -1963,19 +1912,6 @@ VOID PhInitializeKsi(
             L"Unable to load kernel driver",
             L"The kernel driver is not supported on this Windows version, the "
             L"minimum supported version is Windows 10."
-            );
-        return;
-    }
-
-    if (PhDoesOldKsiExist())
-    {
-        PhShowKsiMessageEx(
-            NULL,
-            TD_SHIELD_ERROR_ICON,
-            STATUS_PENDING,
-            FALSE,
-            L"Unable to load kernel driver",
-            L"The last System Informer update requires a reboot."
             );
         return;
     }
@@ -2047,7 +1983,13 @@ NTSTATUS PhCleanupKsi(
     if (PhGetIntegerSetting(SETTING_KSI_ENABLE_UNLOAD_PROTECTION))
         KphReleaseDriverUnloadProtection(NULL, NULL);
 
-    if (PhGetIntegerSetting(SETTING_KSI_UNLOAD_ON_EXIT))
+    //
+    // N.B. Portable mode doesn't use the updater which will unload the driver
+    // on upgrades. In portable mode updates happen by the user so we should
+    // always unload the driver on exit. It also really doesn't make sense to
+    // keep the driver loaded in a portable configuration.
+    //
+    if (PhPortableEnabled || PhGetIntegerSetting(SETTING_KSI_UNLOAD_ON_EXIT))
     {
         ULONG clientCount;
 
@@ -2062,9 +2004,6 @@ NTSTATUS PhCleanupKsi(
     }
 
     KphCommsStop();
-#ifdef DEBUG
-    KsiDebugLogFinalize();
-#endif
 
     if (!shouldUnload)
         return STATUS_SUCCESS;
@@ -2205,7 +2144,7 @@ PVOID PhCreateKsiSettingsBlob(
  *
  * \param[out] Duration      Total measured duration.
  * \param[out] DurationDown  Time spent sending the request to the kernel.
- * \param[out] DurationUp    Time spent recieving the response from the kernel.
+ * \param[out] DurationUp    Time spent receiving the response from the kernel.
  * \return NTSTATUS from KphQueryPerformanceCounter, or STATUS_UNSUCCESSFUL.
  * \remarks Use this function when you need a kernel-reported high-resolution
  * timebase to measure or correlate user/kernel timing.
@@ -2263,7 +2202,7 @@ PPH_STRING KsiCreateBuildString(
     PH_FORMAT format[8];
     WCHAR formatBuffer[260];
 
-    PhGetPhVersionNumbers(&majorVersion, &minorVersion, &buildVersion, &revisionVersion);
+    PhGetBuildVersionNumbers(&majorVersion, &minorVersion, &buildVersion, &revisionVersion);
     PhInitFormatSR(&format[0], versionHeader);
     PhInitFormatU(&format[1], majorVersion);
     PhInitFormatC(&format[2], L'.');
@@ -2667,7 +2606,7 @@ HRESULT CALLBACK KsiKernelSupportCheckDialogCallbackProc(
                     {
                         config.pszMainInstruction = L"Kernel version not supported";
                         config.pszContent = L"This kernel version is not yet supported. "
-                            L"Your kernel version is pending review review on the development branch.";
+                            L"Your kernel version is pending review on the development branch.";
                     }
                     else
                     {
@@ -2702,7 +2641,7 @@ VOID KsiShowKernelSupportCheckDialog(
         );
 
     context.WindowHandle = WindowHandle;
-    context.IsCanaryChannel = (PhGetPhReleaseChannel() >= PhCanaryChannel);
+    context.IsCanaryChannel = (PhGetBuildReleaseChannel() >= PhCanaryChannel);
     KsiGetKernelSupportData(&context.SupportData);
 
     TASKDIALOGCONFIG config = { sizeof(TASKDIALOGCONFIG) };

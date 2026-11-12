@@ -46,7 +46,7 @@ typedef enum _KPH_DYN_MODULE_CLASS
 } KPH_DYN_MODULE_CLASS, *PKPH_DYN_MODULE_CLASS;
 
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
-static const UNICODE_STRING KphpDynDataTypeName = RTL_CONSTANT_STRING(L"KphDynData");
+DECLARE_CONST_UNICODE_STRING(KphpDynDataTypeName, L"KphDynData");
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 KPH_PROTECTED_DATA_SECTION_PUSH();
 static PKPH_OBJECT_TYPE KphpDynDataType = NULL;
@@ -65,11 +65,14 @@ static KPH_DYN_ATOMIC KphpDynData = { .Atomic = KPH_ATOMIC_OBJECT_REF_INIT };
  * \return Pointer to the dynamic configuration, NULL if not activated. The
  * caller must eventually dereference the object.
  */
+_IRQL_requires_max_(HIGH_LEVEL)
 _Must_inspect_result_
 PKPH_DYN KphReferenceDynData(
     VOID
     )
 {
+    KPH_NPAGED_CODE_HIGH_MAX();
+
     return KphAtomicReferenceObject(&KphpDynData.Atomic);
 }
 
@@ -279,6 +282,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynNtoskrnl].TimeDateStamp,
                                   KphpDynModules[KphDynNtoskrnl].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_NTOSKRNL_FIELDS),
                                   &kernel);
     }
     else if (KphpDynModules[KphDynNtkrla57].Valid)
@@ -290,6 +294,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynNtkrla57].TimeDateStamp,
                                   KphpDynModules[KphDynNtkrla57].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_NTKRLA57_FIELDS),
                                   &kernel);
     }
     else
@@ -319,6 +324,7 @@ NTSTATUS KphpActivateDynData(
                                   KphpDynModules[KphDynLxcore].TimeDateStamp,
                                   KphpDynModules[KphDynLxcore].SizeOfImage,
                                   NULL,
+                                  sizeof(KPH_DYN_LXCORE_FIELDS),
                                   &lxcore);
     }
     else

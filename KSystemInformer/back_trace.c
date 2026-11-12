@@ -28,7 +28,7 @@ typedef struct _KPH_STACK_BACK_TRACE_OBJECT
 } KPH_STACK_BACK_TRACE_OBJECT, *PKPH_STACK_BACK_TRACE_OBJECT;
 
 KPH_PROTECTED_DATA_SECTION_RO_PUSH();
-static const UNICODE_STRING KphpStackBackTraceTypeName = RTL_CONSTANT_STRING(L"KphStackBackTrace");
+DECLARE_CONST_UNICODE_STRING(KphpStackBackTraceTypeName, L"KphStackBackTrace");
 KPH_PROTECTED_DATA_SECTION_RO_POP();
 KPH_PROTECTED_DATA_SECTION_PUSH();
 static PVOID KphpSelfImageBase = NULL;
@@ -511,8 +511,19 @@ NTSTATUS KphCaptureStackBackTraceThread(
 
     backTrace = NULL;
 
-    status = RtlULongAdd(FramesToCapture,
-                         sizeof(KPH_STACK_BACK_TRACE_OBJECT),
+    status = RtlULongMult(FramesToCapture, sizeof(PVOID), &backTraceSize);
+    if (!NT_SUCCESS(status))
+    {
+        KphTracePrint(TRACE_LEVEL_VERBOSE,
+                      GENERAL,
+                      "RtlULongMult failed: %!STATUS!",
+                      status);
+
+        goto Exit;
+    }
+
+    status = RtlULongAdd(backTraceSize,
+                         FIELD_OFFSET(KPH_STACK_BACK_TRACE_OBJECT, BackTrace),
                          &backTraceSize);
     if (!NT_SUCCESS(status))
     {

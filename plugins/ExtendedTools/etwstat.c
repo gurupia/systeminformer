@@ -6,25 +6,40 @@
  * Authors:
  *
  *     wj32    2010-2011
- *     dmex    2019-2024
+ *     dmex    2019-2026
  *
  */
 
 #include "exttools.h"
 #include "etwmon.h"
 
+/**
+ * Callback for process provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
 
+/**
+ * Callback for network item provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
 
+/**
+ * Updates the internal process information cache.
+ */
 VOID EtpUpdateProcessInformation(
     VOID
     );
@@ -32,7 +47,6 @@ VOID EtpUpdateProcessInformation(
 BOOLEAN EtDiskCountersEnabled = FALSE;
 static PH_CALLBACK_REGISTRATION EtpProcessesUpdatedCallbackRegistration;
 static PH_CALLBACK_REGISTRATION EtpNetworkItemsUpdatedCallbackRegistration;
-
 static PVOID EtpProcessInformation = NULL;
 static PH_QUEUED_LOCK EtpProcessInformationLock = PH_QUEUED_LOCK_INIT;
 
@@ -67,6 +81,9 @@ PH_CIRCULAR_BUFFER_ULONG64 PhMaxDiskUsageHistory;
 PH_CIRCULAR_BUFFER_ULONG64 PhMaxNetworkUsageHistory;
 #endif
 
+/**
+ * Initializes ETW statistics collection.
+ */
 VOID EtEtwStatisticsInitialization(
     VOID
     )
@@ -110,6 +127,9 @@ VOID EtEtwStatisticsInitialization(
     }
 }
 
+/**
+ * Uninitializes ETW statistics collection.
+ */
 VOID EtEtwStatisticsUninitialization(
     VOID
     )
@@ -117,6 +137,59 @@ VOID EtEtwStatisticsUninitialization(
     EtEtwMonitorUninitialization();
 }
 
+// EXTENDEDTOOLS_INTERFACE
+BOOLEAN EtLookupProcessIoStatistics(
+    _In_ HANDLE ProcessId,
+    _Out_ PEXTENDEDTOOLS_PROCESS_IO Statistics
+    )
+{
+    PPH_PROCESS_ITEM processItem;
+    PET_PROCESS_BLOCK block;
+
+    if (!(processItem = PhReferenceProcessItem(ProcessId)))
+        return FALSE;
+
+    block = EtGetProcessBlock(processItem);
+
+    memset(Statistics, 0, sizeof(EXTENDEDTOOLS_PROCESS_IO));
+    Statistics->EtwEnabled = EtEtwEnabled;
+    Statistics->DiskCountersEnabled = EtDiskCountersEnabled;
+    Statistics->HaveSample = block->HaveDiskSample;
+
+    Statistics->DiskReadBytes = block->DiskReadRaw;
+    Statistics->DiskWriteBytes = block->DiskWriteRaw;
+    Statistics->NetworkReceiveBytes = block->NetworkReceiveRaw;
+    Statistics->NetworkSendBytes = block->NetworkSendRaw;
+
+    Statistics->DiskReadCount = block->DiskReadCount;
+    Statistics->DiskWriteCount = block->DiskWriteCount;
+    Statistics->NetworkReceiveCount = block->NetworkReceiveCount;
+    Statistics->NetworkSendCount = block->NetworkSendCount;
+
+    Statistics->DiskReadBytesDelta = block->DiskReadRawDelta.Delta;
+    Statistics->DiskWriteBytesDelta = block->DiskWriteRawDelta.Delta;
+    Statistics->NetworkReceiveBytesDelta = block->NetworkReceiveRawDelta.Delta;
+    Statistics->NetworkSendBytesDelta = block->NetworkSendRawDelta.Delta;
+
+    Statistics->DiskReadCountDelta = block->DiskReadDelta.Delta;
+    Statistics->DiskWriteCountDelta = block->DiskWriteDelta.Delta;
+    Statistics->NetworkReceiveCountDelta = block->NetworkReceiveDelta.Delta;
+    Statistics->NetworkSendCountDelta = block->NetworkSendDelta.Delta;
+
+    Statistics->DiskTotalBytesDeltaPeak = block->DiskTotalRawDeltaMax;
+    Statistics->NetworkTotalBytesDeltaPeak = block->NetworkTotalRawDeltaMax;
+
+    PhDereferenceObject(processItem);
+
+    return TRUE;
+}
+
+
+/**
+ * Processes a disk I/O event and updates statistics.
+ *
+ * \param Event The disk I/O event.
+ */
 VOID EtProcessDiskEvent(
     _In_ PET_ETW_DISK_EVENT Event
     )
@@ -154,6 +227,131 @@ VOID EtProcessDiskEvent(
     }
 }
 
+PPH_NETWORK_ITEM EtpReferenceNetworkItem(
+    _In_ PET_ETW_NETWORK_EVENT Event
+    )
+{
+    PPH_NETWORK_ITEM networkItem;
+    PPH_NETWORK_ITEM *networkItems;
+    ULONG numberOfNetworkItems;
+    ULONG bestScore;
+    ULONG bestCount;
+    ULONG i;
+
+    // Keep the normal exact lookup fast. The fallback below is only needed when
+    // ETW and the network provider disagree about the local address representation.
+    networkItem = PhReferenceNetworkItem(
+        Event->ProtocolType,
+        &Event->LocalEndpoint,
+        &Event->RemoteEndpoint,
+        Event->ClientId.UniqueProcess
+        );
+
+    if (networkItem)
+        return networkItem;
+
+    networkItems = NULL;
+    numberOfNetworkItems = 0;
+    PhEnumNetworkItemsByProcessId(
+        Event->ClientId.UniqueProcess,
+        &networkItems,
+        &numberOfNetworkItems
+        );
+
+    if (!networkItems)
+        return NULL;
+
+    bestScore = 0;
+    bestCount = 0;
+    networkItem = NULL;
+
+    for (i = 0; i < numberOfNetworkItems; i++)
+    {
+        PPH_NETWORK_ITEM candidate = networkItems[i];
+        ULONG score = 0;
+
+        if (candidate->ProtocolType != Event->ProtocolType)
+            goto Continue;
+
+        if (candidate->LocalEndpoint.Port != Event->LocalEndpoint.Port)
+            goto Continue;
+
+        if (FlagOn(Event->ProtocolType, PH_PROTOCOL_TYPE_UDP))
+        {
+            // UDP tables do not expose a remote endpoint. Do not use the ETW
+            // peer endpoint to distinguish sockets, but require the inventory
+            // record to have the expected unconnected-UDP shape.
+            if (candidate->RemoteEndpoint.Address.Type != PH_NETWORK_TYPE_NONE ||
+                candidate->RemoteEndpoint.Port != 0)
+            {
+                goto Continue;
+            }
+        }
+        else
+        {
+            if (!PhEqualIpEndpoint(&candidate->RemoteEndpoint, &Event->RemoteEndpoint))
+                goto Continue;
+        }
+
+        if (candidate->LocalEndpoint.Address.Type != Event->LocalEndpoint.Address.Type)
+            goto Continue;
+
+        if (PhEqualIpAddress(
+            &candidate->LocalEndpoint.Address,
+            &Event->LocalEndpoint.Address
+            ))
+        {
+            score = 2;
+        }
+        else if (PhIsNullIpAddress(&candidate->LocalEndpoint.Address))
+        {
+            score = 1;
+        }
+        else
+        {
+            goto Continue;
+        }
+
+        if (score > bestScore)
+        {
+            if (networkItem)
+                PhDereferenceObject(networkItem);
+
+            networkItem = candidate;
+            bestScore = score;
+            bestCount = 1;
+            continue;
+        }
+
+        if (score == bestScore)
+        {
+            bestCount++;
+            PhDereferenceObject(candidate);
+            continue;
+        }
+
+Continue:
+        PhDereferenceObject(candidate);
+    }
+
+    PhFree(networkItems);
+
+    if (bestCount != 1)
+    {
+        if (networkItem)
+            PhDereferenceObject(networkItem);
+
+        return NULL;
+    }
+
+    return networkItem;
+}
+
+/**
+ * Processes a network event and updates statistics.
+ *
+ * \param Event The network event.
+ */
 VOID EtProcessNetworkEvent(
     _In_ PET_ETW_NETWORK_EVENT Event
     )
@@ -174,10 +372,14 @@ VOID EtProcessNetworkEvent(
         EtNetworkSendCount++;
     }
 
-    // Note: there is always the possibility of us receiving the event too early,
-    // before the process item or network item is created. So events may be lost.
+    // Note: We don't track ETW process events since this duplicates the process provider,
+    // but this can result in the possibility of us receiving an event before the process is created.
+    // 
 
-    if (processItem = PhReferenceProcessItem(Event->ClientId.UniqueProcess))
+    if (!(processItem = PhReferenceProcessItem(Event->ClientId.UniqueProcess)))
+        processItem = PhReferenceProcessItem(SYSTEM_PROCESS_ID);
+
+    if (processItem)
     {
         block = EtGetProcessBlock(processItem);
 
@@ -195,46 +397,7 @@ VOID EtProcessNetworkEvent(
         PhDereferenceObject(processItem);
     }
 
-    networkItem = PhReferenceNetworkItem(
-        Event->ProtocolType,
-        &Event->LocalEndpoint,
-        &Event->RemoteEndpoint,
-        Event->ClientId.UniqueProcess
-        );
-
-    if (!networkItem && FlagOn(Event->ProtocolType, PH_PROTOCOL_TYPE_UDP))
-    {
-        PH_IP_ENDPOINT networkEndpoint;
-
-        // Note: ETW generates UDP events with the LocalEndpoint set to the LAN endpoint address
-        // of the local adapter the packet was sent or received but GetExtendedUdpTable
-        // returns some UDP connections with endpoints set to in4addr_any/in6addr_any (zero). (dmex)
-
-        memset(&networkEndpoint, 0, sizeof(PH_IP_ENDPOINT));
-        networkEndpoint.Address.Type = Event->LocalEndpoint.Address.Type;
-        networkEndpoint.Port = Event->LocalEndpoint.Port;
-
-        networkItem = PhReferenceNetworkItem(
-            Event->ProtocolType,
-            &networkEndpoint,
-            &Event->RemoteEndpoint,
-            Event->ClientId.UniqueProcess
-            );
-
-        if (!networkItem)
-        {
-            memset(&networkEndpoint, 0, sizeof(PH_IP_ENDPOINT));
-            networkEndpoint.Address.Type = Event->RemoteEndpoint.Address.Type;
-            networkEndpoint.Port = Event->RemoteEndpoint.Port;
-
-            networkItem = PhReferenceNetworkItem(
-                Event->ProtocolType,
-                &Event->LocalEndpoint,
-                &networkEndpoint,
-                Event->ClientId.UniqueProcess
-                );
-        }
-    }
+    networkItem = EtpReferenceNetworkItem(Event);
 
     if (networkItem)
     {
@@ -255,13 +418,20 @@ VOID EtProcessNetworkEvent(
     }
 }
 
+/**
+ * Callback for process provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     )
 {
-    ULONG runCount = PtrToUlong(Parameter);
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
+    ULONG runCount = updateEvent->RunCount;
     ULONG64 maxDiskValue = 0;
     ULONG64 maxNetworkValue = 0;
     PET_PROCESS_BLOCK maxDiskBlock = NULL;
@@ -320,17 +490,20 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
                 if (block->DiskWriteRaw < diskWriteRaw)
                     block->DiskWriteRaw = diskWriteRaw;
             }
+        }
 
-            if (EtWindowsVersion >= WINDOWS_11_24H2)
-            {
-                ULONG64 networkReadRaw = block->ProcessItem->NetworkCounters.BytesIn;
-                ULONG64 networkWriteRaw = block->ProcessItem->NetworkCounters.BytesOut;
+        // Outside the disk counters setting on purpose: these are the process provider's own
+        // network counters, which it reads on 24H2 whatever that setting says, and nesting them
+        // here reported a real zero for every process whenever disk counters were turned off.
+        if (EtWindowsVersion >= WINDOWS_11_24H2)
+        {
+            ULONG64 networkReadRaw = block->ProcessItem->NetworkCounters.BytesIn;
+            ULONG64 networkWriteRaw = block->ProcessItem->NetworkCounters.BytesOut;
 
-                if (block->NetworkReceiveRaw < networkReadRaw)
-                    block->NetworkReceiveRaw = networkReadRaw;
-                if (block->NetworkSendRaw < networkWriteRaw)
-                    block->NetworkSendRaw = networkWriteRaw;
-            }
+            if (block->NetworkReceiveRaw < networkReadRaw)
+                block->NetworkReceiveRaw = networkReadRaw;
+            if (block->NetworkSendRaw < networkWriteRaw)
+                block->NetworkSendRaw = networkWriteRaw;
         }
 
         PhUpdateDelta(&block->DiskReadDelta, block->DiskReadCount);
@@ -341,6 +514,41 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
         PhUpdateDelta(&block->NetworkReceiveRawDelta, block->NetworkReceiveRaw);
         PhUpdateDelta(&block->NetworkSendDelta, block->NetworkSendCount);
         PhUpdateDelta(&block->NetworkSendRawDelta, block->NetworkSendRaw);
+        PhUpdateDelta(&block->FirewallAllowDelta, block->FirewallAllowCount);
+        PhUpdateDelta(&block->FirewallBlockDelta, block->FirewallBlockCount);
+
+        if (!block->HaveDiskSample)
+        {
+            block->DiskReadDelta.Delta = 0;
+            block->DiskReadRawDelta.Delta = 0;
+            block->DiskWriteDelta.Delta = 0;
+            block->DiskWriteRawDelta.Delta = 0;
+            block->NetworkReceiveDelta.Delta = 0;
+            block->NetworkReceiveRawDelta.Delta = 0;
+            block->NetworkSendDelta.Delta = 0;
+            block->NetworkSendRawDelta.Delta = 0;
+            block->HaveDiskSample = TRUE;
+        }
+
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadCountMin, block->DiskReadCountMax, block->DiskReadCountDiff, block->DiskReadCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadRawMin, block->DiskReadRawMax, block->DiskReadRawDiff, block->DiskReadRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskReadRawDeltaMin, block->DiskReadRawDeltaMax, block->DiskReadRawDeltaDiff, block->DiskReadRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteCountMin, block->DiskWriteCountMax, block->DiskWriteCountDiff, block->DiskWriteCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteRawMin, block->DiskWriteRawMax, block->DiskWriteRawDiff, block->DiskWriteRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskWriteRawDeltaMin, block->DiskWriteRawDeltaMax, block->DiskWriteRawDeltaDiff, block->DiskWriteRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalCountMin, block->DiskTotalCountMax, block->DiskTotalCountDiff, block->DiskReadCount + block->DiskWriteCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalRawMin, block->DiskTotalRawMax, block->DiskTotalRawDiff, block->DiskReadRawDelta.Value + block->DiskWriteRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->DiskTotalRawDeltaMin, block->DiskTotalRawDeltaMax, block->DiskTotalRawDeltaDiff, block->DiskReadRawDelta.Delta + block->DiskWriteRawDelta.Delta);
+
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveCountMin, block->NetworkReceiveCountMax, block->NetworkReceiveCountDiff, block->NetworkReceiveCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveRawMin, block->NetworkReceiveRawMax, block->NetworkReceiveRawDiff, block->NetworkReceiveRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkReceiveRawDeltaMin, block->NetworkReceiveRawDeltaMax, block->NetworkReceiveRawDeltaDiff, block->NetworkReceiveRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendCountMin, block->NetworkSendCountMax, block->NetworkSendCountDiff, block->NetworkSendCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendRawMin, block->NetworkSendRawMax, block->NetworkSendRawDiff, block->NetworkSendRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkSendRawDeltaMin, block->NetworkSendRawDeltaMax, block->NetworkSendRawDeltaDiff, block->NetworkSendRawDelta.Delta);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalCountMin, block->NetworkTotalCountMax, block->NetworkTotalCountDiff, block->NetworkReceiveCount + block->NetworkSendCount);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalRawMin, block->NetworkTotalRawMax, block->NetworkTotalRawDiff, block->NetworkReceiveRawDelta.Value + block->NetworkSendRawDelta.Value);
+        ET_UPDATE_PROCESS_STATISTICS_MINMAX(block->NetworkTotalRawDeltaMin, block->NetworkTotalRawDeltaMax, block->NetworkTotalRawDeltaDiff, block->NetworkReceiveRawDelta.Delta + block->NetworkSendRawDelta.Delta);
 
         if (maxDiskValue < block->DiskReadRawDelta.Delta + block->DiskWriteRawDelta.Delta)
         {
@@ -361,10 +569,12 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
             block->CurrentNetworkSend = block->NetworkSendRawDelta.Delta;
             block->CurrentNetworkReceive = block->NetworkReceiveRawDelta.Delta;
 
-            PhAddItemCircularBuffer_ULONG64(&block->DiskReadHistory, block->CurrentDiskRead);
-            PhAddItemCircularBuffer_ULONG64(&block->DiskWriteHistory, block->CurrentDiskWrite);
-            PhAddItemCircularBuffer_ULONG64(&block->NetworkSendHistory, block->CurrentNetworkSend);
-            PhAddItemCircularBuffer_ULONG64(&block->NetworkReceiveHistory, block->CurrentNetworkReceive);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->DiskReadHistory, block->CurrentDiskRead);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->DiskWriteHistory, block->CurrentDiskWrite);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->NetworkSendHistory, block->CurrentNetworkSend);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->NetworkReceiveHistory, block->CurrentNetworkReceive);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->FirewallAllowHistory, block->FirewallAllowDelta.Delta);
+            ET_CIRCULAR_BUFFER_ADD_ULONG64(&block->FirewallBlockHistory, block->FirewallBlockDelta.Delta);
         }
 
         listEntry = listEntry->Flink;
@@ -413,12 +623,19 @@ VOID NTAPI EtEtwProcessesUpdatedCallback(
     }
 }
 
+/**
+ * Callback for network item provider updates.
+ *
+ * \param Parameter The update event parameters.
+ * \param Context Unused.
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     )
 {
+    PPH_PROVIDER_UPDATED_EVENT updateEvent = Parameter;
     PLIST_ENTRY listEntry;
 
     // ETW is flushed in the processes-updated callback above. This may cause us the network
@@ -443,6 +660,15 @@ VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
         PhUpdateDelta(&block->SendDelta, block->SendCount);
         PhUpdateDelta(&block->SendRawDelta, block->SendRaw);
 
+        if (!block->HaveFirstSample)
+        {
+            block->ReceiveDelta.Delta = 0;
+            block->ReceiveRawDelta.Delta = 0;
+            block->SendDelta.Delta = 0;
+            block->SendRawDelta.Delta = 0;
+            block->HaveFirstSample = TRUE;
+        }
+
         if (memcmp(oldDeltas, block->Deltas, sizeof(block->Deltas)))
         {
             // Values have changed. Invalidate the network node.
@@ -455,6 +681,9 @@ VOID NTAPI EtEtwNetworkItemsUpdatedCallback(
     }
 }
 
+/**
+ * Updates the internal process information cache.
+ */
 VOID EtpUpdateProcessInformation(
     VOID
     )
@@ -472,6 +701,12 @@ VOID EtpUpdateProcessInformation(
     PhReleaseQueuedLockExclusive(&EtpProcessInformationLock);
 }
 
+/**
+ * Converts a thread ID to its corresponding process ID using the cached process information.
+ *
+ * \param ThreadId The thread ID to look up.
+ * \return The corresponding process ID, or SYSTEM_PROCESS_ID if not found.
+ */
 HANDLE EtThreadIdToProcessId(
     _In_ HANDLE ThreadId
     )
@@ -508,3 +743,4 @@ HANDLE EtThreadIdToProcessId(
 
     return SYSTEM_PROCESS_ID;
 }
+

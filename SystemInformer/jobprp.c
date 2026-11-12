@@ -6,13 +6,14 @@
  * Authors:
  *
  *     wj32    2010
- *     dmex    2018-2019
+ *     dmex    2018-2026
  *
  */
 
 #include <phapp.h>
 #include <phplug.h>
 #include <procprv.h>
+#include <procprp.h>
 
 #include <emenu.h>
 #include <hndlinfo.h>
@@ -28,11 +29,12 @@ typedef struct _JOB_PAGE_CONTEXT
     PPH_CLOSE_OBJECT CloseObject;
     PVOID Context;
     DLGPROC HookProc;
+    HFONT WindowFont;
     PH_CALLBACK_REGISTRATION ProcessesUpdatedRegistration;
 } JOB_PAGE_CONTEXT, *PJOB_PAGE_CONTEXT;
 
-INT CALLBACK PhpJobPropPageProc(
-    _In_ HWND hwnd,
+UINT CALLBACK PhpJobPropPageProc(
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     );
@@ -62,6 +64,15 @@ INT CALLBACK PhpJobStatisticsSheetProc(
     _In_ LPARAM lParam
     );
 
+/**
+ * Displays the job properties dialog window.
+ *
+ * \param ParentWindowHandle A handle to the parent window.
+ * \param OpenObject Callback to open the target job object.
+ * \param CloseObject Callback to close the job object.
+ * \param Context Optional job handle or context passed to callbacks.
+ * \param Title Optional dialog title string.
+ */
 VOID PhShowJobProperties(
     _In_ HWND ParentWindowHandle,
     _In_ PPH_OPEN_OBJECT OpenObject,
@@ -89,6 +100,15 @@ VOID PhShowJobProperties(
     PhModalPropertySheet(&propSheetHeader);
 }
 
+/**
+ * Creates a property sheet page for job properties.
+ *
+ * \param OpenObject Callback to open the target job object.
+ * \param CloseObject Callback to close the job object.
+ * \param Context Optional job handle or context passed to callbacks.
+ * \param HookProc Optional dialog hook procedure.
+ * \return HPROPSHEETPAGE A handle to the created property sheet page.
+ */
 HPROPSHEETPAGE PhCreateJobPage(
     _In_ PPH_OPEN_OBJECT OpenObject,
     _In_ PPH_CLOSE_OBJECT CloseObject,
@@ -124,8 +144,67 @@ HPROPSHEETPAGE PhCreateJobPage(
     return propSheetPageHandle;
 }
 
-INT CALLBACK PhpJobPropPageProc(
-    _In_ HWND hwnd,
+/**
+ * Delete procedure for the job page context object.
+ *
+ * \param Object A pointer to the job page context object to delete.
+ * \param Flags Unused flags.
+ */
+VOID NTAPI PhpJobPageContextDeleteProcedure(
+    _In_ PVOID Object,
+    _In_ ULONG Flags
+    )
+{
+    PhDereferenceObject(Object);
+}
+
+/**
+ * Creates a process property sheet page context for job properties.
+ *
+ * \param OpenObject Callback to open the target job object.
+ * \param CloseObject Callback to close the job object.
+ * \param Context Optional job handle or context passed to callbacks.
+ * \param HookProc Optional dialog hook procedure.
+ * \return PPH_PROCESS_PROPPAGECONTEXT A pointer to the created process property page context structure.
+ */
+PPH_PROCESS_PROPPAGECONTEXT PhCreateJobProcessPropPageContext(
+    _In_ PPH_OPEN_OBJECT OpenObject,
+    _In_ PPH_CLOSE_OBJECT CloseObject,
+    _In_opt_ PVOID Context,
+    _In_opt_ DLGPROC HookProc
+    )
+{
+    PPH_PROCESS_PROPPAGECONTEXT propPageContext;
+    PJOB_PAGE_CONTEXT jobPageContext;
+
+    jobPageContext = PhCreateAlloc(sizeof(JOB_PAGE_CONTEXT));
+    memset(jobPageContext, 0, sizeof(JOB_PAGE_CONTEXT));
+    jobPageContext->OpenObject = OpenObject;
+    jobPageContext->CloseObject = CloseObject;
+    jobPageContext->Context = Context;
+    jobPageContext->HookProc = HookProc;
+
+    propPageContext = PhCreateProcessPropPageContext(
+        MAKEINTRESOURCE(IDD_OBJJOB),
+        PhpJobPageProc,
+        jobPageContext
+        );
+    propPageContext->PropSheetPage.lParam = (LPARAM)jobPageContext;
+    propPageContext->ContextDeleteProcedure = PhpJobPageContextDeleteProcedure;
+
+    return propPageContext;
+}
+
+/**
+ * Property sheet page callback for reference counting the job page context.
+ *
+ * \param WindowHandle A handle to the property sheet page window.
+ * \param uMsg The property sheet notification message.
+ * \param ppsp A pointer to the property sheet page structure.
+ * \return UINT 1 to allow the operation.
+ */
+UINT CALLBACK PhpJobPropPageProc(
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     )
@@ -146,6 +225,15 @@ INT CALLBACK PhpJobPropPageProc(
     return 1;
 }
 
+/**
+ * Retrieves or initializes the job page context for a dialog procedure message.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param uMsg The window message.
+ * \param wParam The message wParam parameter.
+ * \param lParam The message lParam parameter.
+ * \return PJOB_PAGE_CONTEXT A pointer to the job page context.
+ */
 FORCEINLINE PJOB_PAGE_CONTEXT PhpJobPageHeader(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -156,6 +244,13 @@ FORCEINLINE PJOB_PAGE_CONTEXT PhpJobPageHeader(
     return PhpGenericPropertyPageHeader(hwndDlg, uMsg, wParam, lParam, 1);
 }
 
+/**
+ * Adds a job limit name and value pair to the limits list view.
+ *
+ * \param Handle A handle to the limits list view window.
+ * \param Name The display name of the limit.
+ * \param Value The value string of the limit.
+ */
 static VOID PhpAddLimit(
     _In_ HWND Handle,
     _In_ PCWSTR Name,
@@ -168,6 +263,12 @@ static VOID PhpAddLimit(
     PhSetListViewSubItem(Handle, lvItemIndex, 1, Value);
 }
 
+/**
+ * Queries the list of processes assigned to the job object and adds them to the processes list view.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param JobHandle A handle to the job object.
+ */
 static VOID PhpAddJobProcesses(
     _In_ HWND hwndDlg,
     _In_ HANDLE JobHandle
@@ -198,6 +299,15 @@ static VOID PhpAddJobProcesses(
     }
 }
 
+/**
+ * Dialog procedure for the main Job property page.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param uMsg The window message.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return INT_PTR Dialog message response.
+ */
 INT_PTR CALLBACK PhpJobPageProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -228,10 +338,15 @@ INT_PTR CALLBACK PhpJobPageProc(
 
             processesLv = GetDlgItem(hwndDlg, IDC_PROCESSES);
             limitsLv = GetDlgItem(hwndDlg, IDC_LIMITS);
+
+            jobPageContext->WindowFont = PhCreateTreeWindowFont(PhGetWindowDpi(hwndDlg));
+
             PhSetListViewStyle(processesLv, FALSE, TRUE);
             PhSetListViewStyle(limitsLv, FALSE, TRUE);
             PhSetControlTheme(processesLv, L"explorer");
             PhSetControlTheme(limitsLv, L"explorer");
+            SetWindowFont(processesLv, jobPageContext->WindowFont, FALSE);
+            SetWindowFont(limitsLv, jobPageContext->WindowFont, FALSE);
             PhSetExtendedListView(processesLv);
             PhSetExtendedListView(limitsLv);
 
@@ -396,10 +511,31 @@ INT_PTR CALLBACK PhpJobPageProc(
             }
 
             PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhSetDialogFocus(hwndDlg, GetDlgItem(hwndDlg, IDC_PROCESSES));
         }
         break;
     case WM_DESTROY:
-        PhSaveListViewColumnsToSetting(SETTING_JOB_LIST_VIEW_COLUMNS, GetDlgItem(hwndDlg, IDC_LIMITS));
+        {
+            PhSaveListViewColumnsToSetting(SETTING_JOB_LIST_VIEW_COLUMNS, GetDlgItem(hwndDlg, IDC_LIMITS));
+
+            if (jobPageContext->WindowFont)
+            {
+                DeleteFont(jobPageContext->WindowFont);
+                jobPageContext->WindowFont = NULL;
+            }
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            HFONT windowFont;
+
+            if (windowFont = PhCreateTreeWindowFont(LOWORD(wParam)))
+            {
+                PhSwapReferenceFont(&jobPageContext->WindowFont, GetDlgItem(hwndDlg, IDC_PROCESSES), windowFont, TRUE);
+                SetWindowFont(GetDlgItem(hwndDlg, IDC_LIMITS), jobPageContext->WindowFont, TRUE);
+            }
+        }
         break;
     case WM_SHOWWINDOW:
         {
@@ -494,15 +630,6 @@ INT_PTR CALLBACK PhpJobPageProc(
         break;
     case WM_NOTIFY:
         {
-            LPNMHDR header = (LPNMHDR)lParam;
-
-            switch (header->code)
-            {
-            case PSN_QUERYINITIALFOCUS:
-                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, (LPARAM)GetDlgItem(hwndDlg, IDC_PROCESSES));
-                return TRUE;
-            }
-
             PhHandleListViewNotifyBehaviors(lParam, GetDlgItem(hwndDlg, IDC_PROCESSES), PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
             PhHandleListViewNotifyBehaviors(lParam, GetDlgItem(hwndDlg, IDC_LIMITS), PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
         }
@@ -535,9 +662,7 @@ INT_PTR CALLBACK PhpJobPageProc(
                 if (point.x == -1 && point.y == -1)
                     PhGetListViewContextMenuPoint(listViewHandle, &point);
 
-                PhGetSelectedListViewItemParams(listViewHandle, &listviewItems, &numberOfItems);
-
-                if (numberOfItems != 0)
+                if (PhGetSelectedListViewItemParams(listViewHandle, &listviewItems, &numberOfItems))
                 {
                     menu = PhCreateEMenu();
                     PhInsertEMenuItem(menu, PhCreateEMenuItem(0, IDC_COPY, L"&Copy", NULL, NULL), ULONG_MAX);
@@ -575,17 +700,29 @@ INT_PTR CALLBACK PhpJobPageProc(
                     }
 
                     PhDestroyEMenu(menu);
-                }
 
-                PhFree(listviewItems);
+                    PhFree(listviewItems);
+                }
             }
         }
         break;
+    case WM_CTLCOLORBTN:
+        return HANDLE_WM_CTLCOLORBTN(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORDLG:
+        return HANDLE_WM_CTLCOLORDLG(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
+    case WM_CTLCOLORSTATIC:
+        return HANDLE_WM_CTLCOLORSTATIC(hwndDlg, wParam, lParam, PhWindowThemeControlColor);
     }
 
     return FALSE;
 }
 
+/**
+ * Displays the advanced job properties property sheet with Statistics and Security pages.
+ *
+ * \param ParentWindowHandle A handle to the parent window.
+ * \param Context A pointer to the job page context.
+ */
 VOID PhpShowJobAdvancedProperties(
     _In_ HWND ParentWindowHandle,
     _In_ PJOB_PAGE_CONTEXT Context
@@ -631,6 +768,12 @@ VOID PhpShowJobAdvancedProperties(
     PhModalPropertySheet(&propSheetHeader);
 }
 
+/**
+ * Queries accounting and peak limit statistics for a job object and updates the dialog controls.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param Context A pointer to the job page context.
+ */
 static VOID PhpRefreshJobStatisticsInfo(
     _In_ HWND hwndDlg,
     _In_ PJOB_PAGE_CONTEXT Context
@@ -714,6 +857,12 @@ static VOID PhpRefreshJobStatisticsInfo(
         NtClose(jobHandle);
 }
 
+/**
+ * Callback invoked when the process provider is updated to post a refresh message to the statistics page dialog.
+ *
+ * \param Parameter Unused callback parameter.
+ * \param Context A handle to the target dialog window (HWND).
+ */
 _Function_class_(PH_CALLBACK_FUNCTION)
 static VOID NTAPI ProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
@@ -723,6 +872,15 @@ static VOID NTAPI ProcessesUpdatedCallback(
     PostMessage(Context, MSG_UPDATE, 0, 0);
 }
 
+/**
+ * Dialog procedure for the Job Statistics property page.
+ *
+ * \param hwndDlg A handle to the dialog window.
+ * \param uMsg The window message.
+ * \param wParam Message-specific parameter.
+ * \param lParam Message-specific parameter.
+ * \return INT_PTR Dialog message response.
+ */
 INT_PTR CALLBACK PhpJobStatisticsPageProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
@@ -773,6 +931,14 @@ INT_PTR CALLBACK PhpJobStatisticsPageProc(
     return FALSE;
 }
 
+/**
+ * Property sheet callback procedure for initializing theme support on the Job Statistics property sheet.
+ *
+ * \param hwndDlg A handle to the property sheet window.
+ * \param uMsg The property sheet callback message.
+ * \param lParam Message-specific parameter.
+ * \return INT Callback return value.
+ */
 INT CALLBACK PhpJobStatisticsSheetProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,

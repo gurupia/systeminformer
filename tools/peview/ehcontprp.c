@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2020-2022
+ *     dmex    2020-2026
  *
  */
 
@@ -52,34 +52,28 @@ VOID PvEnumerateEHContinuationEntries(
 
             if (PvMappedImage.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
             {
-                if (!(symbol = PhGetSymbolFromAddress(
+                symbol = PhGetSymbolFromAddress(
                     PvSymbolProvider,
-                    PTR_ADD_OFFSET(PvMappedImage.NtHeaders32->OptionalHeader.ImageBase, rva),
+                    PTR_ADD_OFFSET(UlongToPtr(PvMappedImage.NtHeaders32->OptionalHeader.ImageBase), UlongToPtr(rva)),
                     &symbolResolveLevel,
                     NULL,
                     &symbolName,
                     &displacement
-                    )))
-                {
-                    continue;
-                }
+                    );
             }
             else
             {
-                if (!(symbol = PhGetSymbolFromAddress(
+                symbol = PhGetSymbolFromAddress(
                     PvSymbolProvider,
                     PTR_ADD_OFFSET(PvMappedImage.NtHeaders->OptionalHeader.ImageBase, rva),
                     &symbolResolveLevel,
                     NULL,
                     &symbolName,
                     &displacement
-                    )))
-                {
-                    continue;
-                }
+                    );
             }
 
-            switch (symbolResolveLevel)
+            switch (symbol ? symbolResolveLevel : PhsrlInvalid)
             {
             case PhsrlFunction:
                 {
@@ -110,7 +104,8 @@ VOID PvEnumerateEHContinuationEntries(
 
             if (symbolName)
                 PhDereferenceObject(symbolName);
-            PhDereferenceObject(symbol);
+            if (symbol)
+                PhDereferenceObject(symbol);
         }
     }
 
@@ -155,6 +150,7 @@ INT_PTR CALLBACK PvpPeEhContDlgProc(
 
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
             PhSetControlTheme(context->ListViewHandle, L"explorer");
+            PvConfigListViewFont(hwndDlg, context->ListViewHandle);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"#");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 80, L"RVA");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 250, L"Symbol");
@@ -214,7 +210,7 @@ INT_PTR CALLBACK PvpPeEhContDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

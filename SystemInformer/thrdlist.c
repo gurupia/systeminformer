@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2011-2012
- *     dmex    2018-2023
+ *     dmex    2018-2026
  *
  */
 
@@ -54,7 +54,7 @@ LONG PhpThreadTreeNewPostSortFunction(
     );
 
 BOOLEAN NTAPI PhpThreadTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -253,6 +253,21 @@ VOID PhSetOptionsThreadList(
     case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_SUSPENDED:
         Context->HighlightSuspended = !Context->HighlightSuspended;
         break;
+    case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_DELAYEXECUTION:
+        Context->HighlightDelayExecution = !Context->HighlightDelayExecution;
+        break;
+    case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_USERREQUEST:
+        Context->HighlightUserRequest = !Context->HighlightUserRequest;
+        break;
+    case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_ALERTBYTHREADID:
+        Context->HighlightAlertByThreadId = !Context->HighlightAlertByThreadId;
+        break;
+    case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_QUEUE:
+        Context->HighlightQueue = !Context->HighlightQueue;
+        break;
+    case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_EXECUTIVE:
+        Context->HighlightExecutive = !Context->HighlightExecutive;
+        break;
     case PH_THREAD_TREELIST_MENUITEM_HIGHLIGHT_GUITHREADS:
         Context->HighlightGuiThreads = !Context->HighlightGuiThreads;
         break;
@@ -421,6 +436,8 @@ VOID PhTickThreadNodes(
     _In_ PPH_THREAD_LIST_CONTEXT Context
     )
 {
+    BOOLEAN fullyInvalidated = FALSE;
+
     // Text invalidation, node updates
 
     for (ULONG i = 0; i < Context->NodeList->Count; i++)
@@ -436,16 +453,24 @@ VOID PhTickThreadNodes(
     {
         // Force a rebuild to sort the items.
         TreeNew_NodesStructured(Context->TreeNewHandle);
+        fullyInvalidated = TRUE;
     }
 
     // State highlighting
-    PH_TICK_SH_STATE_TN(PH_THREAD_NODE, ShState, Context->NodeStateList, PhpRemoveThreadNode, PhCsHighlightingDuration, Context->TreeNewHandle, TRUE, NULL, Context);
+    PH_TICK_SH_STATE_TN(PH_THREAD_NODE, ShState, Context->NodeStateList, PhpRemoveThreadNode, PhCsHighlightingDuration, Context->TreeNewHandle, TRUE, &fullyInvalidated, Context);
 }
 
 VOID PhpUpdateThreadNodeNameText(
     _In_ PPH_THREAD_NODE ThreadNode
     )
 {
+    if (ThreadNode->ValidMask & PHTHN_NAME)
+        return;
+
+    // The tree list caches a non-owning reference to the string, so the cached
+    // entry must be invalidated before the buffer is released.
+    memset(&ThreadNode->TextCache[PH_THREAD_TREELIST_COLUMN_NAME], 0, sizeof(PH_STRINGREF));
+
     PhClearReference(&ThreadNode->NameText);
 
     if (WindowsVersion >= WINDOWS_10_RS1 && ThreadNode->ThreadItem->ThreadHandle)
@@ -457,6 +482,8 @@ VOID PhpUpdateThreadNodeNameText(
             PhMoveReference(&ThreadNode->NameText, threadName);
         }
     }
+
+    ThreadNode->ValidMask |= PHTHN_NAME;
 }
 
 VOID PhpUpdateThreadNodeStartedText(
@@ -475,7 +502,7 @@ VOID PhpUpdateThreadNodePagePriority(
 {
     ULONG pagePriorityInteger = MEMORY_PRIORITY_NORMAL + 1;
 
-    ThreadNode->PagePriority = 0;
+    ThreadNode->PagePriority = ULONG_MAX;
 
     if (ThreadNode->ThreadItem->ThreadHandle)
     {
@@ -492,7 +519,7 @@ VOID PhpUpdateThreadNodeIoPriority(
 {
     IO_PRIORITY_HINT ioPriorityInteger = MaxIoPriorityTypes;
 
-    ThreadNode->IoPriority = 0;
+    ThreadNode->IoPriority = ULONG_MAX;
 
     if (ThreadNode->ThreadItem->ThreadHandle)
     {
@@ -824,14 +851,17 @@ VOID PhpUpdateThreadNodePriorityBoost(
     _In_ PPH_THREAD_NODE ThreadNode
     )
 {
-    BOOLEAN priorityBoost = FALSE;
+    BOOLEAN priorityBoostDisabled;
+
+    ThreadNode->PriorityBoost = FALSE;
 
     if (ThreadNode->ThreadItem->ThreadHandle)
     {
-        PhGetThreadPriorityBoost(ThreadNode->ThreadItem->ThreadHandle, &priorityBoost);
+        if (NT_SUCCESS(PhGetThreadPriorityBoost(ThreadNode->ThreadItem->ThreadHandle, &priorityBoostDisabled)))
+        {
+            ThreadNode->PriorityBoost = !priorityBoostDisabled;
+        }
     }
-
-    ThreadNode->PriorityBoost = priorityBoost;
 }
 
 VOID PhpUpdateThreadNodeStackUsage(
@@ -976,9 +1006,23 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(Cpu)
 {
-    sortResult = singlecmp(threadItem1->CpuUsage, threadItem2->CpuUsage);
+    FLOAT cpuUsage1;
+    FLOAT cpuUsage2;
 
-    if (sortResult == 0)
+    cpuUsage1 = PhNormalizeCpuSortValue(threadItem1->CpuUsage * 100);
+    cpuUsage2 = PhNormalizeCpuSortValue(threadItem2->CpuUsage * 100);
+
+    sortResult = singlecmp(cpuUsage1, cpuUsage2);
+
+    if (sortResult == 0 && cpuUsage1 == 0)
+    {
+        sortResult = PhCompareTreeNewBlankCpuSortOrder(node1, node2);
+
+        if (sortResult != 0)
+            return sortResult;
+    }
+
+    if (sortResult == 0 && cpuUsage1 != 0)
     {
         if (context->UseCycleTime)
             sortResult = uint64cmp(threadItem1->CyclesDelta.Delta, threadItem2->CyclesDelta.Delta);
@@ -1172,6 +1216,17 @@ BEGIN_SORT_FUNCTION(CpuCore)
     cpuUsage2 = threadItem2->CpuUsage * 100;
     cpuUsage2 *= PhSystemProcessorInformation.NumberOfProcessors;
 
+    cpuUsage1 = PhNormalizeCpuSortValue(cpuUsage1);
+    cpuUsage2 = PhNormalizeCpuSortValue(cpuUsage2);
+
+    if (cpuUsage1 == 0 && cpuUsage2 == 0)
+    {
+        sortResult = PhCompareTreeNewBlankCpuSortOrder(node1, node2);
+
+        if (sortResult != 0)
+            return sortResult;
+    }
+
     sortResult = singlecmp(cpuUsage1, cpuUsage2);
 }
 END_SORT_FUNCTION
@@ -1256,13 +1311,35 @@ END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuUser)
 {
-    sortResult = singlecmp(threadItem1->CpuUserUsage, threadItem2->CpuUserUsage);
+    FLOAT cpuUsage1 = PhNormalizeCpuSortValue(threadItem1->CpuUserUsage * 100);
+    FLOAT cpuUsage2 = PhNormalizeCpuSortValue(threadItem2->CpuUserUsage * 100);
+
+    if (cpuUsage1 == 0 && cpuUsage2 == 0)
+    {
+        sortResult = PhCompareTreeNewBlankCpuSortOrder(node1, node2);
+
+        if (sortResult != 0)
+            return sortResult;
+    }
+
+    sortResult = singlecmp(cpuUsage1, cpuUsage2);
 }
 END_SORT_FUNCTION
 
 BEGIN_SORT_FUNCTION(CpuKernel)
 {
-    sortResult = singlecmp(threadItem1->CpuKernelUsage, threadItem2->CpuKernelUsage);
+    FLOAT cpuUsage1 = PhNormalizeCpuSortValue(threadItem1->CpuKernelUsage * 100);
+    FLOAT cpuUsage2 = PhNormalizeCpuSortValue(threadItem2->CpuKernelUsage * 100);
+
+    if (cpuUsage1 == 0 && cpuUsage2 == 0)
+    {
+        sortResult = PhCompareTreeNewBlankCpuSortOrder(node1, node2);
+
+        if (sortResult != 0)
+            return sortResult;
+    }
+
+    sortResult = singlecmp(cpuUsage1, cpuUsage2);
 }
 END_SORT_FUNCTION
 
@@ -1360,7 +1437,7 @@ BEGIN_SORT_FUNCTION(ActualBasePriority)
 END_SORT_FUNCTION
 
 BOOLEAN NTAPI PhpThreadTreeNewCallback(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ PH_TREENEW_MESSAGE Message,
     _In_ PVOID Parameter1,
     _In_ PVOID Parameter2,
@@ -1370,7 +1447,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
     PPH_THREAD_LIST_CONTEXT context = Context;
     PPH_THREAD_NODE node;
 
-    if (PhCmForwardMessage(hwnd, Message, Parameter1, Parameter2, &context->Cm))
+    if (PhCmForwardMessage(WindowHandle, Message, Parameter1, Parameter2, &context->Cm))
         return TRUE;
 
     switch (Message)
@@ -1381,7 +1458,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
 
             if (!getChildren->Node)
             {
-                static PVOID sortFunctions[] =
+                static CONST _CoreCrtSecureSearchSortCompareFunction sortFunctions[] =
                 {
                     SORT_FUNCTION(Tid),
                     SORT_FUNCTION(Cpu),
@@ -1432,7 +1509,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
                     SORT_FUNCTION(HasRpc),
                     SORT_FUNCTION(ActualBasePriority),
                 };
-                int (__cdecl *sortFunction)(void *, const void *, const void *);
+                _CoreCrtSecureSearchSortCompareFunction sortFunction;
 
                 static_assert(RTL_NUMBER_OF(sortFunctions) == PH_THREAD_TREELIST_COLUMN_MAXIMUM, "SortFunctions must equal maximum.");
 
@@ -1705,7 +1782,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
 
                     PhpUpdateThreadNodePagePriority(node);
 
-                    if (node->PagePriority)
+                    if (node->PagePriority != ULONG_MAX && node->PagePriority <= MEMORY_PRIORITY_NORMAL)
                     {
                         pagePriority = PhPagePriorityNames[node->PagePriority];
                     }
@@ -1720,7 +1797,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
 
                     PhpUpdateThreadNodeIoPriority(node);
 
-                    if (node->IoPriority)
+                    if (node->IoPriority != ULONG_MAX && node->IoPriority >= IoPriorityVeryLow && node->IoPriority < MaxIoPriorityTypes)
                     {
                         ioPriority = PhIoPriorityHintNames[node->IoPriority];
                     }
@@ -2407,19 +2484,19 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
             //else if (context->HighlightUnknownStartAddress && threadItem->StartAddressWin32ResolveLevel == PhsrlAddress)
             //    getNodeColor->BackColor = PhCsColorUnknown;
             else if (context->HighlightSuspended && threadItem->WaitReason == Suspended)
-                getNodeColor->BackColor = PhCsColorSuspended;
-            else if (context->HighlightSuspended && threadItem->WaitReason == DelayExecution) // NtDelayExecution
-                getNodeColor->BackColor = PhCsColorImmersiveProcesses;
-            else if (context->HighlightSuspended && threadItem->WaitReason == UserRequest) // NtWaitForSingleObject
-                getNodeColor->BackColor = PhCsColorOwnProcesses;
-            else if (context->HighlightSuspended && threadItem->WaitReason == WrAlertByThreadId)
-                getNodeColor->BackColor = PhCsColorSystemProcesses;
-            else if (context->HighlightSuspended && threadItem->WaitReason == WrQueue) // NtRemoveIoCompletion
-                getNodeColor->BackColor = PhCsColorEfficiencyMode;
-            else if (context->HighlightSuspended && threadItem->WaitReason == Executive)
-                getNodeColor->BackColor = PhCsColorElevatedProcesses;
+                getNodeColor->BackColor = PhCsColorThreadSuspended;
+            else if (context->HighlightDelayExecution && threadItem->WaitReason == DelayExecution) // NtDelayExecution
+                getNodeColor->BackColor = PhCsColorThreadDelayExecution;
+            else if (context->HighlightUserRequest && threadItem->WaitReason == UserRequest) // NtWaitForSingleObject
+                getNodeColor->BackColor = PhCsColorThreadUserRequest;
+            else if (context->HighlightAlertByThreadId && threadItem->WaitReason == WrAlertByThreadId)
+                getNodeColor->BackColor = PhCsColorThreadAlertByThreadId;
+            else if (context->HighlightQueue && threadItem->WaitReason == WrQueue) // NtRemoveIoCompletion
+                getNodeColor->BackColor = PhCsColorThreadQueue;
+            else if (context->HighlightExecutive && threadItem->WaitReason == Executive)
+                getNodeColor->BackColor = PhCsColorThreadExecutive;
             else if (context->HighlightGuiThreads && threadItem->IsGuiThread)
-                getNodeColor->BackColor = PhCsColorGuiThreads;
+                getNodeColor->BackColor = PhCsColorThreadGuiThreads;
 
             getNodeColor->Flags = TN_AUTO_FORECOLOR;
         }
@@ -2464,7 +2541,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
             context->TreeNewSortOrder = sorting->SortOrder;
 
             // Force a rebuild to sort the items.
-            TreeNew_NodesStructured(hwnd);
+            TreeNew_NodesStructured(WindowHandle);
         }
         return TRUE;
     case TreeNewKeyDown:
@@ -2494,13 +2571,13 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
             // co-operate with the column adjustments (e.g. Cycles Delta vs Context Switches Delta,
             // Service column).
 
-            data.TreeNewHandle = hwnd;
+            data.TreeNewHandle = WindowHandle;
             data.MouseEvent = Parameter1;
             data.DefaultSortColumn = PH_THREAD_TREELIST_COLUMN_CYCLESDELTA;
             data.DefaultSortOrder = DescendingSortOrder;
             PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_SHOW_RESET_SORT);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
+            data.Selection = PhShowEMenu(data.Menu, WindowHandle, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);

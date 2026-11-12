@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2022 Winsider Seminars & Solutions, Inc.  All rights reserved.
  *
  * This file is part of System Informer.
@@ -14,6 +14,10 @@
 #include <procprp.h>
 #include <procprpp.h>
 #include <proctree.h>
+
+#ifdef PH_PROPSHEET_NEW
+#include <graphprp.h>
+#endif
 
 #include <mapldr.h>
 #include <kphuser.h>
@@ -33,7 +37,7 @@ PPH_OBJECT_TYPE PhpProcessPropPageContextType = NULL;
 PPH_OBJECT_TYPE PhpProcessPropPageWaitContextType = NULL;
 PH_STRINGREF PhProcessPropPageLoadingText = PH_STRINGREF_INIT(L"Loading...");
 static RECT MinimumSize = { -1, -1, -1, -1 };
-SLIST_HEADER WaitContextQueryListHead;
+SLIST_HEADER WaitContextQueryListHead = { 0 };
 
 PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
     _In_opt_ HWND ParentWindowHandle,
@@ -42,7 +46,6 @@ PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
 {
     static PH_INITONCE initOnce = PH_INITONCE_INIT;
     PPH_PROCESS_PROPCONTEXT propContext;
-    PROPSHEETHEADER propSheetHeader;
 
     if (PhBeginInitOnce(&initOnce))
     {
@@ -54,7 +57,11 @@ PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
     }
 
     propContext = PhCreateObjectZero(sizeof(PH_PROCESS_PROPCONTEXT), PhpProcessPropContextType);
-    propContext->PropSheetPages = PhAllocateZero(sizeof(HPROPSHEETPAGE) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
+    propContext->ParentWindowHandle = PhCsForceNoParent ? NULL : ParentWindowHandle;
+    propContext->PropSheetNewPages = PhAllocateZero(sizeof(PH_PROPSHEETNEW_PAGE) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
+    propContext->PropSheetNewPageContexts = PhAllocateZero(sizeof(PVOID) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
+    propContext->PropSheetNewPageTitles = PhAllocateZero(sizeof(PPH_STRING) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
+    propContext->PropSheetNewPageCount = 0;
 
     if (!PH_IS_FAKE_PROCESS_ID(ProcessItem->ProcessId))
     {
@@ -72,30 +79,6 @@ PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
         PhSetReference(&propContext->Title, ProcessItem->ProcessName);
     }
 
-    memset(&propSheetHeader, 0, sizeof(PROPSHEETHEADER));
-    propSheetHeader.dwSize = sizeof(PROPSHEETHEADER);
-    propSheetHeader.dwFlags =
-        PSH_MODELESS |
-        PSH_NOAPPLYNOW |
-        PSH_NOCONTEXTHELP |
-        PSH_PROPTITLE |
-        PSH_USECALLBACK |
-        PSH_USEHICON;
-    propSheetHeader.hInstance = PhInstanceHandle;
-    propSheetHeader.hwndParent = ParentWindowHandle;
-    propSheetHeader.hIcon = PhGetImageListIcon(ProcessItem->SmallIconIndex, FALSE);
-    propSheetHeader.pszCaption = PhGetString(propContext->Title);
-    propSheetHeader.pfnCallback = PhpPropSheetProc;
-
-    propSheetHeader.nPages = 0;
-    propSheetHeader.nStartPage = 0;
-    propSheetHeader.phpage = propContext->PropSheetPages;
-
-    if (PhCsForceNoParent)
-        propSheetHeader.hwndParent = NULL;
-
-    memcpy(&propContext->PropSheetHeader, &propSheetHeader, sizeof(PROPSHEETHEADER));
-
     PhSetReference(&propContext->ProcessItem, ProcessItem);
 
     return propContext;
@@ -109,7 +92,46 @@ VOID NTAPI PhpProcessPropContextDeleteProcedure(
 {
     PPH_PROCESS_PROPCONTEXT propContext = (PPH_PROCESS_PROPCONTEXT)Object;
 
+#ifdef PH_PROPSHEET_NEW
+    if (propContext->PropSheetNewPageContexts)
+    {
+        PPH_PROCESS_PROPPAGECONTEXT *ctxs = (PPH_PROCESS_PROPPAGECONTEXT *)propContext->PropSheetNewPageContexts;
+        ULONG i;
+
+        for (i = 0; i < propContext->PropSheetNewPageCount; i++)
+        {
+            if (ctxs[i])
+                PhDereferenceObject(ctxs[i]);
+        }
+
+        PhFree(propContext->PropSheetNewPageContexts);
+        propContext->PropSheetNewPageContexts = NULL;
+    }
+
+    if (propContext->PropSheetNewPageTitles)
+    {
+        PPH_STRING *titles = (PPH_STRING *)propContext->PropSheetNewPageTitles;
+        ULONG i;
+
+        for (i = 0; i < propContext->PropSheetNewPageCount; i++)
+        {
+            if (titles[i])
+                PhDereferenceObject(titles[i]);
+        }
+
+        PhFree(propContext->PropSheetNewPageTitles);
+        propContext->PropSheetNewPageTitles = NULL;
+    }
+
+    if (propContext->PropSheetNewPages)
+    {
+        PhFree(propContext->PropSheetNewPages);
+        propContext->PropSheetNewPages = NULL;
+    }
+#else
     PhFree(propContext->PropSheetPages);
+#endif
+
     PhDereferenceObject(propContext->Title);
     PhDereferenceObject(propContext->ProcessItem);
 }
@@ -118,7 +140,9 @@ VOID PhRefreshProcessPropContext(
     _Inout_ PPH_PROCESS_PROPCONTEXT PropContext
     )
 {
+#ifndef PH_PROPSHEET_NEW
     PropContext->PropSheetHeader.hIcon = PhGetImageListIcon(PropContext->ProcessItem->SmallIconIndex, FALSE);
+#endif
 }
 
 VOID PhSetSelectThreadIdProcessPropContext(
@@ -127,6 +151,47 @@ VOID PhSetSelectThreadIdProcessPropContext(
     )
 {
     PropContext->SelectThreadId = ThreadId;
+}
+
+VOID PhpUpdateProcessPropWindowBorderColorFromContext(
+    _In_ HWND WindowHandle,
+    _In_ BOOLEAN Active,
+    _In_opt_ PPH_PROCESS_PROPCONTEXT PropContext
+    )
+{
+    PPH_PROCESS_ITEM processItem;
+    COLORREF borderColor;
+    BOOLEAN isHandleFiltered = FALSE;
+    BOOLEAN isProtectedProcess = FALSE;
+    BOOLEAN isIsolatedUserMode = FALSE;
+
+    processItem = PropContext ? PropContext->ProcessItem : NULL;
+    if (processItem)
+    {
+        isHandleFiltered = !!processItem->IsProtectedHandle;
+        isProtectedProcess = processItem->Protection.Type != PsProtectedTypeNone;
+        isIsolatedUserMode = !!processItem->IsSecureProcess;
+    }
+
+    borderColor = PhGetWindowBorderColor(Active, isHandleFiltered, isProtectedProcess, isIsolatedUserMode);
+    if (borderColor)
+        PhSetWindowBorderColor(WindowHandle, borderColor);
+}
+
+VOID PhpUpdateProcessPropWindowBorderColor(
+    _In_ HWND WindowHandle,
+    _In_ BOOLEAN Active
+    )
+{
+    PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
+
+    propSheetContext = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
+
+    PhpUpdateProcessPropWindowBorderColorFromContext(
+        WindowHandle,
+        Active,
+        propSheetContext ? propSheetContext->PropContext : NULL
+        );
 }
 
 INT CALLBACK PhpPropSheetProc(
@@ -158,18 +223,20 @@ INT CALLBACK PhpPropSheetProc(
         {
             PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
 
-            propSheetContext = PhAllocate(sizeof(PH_PROCESS_PROPSHEETCONTEXT));
-            memset(propSheetContext, 0, sizeof(PH_PROCESS_PROPSHEETCONTEXT));
+            propSheetContext = PhAllocateZero(sizeof(PH_PROCESS_PROPSHEETCONTEXT));
+            propSheetContext->PropContext = (PPH_PROCESS_PROPCONTEXT)GetMessageExtraInfo();
+            SetMessageExtraInfo(0);
 
             PhInitializeLayoutManager(&propSheetContext->LayoutManager, hwndDlg);
             PhSetWindowContext(hwndDlg, PH_WINDOW_CONTEXT_DEFAULT, propSheetContext);
 
             propSheetContext->PropSheetWindowHookProc = PhGetWindowProcedure(hwndDlg);
-            PhSetWindowContext(hwndDlg, 0xF, propSheetContext);
             PhSetWindowProcedure(hwndDlg, PhpPropSheetWndProc);
 
             if (PhEnableThemeSupport) // NOTE: Required for compatibility. (dmex)
                 PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+
+            PhpUpdateProcessPropWindowBorderColor(hwndDlg, TRUE);
 
             PhRegisterWindowCallback(hwndDlg, PH_PLUGIN_WINDOW_EVENT_TYPE_TOPMOST, NULL);
 
@@ -195,14 +262,14 @@ INT CALLBACK PhpPropSheetProc(
 }
 
 PPH_PROCESS_PROPSHEETCONTEXT PhpGetPropSheetContext(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     )
 {
-    return PhGetWindowContext(hwnd, PH_WINDOW_CONTEXT_DEFAULT);
+    return PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 }
 
 LRESULT CALLBACK PhpPropSheetWndProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
@@ -211,7 +278,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
     PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
     WNDPROC oldWndProc;
 
-    propSheetContext = PhGetWindowContext(hwnd, 0xF);
+    propSheetContext = PhGetWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
     if (!propSheetContext)
         return 0;
@@ -226,15 +293,15 @@ LRESULT CALLBACK PhpPropSheetWndProc(
             TCITEM tabItem;
             WCHAR text[128] = L"";
 
-            PhKillTimer(hwnd, 2000);
+            PhKillTimer(WindowHandle, 2000);
 
             // Save the window position and size.
 
-            PhSaveWindowPlacementToSetting(SETTING_PROC_PROP_POSITION, SETTING_PROC_PROP_SIZE, hwnd);
+            PhSaveWindowPlacementToSetting(SETTING_PROC_PROP_POSITION, SETTING_PROC_PROP_SIZE, WindowHandle);
 
             // Save the selected tab.
 
-            tabControl = PropSheet_GetTabControl(hwnd);
+            tabControl = PropSheet_GetTabControl(WindowHandle);
 
             tabItem.mask = TCIF_TEXT;
             tabItem.pszText = text;
@@ -248,15 +315,22 @@ LRESULT CALLBACK PhpPropSheetWndProc(
         break;
     case WM_NCDESTROY:
         {
-            PhUnregisterWindowCallback(hwnd);
+            PhUnregisterWindowCallback(WindowHandle);
 
-            PhSetWindowProcedure(hwnd, oldWndProc);
-            PhRemoveWindowContext(hwnd, 0xF);
+            PhSetWindowProcedure(WindowHandle, oldWndProc);
+            PhRemoveWindowContext(WindowHandle, PH_WINDOW_CONTEXT_DEFAULT);
 
             PhDeleteLayoutManager(&propSheetContext->LayoutManager);
-            PhRemoveWindowContext(hwnd, PH_WINDOW_CONTEXT_DEFAULT);
+
+            if (propSheetContext->PropContext)
+                PhDereferenceObject(propSheetContext->PropContext);
 
             PhFree(propSheetContext);
+        }
+        break;
+    case WM_NCACTIVATE:
+        {
+            PhpUpdateProcessPropWindowBorderColor(WindowHandle, !!wParam);
         }
         break;
     case WM_SYSCOMMAND:
@@ -268,7 +342,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
             case SC_CLOSE:
                 {
                     PostQuitMessage(0);
-                    //SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
+                    //SetWindowLongPtr(WindowHandle, DWLP_MSGRESULT, TRUE);
                     //return TRUE;
                 }
                 break;
@@ -289,7 +363,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
         break;
     case WM_SIZE:
         {
-            if (!IsMinimized(hwnd))
+            if (!IsMinimized(WindowHandle))
             {
                 PhLayoutManagerLayout(&propSheetContext->LayoutManager);
             }
@@ -307,6 +381,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
             if (id == 2000)
             {
                 PhpFlushProcessPropSheetWaitContextData();
+                PhpUpdateProcessPropWindowBorderColor(WindowHandle, GetActiveWindow() == WindowHandle);
             }
         }
         break;
@@ -334,14 +409,15 @@ LRESULT CALLBACK PhpPropSheetWndProc(
             USHORT newDpi = HIWORD(wParam);
             PRECT CONST newRect = (PRECT)lParam;
 
-            CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
+            CallWindowProc(oldWndProc, WindowHandle, uMsg, wParam, lParam);
 
             PhLayoutManagerUpdate(&propSheetContext->LayoutManager, LOWORD(wParam));
+            PhpUpdateProcessPropButtonsDpi(propSheetContext, WindowHandle, LOWORD(wParam));
             PhLayoutManagerLayout(&propSheetContext->LayoutManager);
 
             {
                 SetWindowPos(
-                    hwnd,
+                    WindowHandle,
                     NULL,
                     newRect->left,
                     newRect->top,
@@ -358,7 +434,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
                 rect.top = 0;
                 rect.right = 290;
                 rect.bottom = 320;
-                MapDialogRect(hwnd, &rect);
+                MapDialogRect(WindowHandle, &rect);
                 MinimumSize = rect;
                 MinimumSize.left = 0;
             }
@@ -368,7 +444,7 @@ LRESULT CALLBACK PhpPropSheetWndProc(
         break;
     }
 
-    return CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
+    return CallWindowProc(oldWndProc, WindowHandle, uMsg, wParam, lParam);
 }
 
 _Function_class_(PH_OPEN_OBJECT)
@@ -420,8 +496,8 @@ LRESULT CALLBACK PhpOptionsButtonWndProc(
     {
     case WM_DESTROY:
         {
-            PhRemoveWindowContext(WindowHandle, SCHAR_MAX);
             PhSetWindowProcedure(WindowHandle, oldWndProc);
+            PhRemoveWindowContext(WindowHandle, SCHAR_MAX);
         }
         break;
     case WM_COMMAND:
@@ -435,16 +511,22 @@ LRESULT CALLBACK PhpOptionsButtonWndProc(
                 HWND pageWindow;
                 LPPROPSHEETPAGE propSheetPage;
                 PPH_PROCESS_PROPPAGECONTEXT propPageContext;
-                PPH_PROCESS_PROPCONTEXT propContext;
+                PPH_PROCESS_PROPCONTEXT propContext = propSheetContext->PropContext;
 
-                if (!(pageWindow = PropSheet_GetCurrentPageHwnd(WindowHandle)))
-                    break;
-                if (!(propSheetPage = PhGetWindowContext(pageWindow, PH_WINDOW_CONTEXT_DEFAULT)))
-                    break;
-                if (!(propPageContext = (PPH_PROCESS_PROPPAGECONTEXT)propSheetPage->lParam))
-                    break;
-                if (!(propContext = propPageContext->PropContext))
-                    break;
+                if (!propContext)
+                {
+                    if (!(pageWindow = PropSheet_GetCurrentPageHwnd(WindowHandle)))
+                        break;
+                    if (!(propSheetPage = PhGetWindowContext(pageWindow, PH_WINDOW_CONTEXT_DEFAULT)))
+                        break;
+                    if ((ULONG_PTR)propSheetPage < 0x1000 || !propSheetPage->lParam)
+                        break;
+                    if (!(propPageContext = (PPH_PROCESS_PROPPAGECONTEXT)propSheetPage->lParam))
+                        break;
+                    if (!(propContext = propPageContext->PropContext))
+                        break;
+                }
+
                 if (!PhGetWindowRect(propSheetContext->OptionsButtonWindowHandle, &rect))
                     break;
 
@@ -686,7 +768,7 @@ LRESULT CALLBACK PhpOptionsButtonWndProc(
                         PhUiDebugProcess(WindowHandle, processItem);
                         break;
                     case ID_PROCESS_SEARCHONLINE:
-                        PhSearchOnlineString(WindowHandle, processItem->ProcessName->Buffer);
+                        PhSearchOnlineString(WindowHandle, PhGetString(processItem->ProcessName));
                         break;
                     case ID_PROCESS_OPENFILELOCATION:
                         {
@@ -716,7 +798,7 @@ LRESULT CALLBACK PhpOptionsButtonWndProc(
                     case ID_HANDLE_SECURITY:
                         {
                             PhEditSecurity(
-                                PhCsForceNoParent ? NULL : pageWindow,
+                                PhCsForceNoParent ? NULL : WindowHandle,
                                 PhGetStringOrEmpty(propContext->ProcessItem->ProcessName),
                                 L"Process",
                                 PhOptionsButtonGeneralOpenProcess,
@@ -762,16 +844,21 @@ LRESULT CALLBACK PhpOptionsButtonWndProc(
                 HWND pageWindow;
                 LPPROPSHEETPAGE propSheetPage;
                 PPH_PROCESS_PROPPAGECONTEXT propPageContext;
-                PPH_PROCESS_PROPCONTEXT propContext;
+                PPH_PROCESS_PROPCONTEXT propContext = propSheetContext->PropContext;
 
-                if (!(pageWindow = PropSheet_GetCurrentPageHwnd(WindowHandle)))
-                    break;
-                if (!(propSheetPage = PhGetWindowContext(pageWindow, PH_WINDOW_CONTEXT_DEFAULT)))
-                    break;
-                if (!(propPageContext = (PPH_PROCESS_PROPPAGECONTEXT)propSheetPage->lParam))
-                    break;
-                if (!(propContext = propPageContext->PropContext))
-                    break;
+                if (!propContext)
+                {
+                    if (!(pageWindow = PropSheet_GetCurrentPageHwnd(WindowHandle)))
+                        break;
+                    if (!(propSheetPage = PhGetWindowContext(pageWindow, PH_WINDOW_CONTEXT_DEFAULT)))
+                        break;
+                    if ((ULONG_PTR)propSheetPage < 0x1000 || !propSheetPage->lParam)
+                        break;
+                    if (!(propPageContext = (PPH_PROCESS_PROPPAGECONTEXT)propSheetPage->lParam))
+                        break;
+                    if (!(propContext = propPageContext->PropContext))
+                        break;
+                }
 
                 PPH_STRING string = PhGetProcessProtectionString(propContext->ProcessItem->Protection, (BOOLEAN)propContext->ProcessItem->IsSecureProcess);
 
@@ -801,23 +888,33 @@ VOID PhpCreateProcessPropButtons(
 {
     if (!PropSheetContext->OptionsButtonWindowHandle)
     {
+        HWND cancelButtonHandle;
+        LONG windowDpi;
         RECT clientRect;
         RECT rect;
         LONG buttonWidth;
         LONG buttonHeight;
-        LONG buttonSpacing = 6;
-        LONG labelWidth = 250;
+        LONG buttonSpacing;
+        LONG labelOffset;
+        LONG labelTopOffset;
+        LONG labelWidth;
         HFONT windowFont;
 
-        windowFont = GetWindowFont(GetDlgItem(PropSheetWindow, IDCANCEL));
-
-        PropSheetContext->OldOptionsButtonWndProc = PhGetWindowProcedure(PropSheetWindow);
-        PhSetWindowContext(PropSheetWindow, SCHAR_MAX, PropSheetContext);
-        PhSetWindowProcedure(PropSheetWindow, PhpOptionsButtonWndProc);
-
-        PhGetClientRect(PropSheetWindow, &clientRect);
-        PhGetWindowRect(GetDlgItem(PropSheetWindow, IDCANCEL), &rect);
+        cancelButtonHandle = GetDlgItem(PropSheetWindow, IDCANCEL);
+        if (!cancelButtonHandle)
+            return;
+        if (!PhGetClientRect(PropSheetWindow, &clientRect))
+            return;
+        if (!PhGetWindowRect(cancelButtonHandle, &rect))
+            return;
         MapWindowRect(NULL, PropSheetWindow, &rect);
+
+        windowFont = GetWindowFont(cancelButtonHandle);
+        windowDpi = PhGetWindowDpi(PropSheetWindow);
+        buttonSpacing = PhScaleToDisplay(6, windowDpi);
+        labelOffset = PhScaleToDisplay(5, windowDpi);
+        labelTopOffset = PhScaleToDisplay(7, windowDpi);
+        labelWidth = PhScaleToDisplay(250, windowDpi);
 
         buttonWidth = rect.right - rect.left;
         buttonHeight = rect.bottom - rect.top;
@@ -827,7 +924,7 @@ VOID PhpCreateProcessPropButtons(
             WS_EX_NOPARENTNOTIFY,
             WC_BUTTON,
             L"Options",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_TABSTOP,
             clientRect.right - rect.right,
             rect.top,
             buttonWidth,
@@ -837,6 +934,14 @@ VOID PhpCreateProcessPropButtons(
             PhInstanceHandle,
             NULL
             );
+        if (!PropSheetContext->OptionsButtonWindowHandle)
+            return;
+
+        // Install the hook only after creation succeeds, so a retry cannot
+        // save our own procedure as the original window procedure.
+        PropSheetContext->OldOptionsButtonWndProc = PhGetWindowProcedure(PropSheetWindow);
+        PhSetWindowContext(PropSheetWindow, SCHAR_MAX, PropSheetContext);
+        PhSetWindowProcedure(PropSheetWindow, PhpOptionsButtonWndProc);
         SetWindowFont(PropSheetContext->OptionsButtonWindowHandle, windowFont, TRUE);
 
         // Create the Permissions button
@@ -862,8 +967,8 @@ VOID PhpCreateProcessPropButtons(
             WC_STATIC,
             L"Protection",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            clientRect.right - rect.right + (buttonWidth + buttonSpacing) + 5,
-            rect.top + 7,
+            clientRect.right - rect.right + buttonWidth + buttonSpacing + labelOffset,
+            rect.top + labelTopOffset,
             labelWidth,
             buttonHeight,
             PropSheetWindow,
@@ -871,38 +976,120 @@ VOID PhpCreateProcessPropButtons(
             PhInstanceHandle,
             NULL
             );
-        SetWindowFont(PropSheetContext->ButtonsLabelWindowHandle, windowFont, TRUE);
+        if (PropSheetContext->ButtonsLabelWindowHandle)
+            SetWindowFont(PropSheetContext->ButtonsLabelWindowHandle, windowFont, TRUE);
 
         PostMessage(PropSheetWindow, WM_PH_UPDATE_DIALOG, 0, 0);
     }
 }
 
+VOID PhpUpdateProcessPropButtonsDpi(
+    _In_ PPH_PROCESS_PROPSHEETCONTEXT PropSheetContext,
+    _In_ HWND PropSheetWindow,
+    _In_ LONG WindowDpi
+    )
+{
+    HWND cancelButtonHandle;
+    HFONT windowFont;
+    RECT cancelRect;
+    RECT optionsRect;
+    LONG buttonWidth;
+    LONG buttonHeight;
+    LONG buttonSpacing;
+    LONG labelOffset;
+    LONG labelTopOffset;
+    LONG labelWidth;
+
+    if (!PropSheetContext->OptionsButtonWindowHandle)
+        return;
+
+    cancelButtonHandle = GetDlgItem(PropSheetWindow, IDCANCEL);
+
+    if (!cancelButtonHandle)
+        return;
+
+    if (!WindowDpi)
+        WindowDpi = PhGetWindowDpi(PropSheetWindow);
+
+    windowFont = GetWindowFont(cancelButtonHandle);
+
+    if (windowFont)
+    {
+        SetWindowFont(PropSheetContext->OptionsButtonWindowHandle, windowFont, TRUE);
+
+        if (PropSheetContext->ButtonsLabelWindowHandle)
+            SetWindowFont(PropSheetContext->ButtonsLabelWindowHandle, windowFont, TRUE);
+    }
+
+    if (!PhGetWindowRect(cancelButtonHandle, &cancelRect))
+        return;
+
+    MapWindowRect(NULL, PropSheetWindow, &cancelRect);
+
+    if (!PhGetWindowRect(PropSheetContext->OptionsButtonWindowHandle, &optionsRect))
+        return;
+
+    MapWindowRect(NULL, PropSheetWindow, &optionsRect);
+
+    buttonWidth = cancelRect.right - cancelRect.left;
+    buttonHeight = cancelRect.bottom - cancelRect.top;
+    buttonSpacing = PhScaleToDisplay(6, WindowDpi);
+    labelOffset = PhScaleToDisplay(5, WindowDpi);
+    labelTopOffset = PhScaleToDisplay(7, WindowDpi);
+    labelWidth = PhScaleToDisplay(250, WindowDpi);
+
+    SetWindowPos(
+        PropSheetContext->OptionsButtonWindowHandle,
+        NULL,
+        optionsRect.left,
+        cancelRect.top,
+        buttonWidth,
+        buttonHeight,
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER
+        );
+
+    if (PropSheetContext->ButtonsLabelWindowHandle)
+    {
+        SetWindowPos(
+            PropSheetContext->ButtonsLabelWindowHandle,
+            NULL,
+            optionsRect.left + buttonWidth + buttonSpacing + labelOffset,
+            cancelRect.top + labelTopOffset,
+            labelWidth,
+            buttonHeight,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER
+            );
+    }
+}
+
 BOOLEAN PhpInitializePropSheetLayoutStage1(
     _In_ PPH_PROCESS_PROPSHEETCONTEXT Context,
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     )
 {
     if (!Context->LayoutInitialized)
     {
         HWND tabControlHandle;
-        PPH_LAYOUT_ITEM tabControlItem;
-        PPH_LAYOUT_ITEM tabPageItem;
+        PPH_LAYOUT_ITEM tabPageItem = NULL;
 
-        tabControlHandle = PropSheet_GetTabControl(hwnd);
-        tabControlItem = PhAddLayoutItem(&Context->LayoutManager, tabControlHandle, NULL, PH_ANCHOR_ALL | PH_LAYOUT_IMMEDIATE_RESIZE);
-        tabPageItem = PhAddLayoutItem(&Context->LayoutManager, tabControlHandle, NULL, PH_LAYOUT_TAB_CONTROL); // dummy item to fix multiline tab control
-        PhAddLayoutItem(&Context->LayoutManager, GetDlgItem(hwnd, IDCANCEL), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+        tabControlHandle = PropSheet_GetTabControl(WindowHandle);
+        PhAddTabControlLayoutItem(&Context->LayoutManager, tabControlHandle, NULL, &tabPageItem);
+        PhAddLayoutItem(&Context->LayoutManager, GetDlgItem(WindowHandle, IDCANCEL), NULL, PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
 
         // Create and add the buttons to the layout
-        PhpCreateProcessPropButtons(Context, hwnd);
-        PhAddLayoutItem(&Context->LayoutManager, Context->OptionsButtonWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
-        PhAddLayoutItem(&Context->LayoutManager, Context->ButtonsLabelWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
+        PhpCreateProcessPropButtons(Context, WindowHandle);
+        if (Context->OptionsButtonWindowHandle)
+            PhAddLayoutItem(&Context->LayoutManager, Context->OptionsButtonWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM | PH_LAYOUT_FORCE_INVALIDATE);
+        if (Context->ButtonsLabelWindowHandle)
+            PhAddLayoutItem(&Context->LayoutManager, Context->ButtonsLabelWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM | PH_LAYOUT_FORCE_INVALIDATE);
         //PhAddLayoutItem(&Context->LayoutManager, Context->PermissionsButtonWindowHandle, NULL, PH_ANCHOR_LEFT | PH_ANCHOR_BOTTOM);
 
         // Hide the OK button.
-        ShowWindow(GetDlgItem(hwnd, IDOK), SW_HIDE);
+        HWND buttonHandle = GetDlgItem(WindowHandle, IDOK);
+        if (buttonHandle) ShowWindow(buttonHandle, SW_HIDE);
+
         // Set the Cancel button's text to "Close".
-        PhSetDialogItemText(hwnd, IDCANCEL, L"Close");
+        PhSetDialogItemText(WindowHandle, IDCANCEL, L"Close");
 
         Context->TabPageItem = tabPageItem;
         Context->LayoutInitialized = TRUE;
@@ -914,19 +1101,22 @@ BOOLEAN PhpInitializePropSheetLayoutStage1(
 }
 
 VOID PhpInitializePropSheetLayoutStage2(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     )
 {
     PH_RECTANGLE windowRectangle = {0};
     RECT rect;
     LONG dpiValue;
 
-    PhLoadWindowPlacementFromSetting(SETTING_PROC_PROP_POSITION, SETTING_PROC_PROP_SIZE, hwnd);
+    if (PhValidWindowPlacementFromSetting(SETTING_PROC_PROP_POSITION))
+        PhLoadWindowPlacementFromSetting(SETTING_PROC_PROP_POSITION, SETTING_PROC_PROP_SIZE, WindowHandle);
+    else
+        PhCenterWindow(WindowHandle, NULL);
 
     windowRectangle.Position = PhGetIntegerPairSetting(SETTING_PROC_PROP_POSITION);
     PhRectangleToRect(&rect, &windowRectangle);
     dpiValue = PhGetMonitorDpi(NULL, &rect);
-    windowRectangle.Size = PhGetScalableIntegerPairSetting(SETTING_PROC_PROP_SIZE, TRUE, dpiValue)->Pair;
+    windowRectangle.Size = PhGetScalableIntegerPairSetting(SETTING_PROC_PROP_SIZE, TRUE, dpiValue).Pair;
 
     if (windowRectangle.Size.X < MinimumSize.right)
         windowRectangle.Size.X = MinimumSize.right;
@@ -941,11 +1131,104 @@ VOID PhpInitializePropSheetLayoutStage2(
     PhSetIntegerPairSetting(SETTING_PROC_PROP_POSITION, windowRectangle.Position);
 }
 
+#ifdef PH_PROPSHEET_NEW
+// Parse the title field out of a DLGTEMPLATE / DLGTEMPLATEEX resource so the
+// new propsheet host can label the tab before the page dialog is created.
+// Returns a heap PH_STRING (caller must dereference) or NULL.
+PPH_STRING PhpReadDialogTemplateTitle(
+    _In_opt_ PVOID DllBase,
+    _In_ PCWSTR Template
+    )
+{
+    PVOID resource;
+    ULONG resourceLength;
+    PWSTR cursor;
+    PWSTR title;
+    BOOLEAN isExtended;
+
+    if (!DllBase)
+        DllBase = PhInstanceHandle;
+
+    if (!NT_SUCCESS(PhLoadResource(DllBase, Template, RT_DIALOG, &resourceLength, &resource)))
+        return NULL;
+    if (resourceLength < sizeof(DLGTEMPLATEEX))
+        return NULL;
+
+    isExtended = ((PDLGTEMPLATEEX)resource)->signature == 0xFFFF &&
+                 ((PDLGTEMPLATEEX)resource)->dlgVer == 1;
+
+    if (isExtended)
+        cursor = (PWSTR)PTR_ADD_OFFSET(resource, sizeof(DLGTEMPLATEEX));
+    else
+        cursor = (PWSTR)PTR_ADD_OFFSET(resource, sizeof(DLGTEMPLATE));
+
+    // The menu, windowClass, title sz_Or_Ord fields are WORD-aligned in both
+    // layouts. resource is at least WORD-aligned, and our fixed-size headers
+    // are multiples of WORD, so cursor is already WORD-aligned here.
+
+    // Skip menu: 0x0000 (none), 0xFFFF + ordinal, or zero-terminated string.
+    if (*cursor == 0x0000)
+        cursor++;
+    else if (*cursor == 0xFFFF)
+        cursor += 2;
+    else
+        cursor += PhCountStringZ(cursor) + 1;
+
+    // Skip windowClass: same format as menu.
+    if (*cursor == 0x0000)
+        cursor++;
+    else if (*cursor == 0xFFFF)
+        cursor += 2;
+    else
+        cursor += PhCountStringZ(cursor) + 1;
+
+    // Title: zero-terminated UTF-16 string.
+    title = cursor;
+    if (!*title)
+        return NULL;
+
+    return PhCreateString(title);
+}
+#endif
+
 BOOLEAN PhAddProcessPropPage(
     _Inout_ PPH_PROCESS_PROPCONTEXT PropContext,
     _In_ _Assume_refs_(1) PPH_PROCESS_PROPPAGECONTEXT PropPageContext
     )
 {
+#ifdef PH_PROPSHEET_NEW
+    {
+        PPH_PROPSHEETNEW_PAGE pages = (PPH_PROPSHEETNEW_PAGE)PropContext->PropSheetNewPages;
+        PPH_PROCESS_PROPPAGECONTEXT *ctxs = (PPH_PROCESS_PROPPAGECONTEXT *)PropContext->PropSheetNewPageContexts;
+        PPH_STRING *titles = (PPH_STRING *)PropContext->PropSheetNewPageTitles;
+        ULONG idx = PropContext->PropSheetNewPageCount;
+        PROPSHEETPAGE *psp = &PropPageContext->PropSheetPage;
+
+        if (idx >= PH_PROCESS_PROPCONTEXT_MAXPAGES)
+            return FALSE;
+
+        titles[idx] = PhpReadDialogTemplateTitle(psp->hInstance, psp->pszTemplate);
+
+        pages[idx].Name = PhGetStringOrEmpty(titles[idx]);
+        pages[idx].Instance = psp->hInstance;
+        pages[idx].Template = psp->pszTemplate;
+        pages[idx].DialogProc = psp->pfnDlgProc;
+        // Hand the dialog the embedded PROPSHEETPAGE pointer so that
+        // PhPropPageDlgProcHeader (which casts WM_INITDIALOG.lParam to
+        // LPPROPSHEETPAGE and reads ->lParam) works unmodified.
+        pages[idx].Parameter = psp;
+        pages[idx].Flags = PropPageContext->Flags;
+        pages[idx].DialogHandle = NULL;
+
+        // Consume the incoming refcount=1; released in
+        // PhpProcessPropContextDeleteProcedure.
+        ctxs[idx] = PropPageContext;
+        PropContext->PropSheetNewPageCount++;
+
+        PhSetReference(&PropPageContext->PropContext, PropContext);
+        return TRUE;
+    }
+#else
     HPROPSHEETPAGE propSheetPageHandle;
 
     if (PropContext->PropSheetHeader.nPages == PH_PROCESS_PROPCONTEXT_MAXPAGES)
@@ -964,6 +1247,7 @@ BOOLEAN PhAddProcessPropPage(
     PropContext->PropSheetHeader.nPages++;
 
     return TRUE;
+#endif
 }
 
 BOOLEAN PhAddProcessPropPage2(
@@ -971,6 +1255,14 @@ BOOLEAN PhAddProcessPropPage2(
     _In_ HPROPSHEETPAGE PropSheetPageHandle
     )
 {
+#ifdef PH_PROPSHEET_NEW
+    UNREFERENCED_PARAMETER(PropContext);
+
+    if (PropSheetPageHandle)
+        DestroyPropertySheetPage(PropSheetPageHandle);
+
+    return FALSE;
+#else
     if (PropContext->PropSheetHeader.nPages == PH_PROCESS_PROPCONTEXT_MAXPAGES)
         return FALSE;
 
@@ -978,6 +1270,7 @@ BOOLEAN PhAddProcessPropPage2(
     PropContext->PropSheetHeader.nPages++;
 
     return TRUE;
+#endif
 }
 
 PPH_PROCESS_PROPPAGECONTEXT PhCreateProcessPropPageContext(
@@ -1020,12 +1313,15 @@ VOID NTAPI PhpProcessPropPageContextDeleteProcedure(
 {
     PPH_PROCESS_PROPPAGECONTEXT propPageContext = (PPH_PROCESS_PROPPAGECONTEXT)Object;
 
+    if (propPageContext->ContextDeleteProcedure && propPageContext->Context)
+        propPageContext->ContextDeleteProcedure(propPageContext->Context, 0);
+
     if (propPageContext->PropContext)
         PhDereferenceObject(propPageContext->PropContext);
 }
 
 UINT CALLBACK PhpStandardPropPageProc(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ UINT uMsg,
     _In_ LPPROPSHEETPAGE ppsp
     )
@@ -1050,13 +1346,10 @@ VOID NTAPI PhpProcessPropPageWaitContextDeleteProcedure(
 {
     PPH_PROCESS_WAITPROPCONTEXT context = (PPH_PROCESS_WAITPROPCONTEXT)Object;
 
-    PhpFlushProcessPropSheetWaitContextData();
-
-    if (context->ProcessWaitHandle)
-    {
-        RtlDeregisterWaitEx(context->ProcessWaitHandle, RTL_WAITER_DEREGISTER_WAIT_FOR_COMPLETION);
-        context->ProcessWaitHandle = NULL;
-    }
+    // N.B. The wait is deregistered by PhpDeregisterProcessPropSheetWait before the
+    // last reference is released, and queued entries hold their own reference, so
+    // nothing can still reference this object here.
+    assert(!context->ProcessWaitHandle);
 
     if (context->ProcessHandle)
     {
@@ -1120,6 +1413,23 @@ VOID PhpCreateProcessPropSheetWaitContext(
     }
 }
 
+/**
+ * Deregisters the process wait of a wait context and waits for any running callback.
+ * Must be called before the owner releases its reference to the wait context.
+ *
+ * \param WaitContext The wait context.
+ */
+VOID PhpDeregisterProcessPropSheetWait(
+    _In_ PPH_PROCESS_WAITPROPCONTEXT WaitContext
+    )
+{
+    if (WaitContext->ProcessWaitHandle)
+    {
+        RtlDeregisterWaitEx(WaitContext->ProcessWaitHandle, RTL_WAITER_DEREGISTER_WAIT_FOR_COMPLETION);
+        WaitContext->ProcessWaitHandle = NULL;
+    }
+}
+
 VOID PhpFlushProcessPropSheetWaitContextData(
     VOID
     )
@@ -1152,7 +1462,7 @@ VOID PhpFlushProcessPropSheetWaitContextData(
 
             if (basicInfo.ExitStatus < STATUS_WAIT_1 || basicInfo.ExitStatus > STATUS_WAIT_63)
             {
-                if (errorMessage = PhGetStatusMessage(basicInfo.ExitStatus, 0))
+                if ((errorMessage = PhGetStatusMessage(basicInfo.ExitStatus, 0)))
                 {
                     PhInitFormatS(&format[3], L") exited with ");
                     PhInitFormatSR(&format[4], errorMessage->sr);
@@ -1178,6 +1488,9 @@ VOID PhpFlushProcessPropSheetWaitContextData(
         }
 
         //PostMessage(data->PropSheetWindowHandle, WM_PH_PROPPAGE_EXITSTATUS, 0, (LPARAM)data);
+
+        // Release the reference taken by PhpProcessPropertiesWaitCallback.
+        PhDereferenceObject(data);
     }
 }
 
@@ -1188,6 +1501,10 @@ VOID NTAPI PhpProcessPropertiesWaitCallback(
     )
 {
     PPH_PROCESS_WAITPROPCONTEXT waitContext = Context;
+
+    // The queued entry keeps the context alive until a flush has processed it; the owner
+    // can close its property sheet (and release its reference) at any time.
+    PhReferenceObject(waitContext);
 
     // This avoids blocking the workqueue and avoids converting the workqueue to GUI threads. (dmex)
     RtlInterlockedPushEntrySList(&WaitContextQueryListHead, &waitContext->ListEntry);
@@ -1245,8 +1562,14 @@ BOOLEAN PhPropPageDlgProcHeader(
 
         if (propPageContext->PropContext->ProcessWaitContext)
         {
+            // Deregister before releasing our reference so the callback can never run
+            // against a context that is being deleted.
+            PhpDeregisterProcessPropSheetWait(propPageContext->PropContext->ProcessWaitContext);
             PhDereferenceObject(propPageContext->PropContext->ProcessWaitContext);
             propPageContext->PropContext->ProcessWaitContext = NULL;
+
+            // Drain anything still queued (including our own entry) so it does not linger.
+            PhpFlushProcessPropSheetWaitContextData();
         }
     }
 
@@ -1270,12 +1593,20 @@ static VOID ASSERT_DIALOGRECT(
 #endif
 
 PPH_LAYOUT_ITEM PhAddPropPageLayoutItem(
-    _In_ HWND hwnd,
+    _In_ HWND WindowHandle,
     _In_ HWND Handle,
     _In_ PPH_LAYOUT_ITEM ParentItem,
     _In_ ULONG Anchor
     )
 {
+#ifdef PH_PROPSHEET_NEW
+    return PhPropSheetNewPageAddLayoutItem(
+        WindowHandle,
+        Handle,
+        ParentItem == PH_PROP_PAGE_TAB_CONTROL_PARENT ? PH_PROPSHEETNEW_PAGE_LAYOUT_PARENT : ParentItem,
+        Anchor
+        );
+#else
     HWND parent;
     PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
     PPH_LAYOUT_MANAGER layoutManager;
@@ -1283,16 +1614,20 @@ PPH_LAYOUT_ITEM PhAddPropPageLayoutItem(
     BOOLEAN doLayoutStage2;
     PPH_LAYOUT_ITEM item;
 
-    parent = GetParent(hwnd);
+    parent = GetParent(WindowHandle);
     propSheetContext = PhpGetPropSheetContext(parent);
     layoutManager = &propSheetContext->LayoutManager;
 
     doLayoutStage2 = PhpInitializePropSheetLayoutStage1(propSheetContext, parent);
 
     if (ParentItem != PH_PROP_PAGE_TAB_CONTROL_PARENT)
+    {
         realParentItem = ParentItem;
+    }
     else
+    {
         realParentItem = propSheetContext->TabPageItem;
+    }
 
     // Use the HACK if the control is a direct child of the dialog.
     if (ParentItem && ParentItem != PH_PROP_PAGE_TAB_CONTROL_PARENT &&
@@ -1311,10 +1646,10 @@ PPH_LAYOUT_ITEM PhAddPropPageLayoutItem(
         // MAKE SURE THESE NUMBERS ARE CORRECT.
         dialogSize.right = 260;
         dialogSize.bottom = 260;
-        MapDialogRect(hwnd, &dialogSize);
+        MapDialogRect(WindowHandle, &dialogSize);
 
         // Get the original dialog rectangle.
-        PhGetWindowRect(hwnd, &dialogRect);
+        PhGetWindowRect(WindowHandle, &dialogRect);
         dialogRect.right = dialogRect.left + dialogSize.right;
         dialogRect.bottom = dialogRect.top + dialogSize.bottom;
 
@@ -1334,19 +1669,192 @@ PPH_LAYOUT_ITEM PhAddPropPageLayoutItem(
         PhpInitializePropSheetLayoutStage2(parent);
 
     return item;
+#endif
 }
 
 VOID PhDoPropPageLayout(
-    _In_ HWND hwnd
+    _In_ HWND WindowHandle
     )
 {
+#ifdef PH_PROPSHEET_NEW
+    PhPropSheetNewPageLayout(WindowHandle);
+    PhBringWindowToTop(WindowHandle);
+#else
     HWND parent;
     PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
 
-    parent = GetParent(hwnd);
+    parent = GetParent(WindowHandle);
     propSheetContext = PhpGetPropSheetContext(parent);
     PhLayoutManagerLayout(&propSheetContext->LayoutManager);
+    PhBringWindowToTop(WindowHandle);
+#endif
 }
+
+#ifdef PH_PROPSHEET_NEW
+
+// Subclass for the PhPropSheetNew host so procprp can keep its
+// border-color, wait-flush timer, refresh hotkeys, and IDOK eating
+// behaviour that today live in PhpPropSheetProc / PhpPropSheetWndProc.
+
+static LRESULT CALLBACK PhpProcessPropertiesNewHostWndProc(
+    _In_ HWND WindowHandle,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    )
+{
+    PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
+    WNDPROC oldWndProc;
+
+    propSheetContext = PhGetWindowContext(WindowHandle, 0xF);
+    if (!propSheetContext)
+        return DefWindowProc(WindowHandle, uMsg, wParam, lParam);
+
+    oldWndProc = propSheetContext->PropSheetWindowHookProc;
+
+    switch (uMsg)
+    {
+    case WM_NCDESTROY:
+        {
+            PhKillTimer(WindowHandle, 2000);
+            PhUnregisterWindowCallback(WindowHandle);
+
+            PhSetWindowProcedure(WindowHandle, oldWndProc);
+            PhRemoveWindowContext(WindowHandle, 0xF);
+
+            if (propSheetContext->PropContext)
+                PhDereferenceObject(propSheetContext->PropContext);
+
+            PhFree(propSheetContext);
+        }
+        break;
+    case WM_NCACTIVATE:
+        {
+            PhpUpdateProcessPropWindowBorderColorFromContext(
+                WindowHandle,
+                !!wParam,
+                propSheetContext->PropContext
+                );
+        }
+        break;
+    case WM_COMMAND:
+        {
+            INT id = GET_WM_COMMAND_ID(wParam, lParam);
+
+            // The new control's host wndproc already turns IDCANCEL from the
+            // Close button into WM_CLOSE; we just need to swallow IDOK so a
+            // focused page control can't accidentally dismiss the host.
+            if (id == IDOK)
+                return 0;
+        }
+        break;
+    case WM_SIZE:
+        {
+            LRESULT result;
+
+            result = CallWindowProc(oldWndProc, WindowHandle, uMsg, wParam, lParam);
+            PhpUpdateProcessPropButtonsDpi(propSheetContext, WindowHandle, PhGetWindowDpi(WindowHandle));
+
+            return result;
+        }
+    case WM_DPICHANGED:
+        {
+            LRESULT result;
+
+            result = CallWindowProc(oldWndProc, WindowHandle, uMsg, wParam, lParam);
+            PhpUpdateProcessPropButtonsDpi(propSheetContext, WindowHandle, LOWORD(wParam));
+
+            return result;
+        }
+    case WM_TIMER:
+        {
+            if ((UINT)wParam == 2000)
+            {
+                PhpFlushProcessPropSheetWaitContextData();
+                PhpUpdateProcessPropWindowBorderColorFromContext(
+                    WindowHandle,
+                    GetActiveWindow() == WindowHandle,
+                    propSheetContext->PropContext
+                    );
+            }
+        }
+        break;
+    }
+
+    return CallWindowProc(oldWndProc, WindowHandle, uMsg, wParam, lParam);
+}
+
+static VOID NTAPI PhpProcessPropertiesNewInitialized(
+    _In_ HWND HostHandle,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_PROCESS_PROPCONTEXT propContext = (PPH_PROCESS_PROPCONTEXT)Context;
+    PPH_PROCESS_PROPSHEETCONTEXT propSheetContext;
+
+    if (!propContext)
+        return;
+
+    propSheetContext = PhAllocateZero(sizeof(PH_PROCESS_PROPSHEETCONTEXT));
+    PhReferenceObject(propContext);
+    propSheetContext->PropContext = propContext;
+
+    propSheetContext->PropSheetWindowHookProc = PhGetWindowProcedure(HostHandle);
+    PhSetWindowContext(HostHandle, 0xF, propSheetContext);
+    PhSetWindowProcedure(HostHandle, PhpProcessPropertiesNewHostWndProc);
+
+    PhpCreateProcessPropButtons(propSheetContext, HostHandle);
+
+    if (PhEnableThemeSupport)
+        PhInitializeWindowTheme(HostHandle, PhEnableThemeSupport);
+
+    PhpUpdateProcessPropWindowBorderColorFromContext(
+        HostHandle,
+        GetActiveWindow() == HostHandle,
+        propContext
+        );
+
+    PhRegisterWindowCallback(HostHandle, PH_PLUGIN_WINDOW_EVENT_TYPE_TOPMOST, NULL);
+
+    PhSetTimer(HostHandle, 2000, 2000, NULL);
+}
+
+static BOOLEAN NTAPI PhpProcessPropertiesNewPreTranslate(
+    _In_ HWND HostHandle,
+    _In_ MSG *Message,
+    _In_opt_ PVOID Context
+    )
+{
+    if (Message->message != WM_KEYDOWN)
+        return FALSE;
+
+    // Only honour hotkeys when they target this property sheet's tree.
+    {
+        HWND focus = Message->hwnd;
+        HWND ancestor;
+
+        if (!focus)
+            return FALSE;
+        ancestor = GetAncestor(focus, GA_ROOT);
+        if (ancestor != HostHandle)
+            return FALSE;
+    }
+
+    switch (Message->wParam)
+    {
+    case VK_F5:
+        SystemInformer_Refresh();
+        return TRUE;
+    case VK_F6:
+    case VK_PAUSE:
+        SystemInformer_SetUpdateAutomatically(!SystemInformer_GetUpdateAutomatically());
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+#endif // PH_PROPSHEET_NEW
 
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS PhpProcessPropertiesThreadStart(
@@ -1356,7 +1864,9 @@ NTSTATUS PhpProcessPropertiesThreadStart(
     PH_AUTO_POOL autoPool;
     PPH_PROCESS_PROPCONTEXT PropContext = (PPH_PROCESS_PROPCONTEXT)Parameter;
     PPH_PROCESS_PROPPAGECONTEXT newPage;
+#ifndef PH_PROPSHEET_NEW
     PPH_STRING startPage;
+#endif
 
     PhInitializeAutoPool(&autoPool);
 
@@ -1401,10 +1911,23 @@ NTSTATUS PhpProcessPropertiesThreadStart(
     PhAddProcessPropPage(PropContext, newPage);
 
     // Token
+#ifdef PH_PROPSHEET_NEW
+    PhAddProcessPropPage(
+        PropContext,
+        PhCreateTokenProcessPropPageContext(
+            PhpOpenProcessTokenForPage,
+            PhpCloseProcessTokenForPage,
+            PropContext->ProcessItem->ProcessId,
+            (PVOID)PropContext->ProcessItem->ProcessId,
+            PhpProcessTokenHookProc
+            )
+        );
+#else
     PhAddProcessPropPage2(
         PropContext,
         PhCreateTokenPage(PhpOpenProcessTokenForPage, PhpCloseProcessTokenForPage, PropContext->ProcessItem->ProcessId, (PVOID)PropContext->ProcessItem->ProcessId, PhpProcessTokenHookProc)
         );
+#endif
 
     // Modules
     newPage = PhCreateProcessPropPageContext(
@@ -1421,6 +1944,17 @@ NTSTATUS PhpProcessPropertiesThreadStart(
         NULL
         );
     PhAddProcessPropPage(PropContext, newPage);
+
+    // Monitor
+    if (PhCsEnableProcessMonitor && KsiLevel() >= KphLevelMed)
+    {
+        newPage = PhCreateProcessPropPageContext(
+            MAKEINTRESOURCE(IDD_PROCINFORMER),
+            PhpProcessInformerDlgProc,
+            NULL
+            );
+        PhAddProcessPropPage(PropContext, newPage);
+    }
 
     // Environment
     newPage = PhCreateProcessPropPageContext(
@@ -1446,10 +1980,22 @@ NTSTATUS PhpProcessPropertiesThreadStart(
         (KsiLevel() >= KphLevelMed)
         )
     {
+#ifdef PH_PROPSHEET_NEW
+        PhAddProcessPropPage(
+            PropContext,
+            PhCreateJobProcessPropPageContext(
+                PhpOpenProcessJobForPage,
+                PhpCloseProcessJobForPage,
+                (PVOID)PropContext->ProcessItem->ProcessId,
+                PhpProcessJobHookProc
+                )
+            );
+#else
         PhAddProcessPropPage2(
             PropContext,
             PhCreateJobPage(PhpOpenProcessJobForPage, PhpCloseProcessJobForPage, (PVOID)PropContext->ProcessItem->ProcessId, PhpProcessJobHookProc)
             );
+#endif
     }
 
     // Services
@@ -1508,13 +2054,51 @@ NTSTATUS PhpProcessPropertiesThreadStart(
         PhSetStringSetting(SETTING_PROC_PROP_PAGE, L"Threads");
     }
 
+#ifndef PH_PROPSHEET_NEW
     startPage = PhGetStringSetting(SETTING_PROC_PROP_PAGE);
     PropContext->PropSheetHeader.dwFlags |= PSH_USEPSTARTPAGE;
     PropContext->PropSheetHeader.pStartPage = PhGetString(startPage);
+#endif
 
+    PhReferenceObject(PropContext);
+#ifndef PH_PROPSHEET_NEW
+    SetMessageExtraInfo((LPARAM)PropContext);
+#endif
+
+#ifdef PH_PROPSHEET_NEW
+    {
+        PH_PROPSHEETNEW sheet;
+        HICON icon = PhGetImageListIcon(PropContext->ProcessItem->SmallIconIndex, FALSE);
+
+        memset(&sheet, 0, sizeof(sheet));
+        sheet.Caption = PhGetString(PropContext->Title);
+        sheet.ParentWindow = PropContext->ParentWindowHandle;
+        sheet.Icon = icon;
+        sheet.Layout = PhPropSheetNewLayoutTop;
+        sheet.Skin = PhTabNewSkinUxTheme;
+        sheet.Flags = PH_PROPSHEETNEW_RESIZABLE |
+                      PH_PROPSHEETNEW_CENTER |
+                      PH_PROPSHEETNEW_SAVE_PLACEMENT |
+                      PH_PROPSHEETNEW_SAVE_ACTIVE_PAGE |
+                      PH_PROPSHEETNEW_CLOSE_BUTTON;
+        sheet.SettingNamePosition = SETTING_PROC_PROP_POSITION;
+        sheet.SettingNameSize = SETTING_PROC_PROP_SIZE;
+        sheet.SettingNameActivePage = SETTING_PROC_PROP_PAGE;
+        sheet.PageCount = PropContext->PropSheetNewPageCount;
+        sheet.Pages = (PPH_PROPSHEETNEW_PAGE)PropContext->PropSheetNewPages;
+        sheet.Context = PropContext;
+        sheet.Initialized = PhpProcessPropertiesNewInitialized;
+        sheet.PreTranslateMessage = PhpProcessPropertiesNewPreTranslate;
+
+        PhPropSheetNewShowModal(&sheet);
+    }
+#else
     PhModalPropertySheet(&PropContext->PropSheetHeader);
+#endif
 
+#ifndef PH_PROPSHEET_NEW
     PhDereferenceObject(startPage);
+#endif
     PhDereferenceObject(PropContext);
 
     PhDeleteAutoPool(&autoPool);

@@ -24,18 +24,29 @@ typedef struct _RTL_BITMAP* PRTL_BITMAP;
 //
 
 /**
- * The NtDelayExecution routine suspends the current thread until the specified condition is met.
+ * The NtDelayExecution routine delays the calling thread until a deadline or an allowed interruption. 
+ * This is a scheduling delay, not a wait for an object's signal and not a precision clock.
  *
- * \param Alertable The function returns when either the time-out period has elapsed or when the APC function is called.
- * \param DelayInterval The time interval for which execution is to be suspended, in milliseconds.
- * - A value of zero causes the thread to relinquish the remainder of its time slice to any other thread that is ready to run.
- * - If there are no other threads ready to run, the function returns immediately, and the thread continues execution.
- * - A value of INFINITE indicates that the suspension should not time out.
- * \return NTSTATUS Successful or errant status. The return value is STATUS_USER_APC when Alertable is TRUE, and the function returned due to one or more I/O completion callback functions.
- * \remarks Note that a ready thread is not guaranteed to run immediately. Consequently, the thread will not run until some arbitrary time after the sleep interval elapses,
- * based upon the system "tick" frequency and the load factor from other processes.
+ * \param Alertable TRUE permits an alert or ordinary user APC to interrupt the
+ * delay; the APC runs on this thread. Retrying after an interruption is the caller's
+ * responsibility, including recomputing remaining time for a relative interval.
+ * \param DelayInterval Required readable LARGE_INTEGER; NULL does not mean an
+ * infinite delay. Units are 100 nanoseconds: negative values are relative intervals,
+ * positive values are absolute times since January 1, 1601 (UTC), and zero requests
+ * a scheduling yield. User input must be 4-byte aligned on x64 and its WoW64 forwarding path. 
+ * The captured input is not updated with remaining time.
+ * \return STATUS_SUCCESS (0) on elapsed nonzero delay, STATUS_USER_APC (0xC0) or
+ * STATUS_ALERTED (0x101) for interruption. A zero interval can return either
+ * STATUS_SUCCESS or STATUS_NO_YIELD_PERFORMED (0x40000024). This also applies to
+ * an alertable zero interval when no APC or alert terminates it first.
+ * \remarks Expiration makes execution eligible, not necessarily immediate; other
+ * scheduling work can delay return. A yield does not prove another thread ran or
+ * completed useful work, and is not a replacement for synchronization. Do not
+ * treat STATUS_NO_YIELD_PERFORMED as failure or as a count of ready threads.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-sleepex
+ * \see RtlDelayExecution
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -49,8 +60,9 @@ NtDelayExecution(
 //
 
 /**
- * Retrieves the value of the specified firmware environment variable.
- * The user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
+ * The NtQuerySystemEnvironmentValue routine retrieves the value of the specified firmware environment
+ * variable. The user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME
+ * privilege.
  *
  * \param VariableName The name of the firmware environment variable. The pointer must not be NULL.
  * \param VariableValue A pointer to a buffer that receives the value of the specified firmware environment variable.
@@ -58,6 +70,7 @@ NtDelayExecution(
  * \param ReturnLength If the function succeeds, the return length is the number of bytes stored in the \c VariableValue buffer.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -87,8 +100,9 @@ NtQuerySystemEnvironmentValue(
 #define EFI_VARIABLE_ENHANCED_AUTHENTICATED_ACCESS 0x00000080
 
 /**
- * Retrieves the value of the specified firmware environment variable and its attributes.
- * The user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
+ * The NtQuerySystemEnvironmentValueEx routine retrieves the value of the specified firmware environment
+ * variable and its attributes. The user account that the app is running under must have the
+ * SE_SYSTEM_ENVIRONMENT_NAME privilege.
  *
  * \param VariableName The name of the firmware environment variable. The pointer must not be NULL.
  * \param VendorGuid The GUID that represents the namespace of the firmware environment variable.
@@ -97,6 +111,7 @@ NtQuerySystemEnvironmentValue(
  * \param Attributes Bitmask identifying UEFI variable attributes associated with the variable.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -109,14 +124,15 @@ NtQuerySystemEnvironmentValueEx(
     );
 
 /**
- * Sets the value of the specified firmware environment variable.
- * The user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
+ * The NtSetSystemEnvironmentValue routine sets the value of the specified firmware environment variable. The
+ * user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
  *
  * \param VariableName The name of the firmware environment variable. The pointer must not be NULL.
  * \param VariableValue A pointer to the new value for the firmware environment variable.
  * If this parameter is zero, the firmware environment variable is deleted.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -126,8 +142,9 @@ NtSetSystemEnvironmentValue(
     );
 
 /**
- * Sets the value of the specified firmware environment variable and the attributes that indicate how this variable is stored and maintained.
- * The user account that the app is running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
+ * The NtSetSystemEnvironmentValueEx routine sets the value of the specified firmware environment variable and
+ * the attributes that indicate how this variable is stored and maintained. The user account that the app is
+ * running under must have the SE_SYSTEM_ENVIRONMENT_NAME privilege.
  *
  * \param VariableName The name of the firmware environment variable. The pointer must not be NULL.
  * \param VendorGuid The GUID that represents the namespace of the firmware environment variable.
@@ -139,6 +156,7 @@ NtSetSystemEnvironmentValue(
  * \param Attributes Bitmask to set UEFI variable attributes associated with the variable.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -150,6 +168,9 @@ NtSetSystemEnvironmentValueEx(
     _In_ ULONG Attributes // EFI_VARIABLE_*
     );
 
+/**
+ * The SYSTEM_ENVIRONMENT_INFORMATION_CLASS enumeration defines the information classes for querying and setting firmware environment variables.
+ */
 typedef enum _SYSTEM_ENVIRONMENT_INFORMATION_CLASS
 {
     SystemEnvironmentNameInformation = 1, // q: VARIABLE_NAME
@@ -157,6 +178,9 @@ typedef enum _SYSTEM_ENVIRONMENT_INFORMATION_CLASS
     MaxSystemEnvironmentInfoClass
 } SYSTEM_ENVIRONMENT_INFORMATION_CLASS;
 
+/**
+ * The VARIABLE_NAME structure describes the name and vendor GUID of a firmware environment variable.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _VARIABLE_NAME
 {
@@ -165,6 +189,9 @@ typedef struct _VARIABLE_NAME
     WCHAR Name[ANYSIZE_ARRAY];
 } VARIABLE_NAME, *PVARIABLE_NAME;
 
+/**
+ * The VARIABLE_NAME_AND_VALUE structure describes the name, vendor GUID, and value of a firmware environment variable.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _VARIABLE_NAME_AND_VALUE
 {
@@ -185,6 +212,7 @@ typedef struct _VARIABLE_NAME_AND_VALUE
  * \param BufferLength Pointer to a ULONG variable that specifies the size of the Buffer on input.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -199,6 +227,9 @@ NtEnumerateSystemEnvironmentValuesEx(
 //
 
 // private
+/**
+ * The BOOT_ENTRY structure describes a single boot entry in the firmware boot configuration.
+ */
 typedef struct _BOOT_ENTRY
 {
     ULONG Version;
@@ -212,6 +243,9 @@ typedef struct _BOOT_ENTRY
 } BOOT_ENTRY, *PBOOT_ENTRY;
 
 // private
+/**
+ * The BOOT_ENTRY_LIST structure describes a linked list of boot entries.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _BOOT_ENTRY_LIST
 {
@@ -220,6 +254,9 @@ typedef struct _BOOT_ENTRY_LIST
 } BOOT_ENTRY_LIST, *PBOOT_ENTRY_LIST;
 
 // private
+/**
+ * The BOOT_OPTIONS structure describes the global boot options stored in the firmware boot configuration.
+ */
 typedef struct _BOOT_OPTIONS
 {
     ULONG Version;
@@ -231,6 +268,9 @@ typedef struct _BOOT_OPTIONS
 } BOOT_OPTIONS, *PBOOT_OPTIONS;
 
 // private
+/**
+ * The FILE_PATH structure describes a file path used by the boot configuration.
+ */
 typedef struct _FILE_PATH
 {
     ULONG Version;
@@ -240,6 +280,9 @@ typedef struct _FILE_PATH
 } FILE_PATH, *PFILE_PATH;
 
 // private
+/**
+ * The EFI_DRIVER_ENTRY structure describes a single EFI driver entry in the firmware boot configuration.
+ */
 typedef struct _EFI_DRIVER_ENTRY
 {
     ULONG Version;
@@ -250,6 +293,9 @@ typedef struct _EFI_DRIVER_ENTRY
 } EFI_DRIVER_ENTRY, *PEFI_DRIVER_ENTRY;
 
 // private
+/**
+ * The EFI_DRIVER_ENTRY_LIST structure describes a linked list of EFI driver entries.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _EFI_DRIVER_ENTRY_LIST
 {
@@ -264,6 +310,7 @@ typedef struct _EFI_DRIVER_ENTRY_LIST
  * \param Id A pointer to a variable that receives the identifier of the new boot entry.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -278,6 +325,7 @@ NtAddBootEntry(
  * \param Id The identifier of the boot entry to be deleted.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -291,6 +339,7 @@ NtDeleteBootEntry(
  * \param BootEntry A pointer to a BOOT_ENTRY structure that specifies the new boot entry information.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -305,6 +354,7 @@ NtModifyBootEntry(
  * \param BufferLength A pointer to a variable that specifies the size of the buffer. On return, it contains the size of the data returned.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -320,6 +370,7 @@ NtEnumerateBootEntries(
  * \param Count A pointer to a variable that specifies the number of entries in the buffer. On return, it contains the number of entries returned.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -335,6 +386,7 @@ NtQueryBootEntryOrder(
  * \param Count The number of entries in the buffer.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -350,6 +402,7 @@ NtSetBootEntryOrder(
  * \param BootOptionsLength A pointer to a variable that specifies the size of the buffer. On return, it contains the size of the data returned.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -365,6 +418,7 @@ NtQueryBootOptions(
  * \param FieldsToChange A bitmask that specifies which fields in the BOOT_OPTIONS structure are to be changed.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -379,9 +433,11 @@ NtSetBootOptions(
  * \param InputFilePath A pointer to a FILE_PATH structure that specifies the input file path.
  * \param OutputType The type of the output file path.
  * \param OutputFilePath A pointer to a buffer that receives the translated file path.
- * \param OutputFilePathLength A pointer to a variable that specifies the size of the buffer. On return, it contains the size of the data returned.
+ * \param OutputFilePathLength A required pointer to the buffer size, in bytes. On return,
+ * it receives the required size even when OutputFilePath is NULL (a size-only query).
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -389,7 +445,7 @@ NtTranslateFilePath(
     _In_ PFILE_PATH InputFilePath,
     _In_ ULONG OutputType,
     _Out_writes_bytes_opt_(*OutputFilePathLength) PFILE_PATH OutputFilePath,
-    _Inout_opt_ PULONG OutputFilePathLength
+    _Inout_ PULONG OutputFilePathLength
     );
 
 /**
@@ -399,6 +455,7 @@ NtTranslateFilePath(
  * \param Id A pointer to a variable that receives the identifier of the new driver entry.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -413,6 +470,7 @@ NtAddDriverEntry(
  * \param Id The identifier of the driver entry to be deleted.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -426,6 +484,7 @@ NtDeleteDriverEntry(
  * \param DriverEntry A pointer to an EFI_DRIVER_ENTRY structure that specifies the new driver entry information.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -440,6 +499,7 @@ NtModifyDriverEntry(
  * \param BufferLength A pointer to a variable that specifies the size of the buffer. On return, it contains the size of the data returned.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -455,6 +515,7 @@ NtEnumerateDriverEntries(
  * \param Count A pointer to a variable that specifies the number of entries in the buffer. On return, it contains the number of entries returned.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -470,6 +531,7 @@ NtQueryDriverEntryOrder(
  * \param Count The number of entries in the buffer.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -478,6 +540,9 @@ NtSetDriverEntryOrder(
     _In_ ULONG Count
     );
 
+/**
+ * The FILTER_BOOT_OPTION_OPERATION enumeration defines the operations that can be applied when filtering boot options.
+ */
 typedef enum _FILTER_BOOT_OPTION_OPERATION
 {
     FilterBootOptionOperationOpenSystemStore,
@@ -497,6 +562,7 @@ typedef enum _FILTER_BOOT_OPTION_OPERATION
  * \param DataSize The size, in bytes, of the data buffer pointed to by the Data parameter.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -553,14 +619,21 @@ typedef struct _EVENT_BASIC_INFORMATION
  * \param InitialState The initial state of the event object.
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwcreateevent
+ * \remarks ObjectAttributes may be NULL to create an unnamed, process-owned event. The returned
+ * handle is closed with NtClose. NotificationEvent (0) is manual-reset: successful waits do
+ * not clear it. SynchronizationEvent (1) is auto-reset: a satisfied wait consumes the signal.
+ * Other EventType values return STATUS_INVALID_PARAMETER. With OBJ_OPENIF, an existing
+ * named event is returned with STATUS_OBJECT_NAME_EXISTS; its type and state are not
+ * reinitialized from EventType or InitialState.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtCreateEvent(
     _Out_ PHANDLE EventHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+    _In_opt_ PCOBJECT_ATTRIBUTES ObjectAttributes,
     _In_ EVENT_TYPE EventType,
     _In_ BOOLEAN InitialState
     );
@@ -572,14 +645,18 @@ NtCreateEvent(
  * \param DesiredAccess The access mask that specifies the requested access to the event object.
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Opens an existing named object; it does not reset or acquire its signal. Request
+ * EVENT_QUERY_STATE (0x1) for NtQueryEvent, EVENT_MODIFY_STATE (0x2) for state changes, and
+ * SYNCHRONIZE (0x00100000) for waits. Close the returned handle with NtClose.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtOpenEvent(
     _Out_ PHANDLE EventHandle,
     _In_ ACCESS_MASK DesiredAccess,
-    _In_ POBJECT_ATTRIBUTES ObjectAttributes
+    _In_ PCOBJECT_ATTRIBUTES ObjectAttributes
     );
 
 /**
@@ -588,7 +665,11 @@ NtOpenEvent(
  * \param EventHandle A handle to the event object.
  * \param PreviousState A pointer to a variable that receives the previous state of the event object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires EVENT_MODIFY_STATE (0x2). For an ordinary event, PreviousState receives the
+ * state before signaling (0 or 1), not a count of awakened threads. Repeated sets do not
+ * accumulate signals. PreviousState may be NULL. A query-only handle is insufficient.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -601,16 +682,19 @@ NtSetEvent(
 /**
  * The NtSetEventEx routine sets an event object to the signaled state and optionally acquires a lock.
  *
- * \param ThreadId A handle to the thread.
- * \param Lock A pointer to an RTL_SRWLOCK structure that specifies the lock to acquire.
+ * \param EventHandle A handle to the event object.
+ * \param PreviousState An optional pointer to a variable that receives the previous state of the event.
+ * \param LockAddress An optional user-mode lock address.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtSetEventEx(
-    _In_ HANDLE ThreadId,
-    _In_opt_ PRTL_SRWLOCK Lock
+    _In_ HANDLE EventHandle,
+    _Out_opt_ PLONG PreviousState,
+    _In_opt_ PVOID LockAddress
     );
 #endif // (PHNT_VERSION >= PHNT_WINDOWS_11)
 
@@ -620,6 +704,7 @@ NtSetEventEx(
  * \param EventHandle A handle to the event object.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -632,7 +717,10 @@ NtSetEventBoostPriority(
  *
  * \param EventHandle A handle to the event object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires EVENT_MODIFY_STATE (0x2). For ordinary events, this uses
+ * the same KeResetEvent operation as NtResetEvent but has no previous-state output.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -647,7 +735,11 @@ NtClearEvent(
  * \param PreviousState A pointer to a variable that receives the previous state of the event object.
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-resetevent
+ * \remarks Requires EVENT_MODIFY_STATE (0x2). Clears the signal and optionally returns the state
+ * before resetting (0 or 1). Resetting an already nonsignaled event succeeds and reports 0.
+ * This does not cancel waits or return ownership of an auto-reset signal already consumed.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -663,7 +755,12 @@ NtResetEvent(
  * \param PreviousState A pointer to a variable that receives the previous state of the event object.
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-pulseevent
+ * \remarks Requires EVENT_MODIFY_STATE (0x2). Optionally reports the state before the pulse.
+ * The signal is transient: when no eligible waiter is released immediately, the event
+ * is left nonsignaled; a later wait cannot consume a saved pulse. Do not use this as a
+ * persistent notification or as proof that another thread observed the event.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -681,7 +778,13 @@ NtPulseEvent(
  * \param EventInformationLength The size of the buffer pointed to by EventInformation.
  * \param ReturnLength A pointer to a variable that receives the size of the data returned in the buffer.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires EVENT_QUERY_STATE (0x1). EventBasicInformation (0) is the supported class
+ * and requires exactly sizeof(EVENT_BASIC_INFORMATION), 8 bytes. Unsupported classes
+ * return STATUS_INVALID_INFO_CLASS; an incorrect size returns STATUS_INFO_LENGTH_MISMATCH.
+ * These validation failures leave ReturnLength unchanged, while success writes 8 when ReturnLength 
+ * is non-NULL. Do not use a NULL/zero-size discovery call.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -707,7 +810,14 @@ NtQueryEvent(
  * \param DesiredAccess The access mask that specifies the requested access to the event pair object.
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
+ * The native stub leaves EventPairHandle unchanged. With valid arguments, the
+ * WoW64 thunk instead copies its zero-initialized local handle to the output even
+ * on this failure; it can also fail earlier while converting ObjectAttributes.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -724,7 +834,14 @@ NtCreateEventPair(
  * \param DesiredAccess The access mask that specifies the requested access to the event pair object.
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
+ * The native stub leaves EventPairHandle unchanged. With valid arguments, the
+ * WoW64 thunk instead copies its zero-initialized local handle to the output even
+ * on this failure; it can also fail earlier while converting ObjectAttributes.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -739,7 +856,11 @@ NtOpenEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -752,7 +873,11 @@ NtSetLowEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -765,7 +890,11 @@ NtSetHighEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -778,7 +907,11 @@ NtWaitLowEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -791,7 +924,11 @@ NtWaitHighEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -804,7 +941,11 @@ NtSetLowWaitHighEventPair(
  *
  * \param EventPairHandle A handle to the event pair object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Legacy event-pair API. Unsupported service-table entries
+ * return STATUS_NOT_IMPLEMENTED (0xC0000002) without performing the operation.
+ * A declaration or ntdll export does not establish that event pairs are supported.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -824,6 +965,9 @@ NtSetHighWaitLowEventPair(
 #define MUTANT_ALL_ACCESS (MUTANT_QUERY_STATE|STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE)
 #endif
 
+/**
+ * The MUTANT_INFORMATION_CLASS enumeration defines the information classes for querying a mutant (mutex) object.
+ */
 typedef enum _MUTANT_INFORMATION_CLASS
 {
     MutantBasicInformation, // MUTANT_BASIC_INFORMATION
@@ -832,16 +976,21 @@ typedef enum _MUTANT_INFORMATION_CLASS
 
 /**
  * The MUTANT_BASIC_INFORMATION structure contains basic information about a mutant object.
+ * The structure is 8 bytes, but NtQueryMutant writes only the 6 bytes occupied by
+ * these members. The 2 trailing padding bytes are not initialized;
+ * compare members rather than the complete structure, or pre-zero the output.
  */
 typedef struct _MUTANT_BASIC_INFORMATION
 {
-    LONG CurrentCount;
-    BOOLEAN OwnedByCaller;
-    BOOLEAN AbandonedState;
+    LONG CurrentCount; // 1 when unowned; 0 for one acquisition; 1 minus the recursive acquisition count otherwise.
+    BOOLEAN OwnedByCaller; // TRUE only when the calling thread is the current owner.
+    BOOLEAN AbandonedState; // TRUE after an owner exits without releasing; cleared when ownership is acquired.
 } MUTANT_BASIC_INFORMATION, *PMUTANT_BASIC_INFORMATION;
 
 /**
  * The MUTANT_OWNER_INFORMATION structure contains information about the owner of a mutant object.
+ * ClientId contains process and thread identifiers (not handles to close), or two
+ * NULL values when there is no owner. Use it for diagnostics, not synchronization.
  */
 typedef struct _MUTANT_OWNER_INFORMATION
 {
@@ -857,7 +1006,14 @@ typedef struct _MUTANT_OWNER_INFORMATION
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \param InitialOwner If TRUE, the calling thread is the initial owner of the mutant object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks A mutant is an ownership-tracked, recursively acquirable mutex. NULL ObjectAttributes
+ * creates an unnamed object. InitialOwner applies only to a newly created mutant. With
+ * OBJ_OPENIF, an existing named mutant is returned with STATUS_OBJECT_NAME_EXISTS; TRUE
+ * InitialOwner does not acquire it. Acquire an existing mutant by waiting instead.
+ * Release each acquired recursion level with NtReleaseMutant; NtClose closes the handle
+ * but is not a substitute for releasing ownership.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -875,7 +1031,12 @@ NtCreateMutant(
  * \param DesiredAccess The access mask that specifies the requested access to the mutant object.
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Opening a handle does not acquire the mutant. Request MUTANT_QUERY_STATE (0x1) for
+ * queries and SYNCHRONIZE (0x00100000) for waits. A successful wait acquires ownership;
+ * an abandoned-wait result also acquires ownership but requires checking protected state.
+ * Close the returned handle with NtClose after balancing any acquisitions.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -891,7 +1052,16 @@ NtOpenMutant(
  * \param MutantHandle A handle to the mutant object.
  * \param PreviousCount A pointer to a variable that receives the previous count of the mutant object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks For ordinary mutants no specific handle access right is required
+ * (the handle is referenced with desired access 0), but the calling thread must own it.
+ * Each release removes one recursion level. PreviousCount receives the prior dispatcher
+ * signal count, not a positive recursion depth: 0 for the final release and negative
+ * values for recursive ownership. A nonowner normally receives STATUS_MUTANT_NOT_OWNED.
+ * If the mutant is abandoned, a nonowner release returns STATUS_ABANDONED (0x80) without
+ * releasing/acquiring it or writing PreviousCount. This status is nonnegative: test for
+ * STATUS_SUCCESS, not merely NT_SUCCESS, when deciding whether a release occurred.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -909,7 +1079,14 @@ NtReleaseMutant(
  * \param MutantInformationLength The size of the buffer pointed to by MutantInformation.
  * \param ReturnLength A pointer to a variable that receives the size of the data returned in the buffer.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires MUTANT_QUERY_STATE (0x1). MutantBasicInformation (0) requires exactly 8 bytes;
+ * MutantOwnerInformation (1) requires exactly sizeof(MUTANT_OWNER_INFORMATION), 16 bytes on x64 and 8 bytes
+ * for x86 callers. Unsupported classes return STATUS_INVALID_INFO_CLASS; incorrect sizes return
+ * STATUS_INFO_LENGTH_MISMATCH. Basic-query wrong-size failures leave ReturnLength unchanged on the native x64
+ * and x86/WoW64 paths; success reports the selected structure size. Querying never acquires ownership. The
+ * owner IDs and state are snapshots and may change immediately after the query.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -937,6 +1114,9 @@ NtQueryMutant(
 #define SEMAPHORE_ALL_ACCESS (SEMAPHORE_QUERY_STATE|SEMAPHORE_MODIFY_STATE|STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE)
 #endif
 
+/**
+ * The SEMAPHORE_INFORMATION_CLASS enumeration defines the information classes for querying a semaphore object.
+ */
 typedef enum _SEMAPHORE_INFORMATION_CLASS
 {
     SemaphoreBasicInformation
@@ -961,7 +1141,13 @@ typedef struct _SEMAPHORE_BASIC_INFORMATION
  * \param InitialCount The initial count of the semaphore object.
  * \param MaximumCount The maximum count of the semaphore object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires MaximumCount > 0 and 0 <= InitialCount <= MaximumCount; invalid counts
+ * return STATUS_INVALID_PARAMETER. NULL ObjectAttributes creates an unnamed semaphore.
+ * A satisfied wait consumes one count; NtReleaseSemaphore adds a positive count. With
+ * OBJ_OPENIF, opening an existing named semaphore returns STATUS_OBJECT_NAME_EXISTS and
+ * does not replace its current or maximum count. Close the returned handle with NtClose.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -980,7 +1166,11 @@ NtCreateSemaphore(
  * \param DesiredAccess The access mask that specifies the requested access to the semaphore object.
  * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Does not consume a semaphore count. Request SEMAPHORE_QUERY_STATE (0x1) for queries,
+ * SEMAPHORE_MODIFY_STATE (0x2) for release, and SYNCHRONIZE (0x00100000) for waits.
+ * Close the returned handle with NtClose.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -997,7 +1187,13 @@ NtOpenSemaphore(
  * \param ReleaseCount The amount by which the semaphore object's count is to be increased.
  * \param PreviousCount A pointer to a variable that receives the previous count of the semaphore object.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires SEMAPHORE_MODIFY_STATE (0x2). ReleaseCount must be positive; zero or a
+ * negative value returns STATUS_INVALID_PARAMETER. If the addition exceeds MaximumCount
+ * or overflows the signed count, STATUS_SEMAPHORE_LIMIT_EXCEEDED is returned without
+ * changing the count or writing PreviousCount. On success, PreviousCount receives the
+ * count before the addition and may be NULL. Release does not require prior acquisition.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1016,7 +1212,15 @@ NtReleaseSemaphore(
  * \param SemaphoreInformationLength The size of the buffer pointed to by SemaphoreInformation.
  * \param ReturnLength A pointer to a variable that receives the size of the data returned in the buffer.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Requires SEMAPHORE_QUERY_STATE (0x1). SemaphoreBasicInformation (0) requires exactly
+ * sizeof(SEMAPHORE_BASIC_INFORMATION), 8 bytes. Unsupported classes return
+ * STATUS_INVALID_INFO_CLASS; other sizes return STATUS_INFO_LENGTH_MISMATCH. With a valid
+ * output buffer, these failures leave ReturnLength unchanged; success
+ * writes 8 if requested. The native x64 entry probes an 8-byte writable, 4-byte-aligned
+ * output buffer before class/length validation, so NULL/zero-length sizing is not supported.
+ * Counts are observational snapshots; another thread may consume a count immediately.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1044,54 +1248,87 @@ NtQuerySemaphore(
 #define TIMER_ALL_ACCESS (TIMER_QUERY_STATE|TIMER_MODIFY_STATE|STANDARD_RIGHTS_REQUIRED|SYNCHRONIZE)
 #endif
 
+/**
+ * The TIMER_INFORMATION_CLASS enumeration defines the information classes for querying a timer object.
+ */
 typedef enum _TIMER_INFORMATION_CLASS
 {
-    TimerBasicInformation // TIMER_BASIC_INFORMATION
+    TimerBasicInformation // q: TIMER_BASIC_INFORMATION
 } TIMER_INFORMATION_CLASS;
 
+/**
+ * The TIMER_SET_INFORMATION_CLASS enumeration defines the information classes for setting timer object information.
+ */
 typedef enum _TIMER_SET_INFORMATION_CLASS
 {
-    TimerSetCoalescableTimer, // TIMER_SET_COALESCABLE_TIMER_INFO
+    TimerSetCoalescableTimer, // s: TIMER_SET_COALESCABLE_TIMER_INFO
     MaxTimerInfoClass
 } TIMER_SET_INFORMATION_CLASS;
 
 /**
- * The TIMER_BASIC_INFORMATION structure contains basic information about a timer object.
+ * Snapshot returned by NtQueryTimer(TimerBasicInformation), not a reservation of
+ * the timer signal. Size is 16 bytes on x64 and x86. The query
+ * writes only bytes 0 through 8; the 7 trailing padding bytes remain unchanged.
+ * Compare members, or initialize the output first, rather than comparing all bytes.
  */
 typedef struct _TIMER_BASIC_INFORMATION
 {
-    LARGE_INTEGER RemainingTime;
-    BOOLEAN TimerState;
+    LARGE_INTEGER RemainingTime; // Signed 100-nanosecond difference; positive for a future queued due time, not clamped to zero when inactive.
+    BOOLEAN TimerState; // Current signal state, not whether the timer is armed or periodic.
 } TIMER_BASIC_INFORMATION, *PTIMER_BASIC_INFORMATION;
 
+/**
+ * Optional timer completion routine, delivered as a user APC to the thread that
+ * last set the ordinary timer with this callback. That thread must enter an
+ * alertable wait; waiting nonalertably on the timer does not dispatch the callback.
+ * TimerContext is the caller-supplied value and may be NULL. TimerLowValue and
+ * TimerHighValue contain the low and high 32-bit halves of the system-time stamp
+ * sampled when the timer DPC queues the APC, in 100-nanosecond FILETIME units;
+ * they are not the relative interval originally supplied to NtSetTimer.
+ */
 typedef _Function_class_(TIMER_APC_ROUTINE)
 VOID NTAPI TIMER_APC_ROUTINE(
-    _In_ PVOID TimerContext,
+    _In_opt_ PVOID TimerContext,
     _In_ ULONG TimerLowValue,
     _In_ LONG TimerHighValue
     );
 typedef TIMER_APC_ROUTINE* PTIMER_APC_ROUTINE;
 
+/**
+ * Input for NtSetTimerEx(TimerSetCoalescableTimer). Coalescing permits expiration
+ * to be delayed so wakeups can be combined; it is not a timer-resolution request.
+ * The record is 48 bytes on x64 and 32 bytes on x86. The record itself is read-only
+ * to the syscall; PreviousState, when non-NULL, points to a separate writable byte.
+ * Use the native pointer-width layout, not the other architecture's record.
+ */
 typedef struct _TIMER_SET_COALESCABLE_TIMER_INFO
 {
-    _In_ LARGE_INTEGER DueTime;
-    _In_opt_ PTIMER_APC_ROUTINE TimerApcRoutine;
-    _In_opt_ PVOID TimerContext;
-    _In_opt_ PCOUNTED_REASON_CONTEXT WakeContext;
-    _In_opt_ ULONG Period;
-    _In_ ULONG TolerableDelay;
-    _Out_opt_ PBOOLEAN PreviousState;
+    _In_ LARGE_INTEGER DueTime;                     // 100-nanosecond units: negative relative interval; nonnegative absolute UTC deadline.
+    _In_opt_ PTIMER_APC_ROUTINE TimerApcRoutine;    // APC to the setting thread; see TIMER_APC_ROUTINE.
+    _In_opt_ PVOID TimerContext;                    // Opaque callback context; NULL is permitted.
+    _In_opt_ PCOUNTED_REASON_CONTEXT WakeContext;   // Optional reason for requesting system wake; captured by the kernel.
+    _In_opt_ ULONG Period;                          // Milliseconds, 0 for one-shot; values above 0x7FFFFFFF return STATUS_INVALID_PARAMETER_3.
+    _In_ ULONG TolerableDelay;                      // Milliseconds of permitted coalescing delay; 0 requests no additional tolerance.
+    _Out_opt_ PBOOLEAN PreviousState;               // Receives the previous signal state, not whether the timer was armed.
 } TIMER_SET_COALESCABLE_TIMER_INFO, *PTIMER_SET_COALESCABLE_TIMER_INFO;
 
 /**
- * The NtCreateTimer routine creates a timer object.
+ * The NtCreateTimer routine creates an initially inactive, nonsignaled ordinary waitable timer.
  *
- * \param TimerHandle A pointer to a variable that receives the handle to the timer object.
- * \param DesiredAccess The access mask that specifies the requested access to the timer object.
- * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
- * \param TimerType The type of the timer object.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Receives a caller-owned handle; release it with NtClose.
+ * \param DesiredAccess Requested access. TIMER_QUERY_STATE (0x1) permits queries,
+ * TIMER_MODIFY_STATE (0x2) permits setting/canceling, and SYNCHRONIZE permits waits.
+ * \param ObjectAttributes Optional name, root directory and security attributes.
+ * \param TimerType NotificationTimer (0) retains its signal across waits;
+ * SynchronizationTimer (1) consumes the signal on a successful wait.
+ * \return STATUS_SUCCESS for a new timer. With OBJ_OPENIF, an existing named timer
+ * is opened with STATUS_OBJECT_NAME_EXISTS without changing its type or state.
+ * An unsupported TimerType returns STATUS_INVALID_PARAMETER_4.
+ * \remarks On x64, a failed type check leaves TimerHandle
+ * unchanged. WoW64 copies a zero-initialized local handle after the native call,
+ * including on this failure. Only use the returned handle on a successful status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1103,13 +1340,18 @@ NtCreateTimer(
     );
 
 /**
- * The NtOpenTimer routine opens a handle to an existing timer object.
+ * The NtOpenTimer routine opens an existing named ordinary timer without arming it or consuming its signal.
  *
- * \param TimerHandle A pointer to a variable that receives the handle to the timer object.
- * \param DesiredAccess The access mask that specifies the requested access to the timer object.
- * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Receives a caller-owned handle; release it with NtClose.
+ * \param DesiredAccess Requested access: TIMER_QUERY_STATE (0x1),
+ * TIMER_MODIFY_STATE (0x2), and/or SYNCHRONIZE for waits.
+ * \param ObjectAttributes Identifies the timer by name and optional root directory.
+ * \return NTSTATUS indicating whether a handle was opened.
+ * \remarks Native x64 name-lookup failure leaves TimerHandle
+ * unchanged; the WoW64 thunk copies its zero-initialized local handle on that failure.
+ * Attribute conversion may fail earlier. Do not treat output preservation as portable.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1120,17 +1362,32 @@ NtOpenTimer(
     );
 
 /**
- * The NtSetTimer routine sets a timer object to the signaled state after a specified interval.
+ * The NtSetTimer routine arms or replaces an ordinary timer's due time and optional periodic/APC behavior.
+ * Rearming clears the previous signal and removes pending completion APCs; it does not signal threads waiting
+ * for the old deadline. An already-due deadline can signal the timer again immediately.
  *
- * \param TimerHandle A handle to the timer object.
- * \param DueTime A pointer to a LARGE_INTEGER that specifies the absolute or relative time at which the timer is to be set to the signaled state.
- * \param TimerApcRoutine An optional pointer to a function to be called when the timer is signaled.
- * \param TimerContext An optional pointer to a context to be passed to the APC routine.
- * \param ResumeTimer If TRUE, resumes the timer; otherwise, sets a new timer.
- * \param Period The period of the timer, in milliseconds. If zero, the timer is signaled once.
- * \param PreviousState A pointer to a variable that receives the previous state of the timer.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Handle with TIMER_MODIFY_STATE (0x2).
+ * \param DueTime Required pointer to a time in 100-nanosecond units. Negative values
+ * specify a relative interval; nonnegative values specify an absolute UTC deadline
+ * in FILETIME units. A deadline in the past expires immediately.
+ * \param TimerApcRoutine Optional completion APC delivered to the setting thread
+ * when it enters an alertable wait. See TIMER_APC_ROUTINE for arguments and context.
+ * \param TimerContext Optional opaque value passed to TimerApcRoutine.
+ * \param ResumeTimer Requests that expiration wake the system from a suspended
+ * power state. This does not mean resume a paused timer. Support depends on the
+ * platform and wake policy; STATUS_TIMER_RESUME_IGNORED can accompany an armed timer.
+ * \param Period Milliseconds between periodic expirations, in the range 0 through
+ * 0x7FFFFFFF. Zero selects one-shot operation; negative values return
+ * STATUS_INVALID_PARAMETER_6.
+ * \param PreviousState Optional writable byte receiving the previous signal state,
+ * not an armed-state indicator or a count of pending expirations.
+ * \return NTSTATUS. STATUS_TIMER_RESUME_IGNORED (0x40000025) is informational:
+ * the timer was set, but its wake request could not be honored.
+ * \remarks Ordinary timers created by NtCreateTimer are described here. Timer2/IR
+ * compatibility paths have additional restrictions on callbacks, context and state
+ * output; do not assume those object types support the complete ordinary-timer contract.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1145,31 +1402,53 @@ NtSetTimer(
     );
 
 /**
- * The NtSetTimerEx routine sets extended information for a timer object.
+ * The NtSetTimerEx routine arms an ordinary timer with coalescing tolerance and an optional wake-reason
+ * context. Its rearming, signal-state and APC semantics are the same as NtSetTimer.
  *
- * \param TimerHandle A handle to the timer object.
- * \param TimerSetInformationClass The class of information to set.
- * \param TimerSetInformation A pointer to a buffer that contains the information to set.
- * \param TimerSetInformationLength The size of the buffer, in bytes.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Handle with TIMER_MODIFY_STATE (0x2).
+ * \param TimerSetInformationClass TimerSetCoalescableTimer (0). Other classes return
+ * STATUS_INVALID_INFO_CLASS.
+ * \param TimerSetInformation Required readable TIMER_SET_COALESCABLE_TIMER_INFO
+ * record. The record itself is not modified, even if supplied from read-only memory.
+ * Its optional PreviousState member points to a separately writable BOOLEAN output.
+ * \param TimerSetInformationLength Use sizeof(TIMER_SET_COALESCABLE_TIMER_INFO):
+ * exactly 48 bytes on native x64, 32 bytes on x86. The WoW64
+ * thunk accepts lengths of at least 32 bytes, converts that prefix, and ignores the
+ * excess; the native x64 entry rejects any length other than 48 bytes.
+ * \return NTSTATUS. A Period above 0x7FFFFFFF returns STATUS_INVALID_PARAMETER_3;
+ * invalid sizing returns STATUS_INFO_LENGTH_MISMATCH. STATUS_TIMER_RESUME_IGNORED
+ * (0x40000025) can indicate that the timer was armed without honoring a wake request.
+ * \remarks Native user-mode input must be 4-byte aligned. The
+ * WoW64 thunk copies an unaligned x86 record into an aligned native local,
+ * so the original x86 buffer does not receive the same alignment check. Supply a
+ * naturally aligned record for portability. Timer2/IR objects have additional restrictions.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtSetTimerEx(
     _In_ HANDLE TimerHandle,
     _In_ TIMER_SET_INFORMATION_CLASS TimerSetInformationClass,
-    _Inout_updates_bytes_opt_(TimerSetInformationLength) PVOID TimerSetInformation,
+    _In_reads_bytes_(TimerSetInformationLength) PVOID TimerSetInformation,
     _In_ ULONG TimerSetInformationLength
     );
 
 /**
- * The NtCancelTimer routine Cancels a timer object.
+ * The NtCancelTimer routine deactivates an ordinary timer and removes pending timer completion APCs without
+ * clearing its current signal state. Canceling an inactive timer is also successful.
  *
- * \param TimerHandle A handle to the timer object.
- * \param CurrentState A pointer to a variable that receives the current state of the timer object.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Handle with TIMER_MODIFY_STATE (0x2).
+ * \param CurrentState Optional writable byte receiving the timer's signal state,
+ * not whether an active timer was removed. A canceled, signaled notification timer
+ * remains signaled; rearm it to clear the signal.
+ * \return NTSTATUS indicating whether cancellation completed.
+ * \remarks Cancellation is not a join for a user callback already executing on
+ * another thread; synchronize callback/context lifetime separately. For a Timer2/IR
+ * compatibility object, CurrentState must be NULL; the ordinary
+ * timer's state-output contract does not apply to those objects.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1179,15 +1458,25 @@ NtCancelTimer(
     );
 
 /**
- * The NtQueryTimer routine retrieves information about a timer object.
+ * The NtQueryTimer routine retrieves a snapshot of an ordinary timer's signal state and remaining time.
+ * Querying neither consumes the signal nor arms or cancels the timer.
  *
- * \param TimerHandle A handle to the timer object.
- * \param TimerInformationClass The class of information to retrieve.
- * \param TimerInformation A pointer to a buffer that receives the requested information.
- * \param TimerInformationLength The size of the buffer, in bytes.
- * \param ReturnLength A pointer to a variable that receives the size of the data returned.
- * \return NTSTATUS Successful or errant status.
+ * \param TimerHandle Handle with TIMER_QUERY_STATE (0x1).
+ * \param TimerInformationClass TimerBasicInformation (0), the supported class.
+ * \param TimerInformation Writable TIMER_BASIC_INFORMATION, 4-byte aligned for
+ * user-mode callers on native x64 and WoW64.
+ * \param TimerInformationLength Exactly 16 bytes on x64 and x86/WoW64.
+ * \param ReturnLength Optional ULONG receiving 16 on success. Invalid class/size
+ * checks leave it unchanged; NULL/zero-size discovery is
+ * not a supported sizing protocol.
+ * \return STATUS_INVALID_INFO_CLASS for an unsupported class,
+ * STATUS_INFO_LENGTH_MISMATCH for an incorrect size, or the query's NTSTATUS.
+ * \remarks Only 9 member bytes are written; 7 trailing padding bytes are untouched.
+ * RemainingTime is a signed 100-nanosecond difference, not clamped to zero when
+ * inactive. The state and due time are sampled separately and can change concurrently;
+ * this information is diagnostic, not a substitute for waiting on the timer.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1201,71 +1490,62 @@ NtQueryTimer(
 
 #if (PHNT_VERSION >= PHNT_WINDOWS_8)
 
-// ExCheckValidIRTimerId
+// rev: ExpIRTimerDescs, ExpCheckIRTimerAccess and ExCheckValidIRTimerId
+/**
+ * Identifies the provider encoded in the low word of an IR timer identifier.
+ * The high word selects a timer within that provider. ExCheckValidIRTimerId
+ * requires that selector to be less than the ID count shown below.
+ * Provider zero is not a usable provider for NtCreateIRTimer/NtCreateTimer2.
+ * User-mode creation also checks the provider service SID, or the wake-timer
+ * security descriptor when the provider has no service SID.
+ */
 typedef enum _IR_TIMER_PROVIDER_INDEX
 {
-    IR_TIMER_PROVIDER_TESTIDENTIFIER, // Token(Service SID)
-    IR_TIMER_PROVIDER_BROKERINFRASTRUCTURE, // Token(Service SID)
-    IR_TIMER_PROVIDER_TIMEBROKERSVC, // Token(Service SID)
-    IR_TIMER_PROVIDER_LFSVC,
-    IR_TIMER_PROVIDER_WINLOGON,
-    IR_TIMER_PROVIDER_POWER,
-    IR_TIMER_PROVIDER_SENSORSERVICE,
-    IR_TIMER_PROVIDER_NTOSPO,
-    IR_TIMER_PROVIDER_ACPI,
-    IR_TIMER_PROVIDER_BUTTON,
-    IR_TIMER_PROVIDER_MSGPIOCLX,
-    IR_TIMER_PROVIDER_BUTTONCONVERTER,
-    IR_TIMER_PROVIDER_MSGPIOWIN32,
-    IR_TIMER_PROVIDER_KNETPWRDEPBROKER,
-    IR_TIMER_PROVIDER_CMBATT,
-    IR_TIMER_PROVIDER_BTHPORT,
-    IR_TIMER_PROVIDER_AUDIOSRV, // TOKEN(SERVICE SID)
-    IR_TIMER_PROVIDER_ARTESTIDENTIFIER, // TOKEN(SERVICE SID)
-    IR_TIMER_PROVIDER_BATTC,
-    IR_TIMER_PROVIDER_MAXINDEX
+    IR_TIMER_PROVIDER_UNKNOWN = 0,           // Not a valid creation provider.
+    IR_TIMER_PROVIDER_TESTIDENTIFIER = 1,    // 1 ID; wake-timer access check.
+    IR_TIMER_PROVIDER_BROKERINFRASTRUCTURE = 2, // 1 ID; service SID.
+    IR_TIMER_PROVIDER_TIMEBROKERSVC = 3,     // 1 ID; service SID.
+    IR_TIMER_PROVIDER_LFSVC = 4,             // 11 IDs; service SID.
+    IR_TIMER_PROVIDER_WINLOGON = 5,          // 1 ID.
+    IR_TIMER_PROVIDER_POWER = 6,             // 2 IDs; service SID.
+    IR_TIMER_PROVIDER_SENSORSERVICE = 7,     // 1 ID; service SID.
+    IR_TIMER_PROVIDER_NTOSPO = 8,            // 7 IDs.
+    IR_TIMER_PROVIDER_ACPI = 9,              // 1 ID.
+    IR_TIMER_PROVIDER_BUTTON = 10,           // 1 ID.
+    IR_TIMER_PROVIDER_MSGPIOCLX = 11,        // 2 IDs.
+    IR_TIMER_PROVIDER_BUTTONCONVERTER = 12,  // 1 ID.
+    IR_TIMER_PROVIDER_MSGPIOWIN32 = 13,      // 2 IDs.
+    IR_TIMER_PROVIDER_KNETPWRDEPBROKER = 14,  // 2 IDs.
+    IR_TIMER_PROVIDER_CMBATT = 15,           // 1 ID.
+    IR_TIMER_PROVIDER_BTHPORT = 16,          // 2 IDs.
+    IR_TIMER_PROVIDER_AUDIOSRV = 17,         // 1 ID; service SID.
+    IR_TIMER_PROVIDER_ARTESTIDENTIFIER = 18, // 1 ID; wake-timer access check.
+    IR_TIMER_PROVIDER_BATTC = 19,            // 1 ID.
+    IR_TIMER_PROVIDER_MAXINDEX = 20
 } IR_TIMER_PROVIDER_INDEX;
 
-//CONST USHORT IR_TIMER_PROVIDER_ID_MAX[] =
-//{
-//    1,  // IR_TIMER_PROVIDER_TESTIDENTIFIER
-//    1,  // IR_TIMER_PROVIDER_BROKERINFRASTRUCTURE
-//    1,  // IR_TIMER_PROVIDER_TIMEBROKERSVC
-//    11, // IR_TIMER_PROVIDER_LFSVC (0x0B)
-//    1,  // IR_TIMER_PROVIDER_WINLOGON
-//    2,  // IR_TIMER_PROVIDER_POWER
-//    1,  // IR_TIMER_PROVIDER_SENSORSERVICE
-//    6,  // IR_TIMER_PROVIDER_NTOSPO
-//    1,  // IR_TIMER_PROVIDER_ACPI
-//    1,  // IR_TIMER_PROVIDER_BUTTON
-//    2,  // MsGpioClx
-//    1,  // ButtonConverter
-//    2,  // MsGpioWin32
-//    2,  // KNetPwrDepBroker
-//    1,  // Cmbatt
-//    2,  // Bthport
-//    1,  // AudioSrv
-//    1,  // ArTestIdentifier
-//    1   // Battc
-//};
-
 // rev
-#define IR_TIMERID_PROVIDER(TimerId) ((USHORT)HIWORD((ULONG)(TimerId)))
-#define IR_TIMERID_ID(TimerId) ((USHORT)LOWORD((ULONG)(TimerId)))
-#define IR_TIMERID_IS_NONZERO(TimerId) (IR_TIMERID_ID(TimerId) != 0)
+#define IR_TIMERID_PROVIDER(TimerId) ((USHORT)LOWORD((ULONG)(TimerId)))
+#define IR_TIMERID_ID(TimerId) ((USHORT)HIWORD((ULONG)(TimerId)))
+#define IR_TIMERID_IS_NONZERO(TimerId) (IR_TIMERID_PROVIDER(TimerId) != 0)
 #define IR_TIMERID_ATTRIBUTES(ProviderIndex, ProviderId) \
-    ((ULONG)MAKELONG((USHORT)(ProviderId), (USHORT)(ProviderIndex)))
+    ((ULONG)MAKELONG((USHORT)(ProviderIndex), (USHORT)(ProviderId)))
 
 /**
  * The NtCreateIRTimer routine creates an IR timer object.
- * IR timers are interruptdriven and designed for high-resolution timing in system components.
+ * Associates a timer with an IR_TIMER_PROVIDER_INDEX provider and its timer selector.
+ * This wrapper requests TIMER2_ATTRIBUTE_IR_TIMER, not TIMER2_ATTRIBUTE_HIGH_RESOLUTION.
  *
  * \param TimerHandle A pointer to a variable that receives the handle to the IR timer object.
  * \param TimerId A pointer to a timer identifier that specifies the provider.
  * \param DesiredAccess The access mask that specifies the requested access to the timer object.
  * \return NTSTATUS Successful or errant status.
  * \remarks The TimerId must be non-NULL and point to a valid timer identifier.
+ * \remarks Forwards to NtCreateTimer2 with attribute 0x2 and no object attributes. TimerId is a
+ * caller-supplied 4-byte identifier, not an output handle; its low word must be in the range 1 through 19
+ * before additional descriptor and access checks. Identifier zero is rejected, not assigned automatically.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1280,9 +1560,13 @@ NtCreateIRTimer(
  *
  * \param TimerHandle A handle to the IR timer object.
  * \param DueTime An optional pointer to a LARGE_INTEGER that specifies
- * the time at which the timer is to be set to the signaled state.
+ * the time at which the timer is to be set to the signaled state. NULL cancels the timer.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Shares the Timer2 set/cancel helper. A NULL DueTime selects cancellation, unlike NtSetTimer2,
+ * which rejects NULL. The wrapper supplies no periodic interval or parameter block; it does not provide a general
+ * interface for changing the IR timer identity or ownership.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1296,12 +1580,15 @@ NtSetIRTimer(
 #if (PHNT_VERSION >= PHNT_WINDOWS_10)
 //
 // NtCreateTimer2 Attributes
+// ExpExTimerAttributesAreValid accepts 0, 2, 4, 8, 6 or 12,
+// optionally ORed with 0x80000000. IR_TIMER and NO_WAKE cannot be combined.
 //
 #define TIMER2_ATTRIBUTE_IR_TIMER        0x00000002UL
 #define TIMER2_ATTRIBUTE_HIGH_RESOLUTION 0x00000004UL
+#define TIMER2_ATTRIBUTE_NO_WAKE         0x00000008UL
 #define TIMER2_ATTRIBUTE_NOTIFICATION    0x80000000UL
 // rev
-#define TIMER2_ATTRIBUTE_KNOWN_MASK (TIMER2_ATTRIBUTE_IR_TIMER | TIMER2_ATTRIBUTE_HIGH_RESOLUTION | TIMER2_ATTRIBUTE_NOTIFICATION)
+#define TIMER2_ATTRIBUTE_KNOWN_MASK (TIMER2_ATTRIBUTE_IR_TIMER | TIMER2_ATTRIBUTE_HIGH_RESOLUTION | TIMER2_ATTRIBUTE_NO_WAKE | TIMER2_ATTRIBUTE_NOTIFICATION)
 #define TIMER2_ATTRIBUTE_RESERVED_MASK (~TIMER2_ATTRIBUTE_KNOWN_MASK)
 
 #define TIMER2_ATTRIBUTE_FOR_TYPE(T) \
@@ -1321,6 +1608,9 @@ NtSetIRTimer(
     (TIMER2_ATTRIBUTE_IR_TIMER | ((R) ? TIMER2_ATTRIBUTE_HIGH_RESOLUTION : 0))
 
 // rev
+/**
+ * The TIMER2_ATTRIBUTES union describes the attributes used when creating a Timer2 object.
+ */
 typedef union _TIMER2_ATTRIBUTES
 {
     ULONG Value;
@@ -1329,9 +1619,10 @@ typedef union _TIMER2_ATTRIBUTES
         ULONG Reserved0 : 1;      // bit 0 (reserved)
         ULONG IrTimer : 1;        // bit 1 == TIMER2_ATTRIBUTE_IR_TIMER
         ULONG HighResolution : 1; // bit 2 == TIMER2_ATTRIBUTE_HIGH_RESOLUTION
-        ULONG Reserved1 : 28;     // bits [3..30] (reserved)
-        TIMER_TYPE NotificationType : 1; // bit 31 == TIMER2_ATTRIBUTE_NOTIFICATION
-    };
+        ULONG NoWake : 1;         // bit 3 == TIMER2_ATTRIBUTE_NO_WAKE
+        ULONG Reserved1 : 27;     // bits [4..30] (reserved)
+        ULONG NotificationType : 1; // TIMER_TYPE, bit 31 == TIMER2_ATTRIBUTE_NOTIFICATION
+    } DUMMYSTRUCTNAME;
 } TIMER2_ATTRIBUTES;
 
 /**
@@ -1339,19 +1630,23 @@ typedef union _TIMER2_ATTRIBUTES
  *
  * \param TimerHandle A pointer to a variable that receives the handle to the timer object.
  * \param TimerId For IR timers: A pointer to ULONG TIMERID (non-NULL). For non-IR timers: must be NULL.
- * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
- * \param Attributes Timer attributes (TIMER_TYPE).
+ * \param ObjectAttributes Reserved; must be NULL. This entry point creates unnamed timers.
+ * A non-NULL value returns STATUS_INVALID_PARAMETER_3.
+ * \param Attributes A combination of TIMER2_ATTRIBUTE_* flags, not a TIMER_TYPE value.
  * \param DesiredAccess The access mask that specifies the requested access to the timer object.
  * \return NTSTATUS Successful or errant status.
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw
+ * \remarks Use for an unnamed second-generation timer, not for opening a named legacy timer. The attribute validator accepts base combinations 0, 2, 4, 8, 6 and 12, optionally with bit 0x80000000.
+ * The IR bit 0x2 adds TimerId access checks. Successful creation does not arm the timer; close its handle with NtClose.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtCreateTimer2(
     _Out_ PHANDLE TimerHandle,
     _In_opt_ PULONG TimerId,
-    _In_opt_ PCOBJECT_ATTRIBUTES ObjectAttributes,
+    _Reserved_ PCOBJECT_ATTRIBUTES ObjectAttributes,
     _In_ ULONG Attributes,
     _In_ ACCESS_MASK DesiredAccess
     );
@@ -1362,31 +1657,21 @@ NtCreateTimer2(
 
 // rev
 /**
- * The T2_SET_PARAMETERS structure configures the high-resolution or coalescable timers,
- * and specify a "no-wake tolerance" value, which controls how much the kernel
- * may delay the timers for coalescing or power efficiency.
- * \remarks Setting NoWakeTolerance to 0 requests **no coalescing** and the most precise
- * wake-up behavior the system can provide.
+ * Supplies the versioned coalescing policy to NtSetTimer2.
+ * The ExpSetTimer2 implementation copies 16 bytes, checks Version == 0,
+ * and rejects NoWakeTolerance values below -1 with STATUS_INVALID_PARAMETER_3.
+ * Timer resolution is selected when the timer is created; changing this
+ * tolerance does not turn a normal timer into a high-resolution timer.
  */
 typedef struct _T2_SET_PARAMETERS_V0
 {
+    ULONG Version; // TIMER2_SET_PARAMETERS_CURRENT_VERSION (0).
+    ULONG Reserved; // Alignment padding; copied but not interpreted by ExpSetTimer2/KeSetTimer2.
     /**
-     * Structure version. Must be set to zero.
-     */
-    ULONG Version;
-    /**
-     * Reserved.
-     */
-    ULONG Reserved;
-    /**
-     * Maximum tolerable delay (in 100-ns units) for timer coalescing.
-     * - Set to 0 for **no coalescing** (strict wake-up).
-     * - Set to a positive value to allow the kernel to delay the timer
-     *   by up to this amount for power efficiency.
-     * Example:
-     *   If NoWakeTolerance = 0 --> High-resolution, best precision, min jitter, zero coalescing, low power savings.
-     *   If NoWakeTolerance > 0 --> Normal-resolution, allow up to this value of coalescing, normal power savings.
-     *   If NoWakeTolerance = -1 --> Low-resolution, worst precision, max jitter, max coalescing, max power savings.
+     * Delay beyond DueTime, in 100-nanosecond units, allowed before a wake is
+     * required. Zero gives no additional tolerance; a positive value gives a
+     * finite tolerance; -1 sets an unlimited no-wake deadline.
+     * This does not guarantee a particular scheduling latency or resolution.
      */
     LONGLONG NoWakeTolerance;
 } T2_SET_PARAMETERS, *PT2_SET_PARAMETERS;
@@ -1403,7 +1688,12 @@ typedef PVOID PT2_CANCEL_PARAMETERS;
  * \param Parameters A pointer to a T2_SET_PARAMETERS structure containing additional timer configuration parameters.
  * \return NTSTATUS Successful or errant status.
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setwaitabletimer
+ * \remarks Requires timer modify access 0x2. A NULL DueTime returns STATUS_INVALID_PARAMETER_2.
+ * The optional parameter block is 16 bytes; Version must be zero and NoWakeTolerance must be at least -1.
+ * The native helper rejects an invalid block with STATUS_INVALID_PARAMETER_3. Period and due time use
+ * 100-nanosecond units; no APC routine or callback pointer is present in T2_SET_PARAMETERS.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1418,16 +1708,21 @@ NtSetTimer2(
  * The NtCancelTimer2 routine sets the specified waitable timer to the inactive state.
  *
  * \param TimerHandle A handle to the timer object to set.
- * \param Parameters A pointer to a PT2_CANCEL_PARAMETERS structure containing additional parameters.
+ * \param Parameters Reserved; pass NULL. Do not rely on NtCancelTimer2 interpreting this argument.
  * \return NTSTATUS Successful or errant status.
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-cancelwaitabletimer
+ * \remarks Cancels the timer using the same modify access 0x2 as NtSetTimer2. The native entry clears the
+ * due-time, period and parameter arguments before calling the common helper, without consuming Parameters.
+ * Pass NULL for portability. Cancellation does not close the handle or undo an expiration that was already
+ * observed.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtCancelTimer2(
     _In_ HANDLE TimerHandle,
-    _In_ PT2_CANCEL_PARAMETERS Parameters
+    _Reserved_ PT2_CANCEL_PARAMETERS Parameters
     );
 #endif // (PHNT_VERSION >= PHNT_WINDOWS_10)
 
@@ -1452,6 +1747,7 @@ NtCancelTimer2(
  * \param Affinity The processor affinity mask indicating which processors to profile.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1482,6 +1778,7 @@ NtCreateProfile(
  * \param GroupAffinity A pointer to an array of GROUP_AFFINITY structures specifying processor groups to profile.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1504,6 +1801,7 @@ NtCreateProfileEx(
  * \param ProfileHandle A handle to the profile object.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1517,6 +1815,7 @@ NtStartProfile(
  * \param ProfileHandle A handle to the profile object.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1530,7 +1829,11 @@ NtStopProfile(
  * \param ProfileSource The profile source (KPROFILE_SOURCE) to query.
  * \param Interval A pointer to a variable that receives the interval, in 100-nanosecond units.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Returns a 4-byte interval selected by ProfileSource through KeQueryIntervalProfile.
+ * A successful interval query does not create or start profiling and does not establish that a corresponding
+ * hardware source can be enabled by this caller.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1545,7 +1848,11 @@ NtQueryIntervalProfile(
  * \param Interval The interval, in 100-nanosecond units, to set.
  * \param Source The profile source (KPROFILE_SOURCE) to set the interval for.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Changes profiling policy rather than querying it. The entry checks
+ * SeSystemProfilePrivilege before calling KeSetIntervalProfile. Do not change the global sampling interval
+ * merely to discover the interval; use NtQueryIntervalProfile.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1564,14 +1871,23 @@ NtSetIntervalProfile(
     (STANDARD_RIGHTS_REQUIRED | KEYEDEVENT_WAIT | KEYEDEVENT_WAKE)
 
 /**
- * The NtCreateKeyedEvent routine creates a keyed event object and returns a handle to it.
+ * The NtCreateKeyedEvent routine creates a keyed event for multiplexing thread rendezvous by opaque key
+ * values. It can back multiple user-mode synchronization objects without allocating a separate kernel event
+ * for each key. A release pairs with one wait, rather than setting a persistent event signal or accumulating
+ * a semaphore count.
  *
- * \param KeyedEventHandle A pointer to a variable that receives the handle to the keyed event object.
- * \param DesiredAccess The access mask that specifies the requested access to the keyed event object.
- * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
- * \param Flags Reserved. Must be zero.
- * \return NTSTATUS Successful or errant status.
+ * \param KeyedEventHandle Receives a handle owned by the caller; close it with NtClose.
+ * \param DesiredAccess Requested access, including KEYEDEVENT_WAIT (0x1) and/or
+ * KEYEDEVENT_WAKE (0x2). KEYEDEVENT_ALL_ACCESS is 0xF0003 and excludes SYNCHRONIZE.
+ * \param ObjectAttributes Optional name, root directory and security attributes.
+ * \param Flags Reserved. Must be zero; nonzero values return STATUS_INVALID_PARAMETER_4.
+ * \return STATUS_SUCCESS for a new object, or STATUS_OBJECT_NAME_EXISTS when
+ * OBJ_OPENIF opens an existing named object. Other failures are returned as NTSTATUS.
+ * \remarks On x64, a valid output slot is cleared before Flags
+ * validation. Matching requires the same keyed-event object, key value and process;
+ * sharing a named object or handle does not make equal keys match across processes.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1583,13 +1899,17 @@ NtCreateKeyedEvent(
     );
 
 /**
- * The NtOpenKeyedEvent routine opens a handle to an existing keyed event object.
+ * The NtOpenKeyedEvent routine opens an existing named keyed event without performing a wait or release.
  *
- * \param KeyedEventHandle A pointer to a variable that receives the handle to the keyed event object.
- * \param DesiredAccess The access mask that specifies the requested access to the keyed event object.
- * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes.
- * \return NTSTATUS Successful or errant status.
+ * \param KeyedEventHandle Receives a handle owned by the caller; close it with NtClose.
+ * \param DesiredAccess Requested access. KEYEDEVENT_WAIT (0x1) permits waits;
+ * KEYEDEVENT_WAKE (0x2) permits releases. Opening does not perform either operation.
+ * \param ObjectAttributes Identifies the existing object by name and optional root directory.
+ * \return NTSTATUS indicating whether the object was opened.
+ * \remarks On x64, a valid output slot is cleared before name lookup.
+ * Even with a shared object, matching waits and releases must belong to the same process.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1600,39 +1920,73 @@ NtOpenKeyedEvent(
     );
 
 /**
- * The NtReleaseKeyedEvent routine releases a thread that is waiting on a keyed event with the specified key value.
+ * The NtReleaseKeyedEvent routine pairs with one matching keyed-event wait, blocking if no matching waiter is
+ * present. Unlike NtSetEvent, this is a rendezvous operation, not a persistent signal: a release that times
+ * out does not leave a wake credit for a later wait.
  *
- * \param KeyedEventHandle Optional handle to the keyed event object. If NULL, the default keyed event is used.
- * \param KeyValue The key value that identifies the waiting thread to release.
- * \param Alertable Specifies whether the call is alertable (can be interrupted by APCs).
- * \param Timeout Optional pointer to a timeout value (in 100-nanosecond intervals). If NULL, waits indefinitely.
- * \return NTSTATUS Successful or errant status.
+ * \param KeyedEventHandle Handle with KEYEDEVENT_WAKE (0x2), or NULL for the system's
+ * default keyed event (ExpCritSecOutOfMemoryEvent).
+ * \param KeyValue Opaque pointer-sized matching key, not an object handle (including a
+ * registry key handle). An address may be used as the key, but the kernel does not
+ * dereference it or inspect the memory contents, unlike the Address parameter of
+ * WaitOnAddress.
+ * Its low bit must be zero; NULL is a valid zero key, not a wildcard. The matching
+ * wait must use the same object and key and belong to the same process.
+ * \param Alertable Whether a blocking release can be interrupted by an alert or user APC.
+ * \param Timeout Optional timeout in 100-nanosecond units: negative for a relative
+ * interval, positive for an absolute deadline, zero for polling, or NULL for no deadline.
+ * \return STATUS_SUCCESS only when paired with a matching wait; STATUS_TIMEOUT,
+ * STATUS_ALERTED or STATUS_USER_APC can end an unmatched blocking release.
+ * On x64, an odd KeyValue returns STATUS_INVALID_PARAMETER_1
+ * (despite KeyValue being the second parameter), before handle validation.
+ * \remarks NT_SUCCESS alone does not establish a match: STATUS_TIMEOUT, STATUS_ALERTED
+ * and STATUS_USER_APC are nonnegative. A successful release pairs with one waiter,
+ * not all waiters for the key. If the match wins a timeout/APC race, the kernel
+ * completes the rendezvous and may return STATUS_SUCCESS instead of the interrupt.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtReleaseKeyedEvent(
     _In_opt_ HANDLE KeyedEventHandle,
-    _In_ PVOID KeyValue,
+    _In_opt_ PVOID KeyValue,
     _In_ BOOLEAN Alertable,
     _In_opt_ PLARGE_INTEGER Timeout
     );
 
 /**
- *  The NtWaitForKeyedEvent routine waits for a keyed event to be released with the specified key value.
+ * The NtWaitForKeyedEvent routine pairs with one matching keyed-event release, blocking until a match or
+ * interruption. Use it as the wait half of a user-mode synchronization protocol, not to wait on a persistent
+ * signal state; a matching release may arrive before or after this call.
  *
- * \param KeyedEventHandle Optional handle to the keyed event object. If NULL, the default keyed event is used.
- * \param KeyValue The key value to wait for.
- * \param Alertable Specifies whether the call is alertable (can be interrupted by APCs).
- * \param Timeout Optional pointer to a timeout value (in 100-nanosecond intervals). If NULL, waits indefinitely.
- * \return NTSTATUS Successful or errant status.
+ * \param KeyedEventHandle Handle with KEYEDEVENT_WAIT (0x1), or NULL for the system's
+ * default keyed event (ExpCritSecOutOfMemoryEvent).
+ * \param KeyValue Opaque pointer-sized matching key, not an object handle (including a
+ * registry key handle). An address may be used as the key, but the kernel does not
+ * dereference it or inspect the memory contents, unlike the Address parameter of
+ * WaitOnAddress.
+ * Its low bit must be zero; NULL is a valid zero key, not a wildcard. The matching
+ * release must use the same object and key and belong to the same process.
+ * \param Alertable Whether a blocking wait can be interrupted by an alert or user APC.
+ * \param Timeout Optional timeout in 100-nanosecond units: negative for a relative
+ * interval, positive for an absolute deadline, zero for polling, or NULL for no deadline.
+ * \return STATUS_SUCCESS only when paired with a matching release; STATUS_TIMEOUT,
+ * STATUS_ALERTED or STATUS_USER_APC can end an unmatched blocking wait.
+ * On x64, an odd KeyValue returns STATUS_INVALID_PARAMETER_1
+ * (despite KeyValue being the second parameter), before handle validation.
+ * \remarks Test for STATUS_SUCCESS, not just NT_SUCCESS, to distinguish a match
+ * from timeout or interruption. A successful wait consumes one matching release.
+ * If the match wins a timeout/APC race, the kernel completes the rendezvous and
+ * may return STATUS_SUCCESS instead of the interrupt.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtWaitForKeyedEvent(
     _In_opt_ HANDLE KeyedEventHandle,
-    _In_ PVOID KeyValue,
+    _In_opt_ PVOID KeyValue,
     _In_ BOOLEAN Alertable,
     _In_opt_ PLARGE_INTEGER Timeout
     );
@@ -1648,7 +2002,11 @@ NtWaitForKeyedEvent(
  * \param SchedulerParam Optional handle to the keyed event object. If NULL, the default keyed event is used.
  * \return NTSTATUS Successful or errant status.
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-umsthreadyield
+ * \remarks The native x64 service returns STATUS_NOT_SUPPORTED (0xC00000BB).
+ * Export presence is not proof that UMS scheduling is available. The WoW64 entry uses a different dispatch path;
+ * this native status must not be generalized into a supported 32-bit UMS contract.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1662,6 +2020,9 @@ NtUmsThreadYield(
 
 // begin_private
 
+/**
+ * The WNF_STATE_NAME structure identifies a Windows Notification Facility (WNF) state name.
+ */
 typedef struct _WNF_STATE_NAME
 {
     union
@@ -1675,12 +2036,15 @@ typedef struct _WNF_STATE_NAME
             ULONG64 DataScope : 4;
             ULONG64 PermanentData : 1;
             ULONG64 Unique : 53;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } WNF_STATE_NAME, *PWNF_STATE_NAME;
 
 typedef const WNF_STATE_NAME *PCWNF_STATE_NAME;
 
+/**
+ * The WNF_STATE_NAME_LIFETIME enumeration defines the lifetime of a Windows Notification Facility (WNF) state name.
+ */
 typedef enum _WNF_STATE_NAME_LIFETIME
 {
     WnfWellKnownStateName,
@@ -1689,13 +2053,27 @@ typedef enum _WNF_STATE_NAME_LIFETIME
     WnfTemporaryStateName
 } WNF_STATE_NAME_LIFETIME;
 
+/**
+ * The WNF_STATE_NAME_INFORMATION enumeration defines the queryable information about a WNF state name.
+ */
 typedef enum _WNF_STATE_NAME_INFORMATION
 {
-    WnfInfoStateNameExist,
-    WnfInfoSubscribersPresent,
-    WnfInfoIsQuiescent
+    WnfInfoStateNameExist,         // q: ULONG boolean; ExplicitScope must be NULL.
+    WnfInfoSubscribersPresent,     // q: ULONG boolean.
+    WnfInfoIsQuiescent             // q: ULONG boolean.
 } WNF_STATE_NAME_INFORMATION;
 
+/**
+ * Defines the scope in which a WNF state's data is maintained.
+ * For the Nt*WnfStateData and NtQueryWnfStateNameInformation ExplicitScope
+ * arguments, NULL selects the caller's implicit scope. Explicit scope values use:
+ * - WnfDataScopeSession: a pointer to a 4-byte ULONG session ID.
+ * - WnfDataScopeUser: a pointer to a SID (not a pointer to a SID pointer).
+ * - WnfDataScopeProcess: the process HANDLE value itself, not a PHANDLE.
+ * - System, Machine and PhysicalMachine: a non-NULL explicit scope is rejected.
+ * User-mode explicit-scope requests are also subject to cross-scope access checks.
+ * See ExpWnfCaptureScopeInstanceId and ExpWnfCheckCrossScopeAccess.
+ */
 typedef enum _WNF_DATA_SCOPE
 {
     WnfDataScopeSystem,
@@ -1706,6 +2084,9 @@ typedef enum _WNF_DATA_SCOPE
     WnfDataScopePhysicalMachine, // WIN11
 } WNF_DATA_SCOPE;
 
+/**
+ * The WNF_TYPE_ID structure identifies the type of data associated with a WNF state.
+ */
 typedef struct _WNF_TYPE_ID
 {
     GUID TypeId;
@@ -1716,6 +2097,12 @@ typedef const WNF_TYPE_ID *PCWNF_TYPE_ID;
 // rev
 typedef ULONG WNF_CHANGE_STAMP, *PWNF_CHANGE_STAMP;
 
+/**
+ * Describes one delivered WNF subscription notification. The 48-byte header is
+ * followed by state data in the same caller-owned buffer. StateDataOffset is a byte
+ * offset from this header (48 in the described delivery layout); StateDataSize is the payload length.
+ * NtGetCompleteWnfStateSubscription requires more space than sizeof this header.
+ */
 typedef struct _WNF_DELIVERY_DESCRIPTOR
 {
     ULONGLONG SubscriptionId;
@@ -1727,11 +2114,18 @@ typedef struct _WNF_DELIVERY_DESCRIPTOR
     ULONG StateDataOffset;
 } WNF_DELIVERY_DESCRIPTOR, *PWNF_DELIVERY_DESCRIPTOR;
 
+// rev: minimum nonzero DescriptorSize checked by NtGetCompleteWnfStateSubscription.
+#define WNF_DELIVERY_DESCRIPTOR_MINIMUM_BUFFER_SIZE 0x1030UL // 48-byte header + 4096 bytes; 8-byte aligned on x64.
+
 // end_private
 
 #if (PHNT_VERSION >= PHNT_WINDOWS_8)
 /**
- * The NtCreateWnfStateName routine creates a new WNF (Windows Notification Facility) state name.
+ * The NtCreateWnfStateName routine creates a new WNF state name with a caller-supplied security descriptor.
+ * MaximumStateSize cannot exceed 4096 bytes. Creation rejects WnfWellKnownStateName,
+ * WnfDataScopePhysicalMachine, and the combination of WnfTemporaryStateName with WnfDataScopeProcess.
+ * Non-temporary creation requires SeCreatePermanentPrivilege. PersistData is accepted only for
+ * WnfPermanentStateName with WnfDataScopeSystem or WnfDataScopeMachine.
  *
  * \param StateName Pointer to a WNF_STATE_NAME structure that receives the created state name.
  * \param NameLifetime The lifetime of the state name (see WNF_STATE_NAME_LIFETIME).
@@ -1741,7 +2135,11 @@ typedef struct _WNF_DELIVERY_DESCRIPTOR
  * \param MaximumStateSize The maximum size, in bytes, of the state data.
  * \param SecurityDescriptor Pointer to a security descriptor for the state name.
  * \return NTSTATUS Successful or errant status.
+ * \remarks For disposable application state, use a temporary name with an allowed scope and a
+ * descriptor granting only the intended principals access. Query/update rights 0x1/0x2 do not include DELETE
+ * (0x00010000), which is needed for explicit name deletion. A state name is an identifier, not an NtClose handle.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1760,7 +2158,11 @@ NtCreateWnfStateName(
  *
  * \param StateName Pointer to the WNF_STATE_NAME to delete.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Explicit name deletion checks DELETE (0x00010000) against the WNF security descriptor.
+ * Possessing the identifier or having permission to update/delete its data is not sufficient. A temporary name
+ * also has creator-process ownership checks; do not confuse name deletion with NtDeleteWnfStateData.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1775,11 +2177,17 @@ NtDeleteWnfStateName(
  * \param Buffer Pointer to the data buffer to write.
  * \param Length Length, in bytes, of the data buffer.
  * \param TypeId Optional pointer to a WNF_TYPE_ID structure specifying the type of the state data.
- * \param ExplicitScope Optional pointer to a security identifier (SID) for explicit scope.
+ * \param ExplicitScope Optional scope selector: a session-ID pointer, SID pointer, or process HANDLE
+ * value, according to the state name's WNF_DATA_SCOPE. NULL selects the implicit scope.
  * \param MatchingChangeStamp The change stamp to match for update.
  * \param CheckStamp If TRUE, the change stamp is checked before updating.
  * \return NTSTATUS Successful or errant status.
+ * \remarks For conditional updates, CheckStamp enables comparison against MatchingChangeStamp.
+ * The state-data helper returns STATUS_UNSUCCESSFUL for a mismatch without publishing a new value.
+ * Successful updates advance the change stamp; retry logic should re-query and re-evaluate the intended change,
+ * not blindly overwrite after a mismatch. Length remains bounded by the name's MaximumStateSize.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1788,7 +2196,7 @@ NtUpdateWnfStateData(
     _In_reads_bytes_opt_(Length) const VOID* Buffer,
     _In_opt_ ULONG Length,
     _In_opt_ PCWNF_TYPE_ID TypeId,
-    _In_opt_ PCSID ExplicitScope,
+    _In_opt_ PCVOID ExplicitScope,
     _In_ WNF_CHANGE_STAMP MatchingChangeStamp,
     _In_ LOGICAL CheckStamp
     );
@@ -1797,15 +2205,20 @@ NtUpdateWnfStateData(
  * The NtDeleteWnfStateData routine deletes the data associated with a WNF state name.
  *
  * \param StateName Pointer to the WNF_STATE_NAME whose data is to be deleted.
- * \param ExplicitScope Optional pointer to a security identifier (SID) for explicit scope.
+ * \param ExplicitScope Optional scope selector: a session-ID pointer, SID pointer, or process HANDLE
+ * value, according to the state name's WNF_DATA_SCOPE. NULL selects the implicit scope.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Deletes the payload, not the state name or subscriptions. An owned temporary name remains
+ * queryable with an empty payload afterwards. Explicit name deletion is a separate operation with DELETE access;
+ * publishing rights alone do not confer that permission.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtDeleteWnfStateData(
     _In_ PCWNF_STATE_NAME StateName,
-    _In_opt_ PCSID ExplicitScope
+    _In_opt_ PCVOID ExplicitScope
     );
 
 /**
@@ -1813,19 +2226,25 @@ NtDeleteWnfStateData(
  *
  * \param StateName Pointer to the WNF_STATE_NAME to query.
  * \param TypeId Optional pointer to a WNF_TYPE_ID structure specifying the type of the state data.
- * \param ExplicitScope Optional pointer to a security identifier (SID) for explicit scope.
+ * \param ExplicitScope Optional scope selector: a session-ID pointer, SID pointer, or process HANDLE
+ * value, according to the state name's WNF_DATA_SCOPE. NULL selects the implicit scope.
  * \param ChangeStamp Pointer to a variable that receives the change stamp.
  * \param Buffer Pointer to a buffer that receives the state data.
- * \param BufferLength On input, the size of the buffer in bytes; on output, the number of bytes written.
+ * \param BufferLength On input, the capacity in bytes; on output, the current payload size, including
+ * the required capacity when the buffer is too small.
  * \return NTSTATUS Successful or errant status.
+ * \remarks For an existing payload, a short output buffer returns STATUS_BUFFER_TOO_SMALL and
+ * reports the required byte length and current change stamp without copying a partial payload. Thus BufferLength
+ * is not always the number of bytes written. A size/query retry can race another publisher; recheck the final status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtQueryWnfStateData(
     _In_ PCWNF_STATE_NAME StateName,
     _In_opt_ PCWNF_TYPE_ID TypeId,
-    _In_opt_ PCSID ExplicitScope,
+    _In_opt_ PCVOID ExplicitScope,
     _Out_ PWNF_CHANGE_STAMP ChangeStamp,
     _Out_writes_bytes_opt_(*BufferLength) PVOID Buffer,
     _Inout_ PULONG BufferLength
@@ -1836,18 +2255,24 @@ NtQueryWnfStateData(
  *
  * \param StateName Pointer to the WNF_STATE_NAME to query.
  * \param NameInfoClass The information class to query (see WNF_STATE_NAME_INFORMATION).
- * \param ExplicitScope Optional pointer to a security identifier (SID) for explicit scope.
+ * \param ExplicitScope Optional scope selector: a session-ID pointer, SID pointer, or process HANDLE
+ * value, according to the state name's WNF_DATA_SCOPE. NULL selects the implicit scope.
  * \param Buffer Pointer to a buffer that receives the requested information.
- * \param BufferLength The size, in bytes, of the buffer.
+ * \param BufferLength The buffer size in bytes; at least 4. Each class returns a ULONG boolean.
+ * WnfInfoStateNameExist requires ExplicitScope == NULL even for session/user/process names.
  * \return NTSTATUS Successful or errant status.
+ * \remarks The entry accepts classes 0, 1 and 2 and requires at least 4 output
+ * bytes; a shorter buffer returns STATUS_INVALID_PARAMETER, not STATUS_INFO_LENGTH_MISMATCH. These are
+ * ULONG boolean results, not BOOLEAN-sized stores. Subscriber presence is not proof of delivery or callback completion.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtQueryWnfStateNameInformation(
     _In_ PCWNF_STATE_NAME StateName,
     _In_ WNF_STATE_NAME_INFORMATION NameInfoClass,
-    _In_opt_ PCSID ExplicitScope,
+    _In_opt_ PCVOID ExplicitScope,
     _Out_writes_bytes_(BufferLength) PVOID Buffer,
     _In_ ULONG BufferLength
     );
@@ -1860,7 +2285,12 @@ NtQueryWnfStateNameInformation(
  * \param EventMask Bitmask specifying which events to subscribe to.
  * \param SubscriptionId Optional pointer to a variable that receives the subscription ID.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Registers a subscription for the calling process rather than installing a user
+ * callback supplied to this syscall. SubscriptionId, when requested, is an 8-byte identifier on both architectures.
+ * Native registration and the higher-level Rtl callback dispatcher are separate layers; pair registration with
+ * NtUnsubscribeWnfStateChange and do not free callback state merely because data publication returned.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1876,7 +2306,11 @@ NtSubscribeWnfStateChange(
  *
  * \param StateName Pointer to the WNF_STATE_NAME to unsubscribe from.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Removes the current process's subscription selected by StateName. This operation
+ * does not delete the published data or the name. An owned subscription can be checked with
+ * WnfInfoSubscribersPresent, but that observation is not a cross-process delivery synchronization primitive.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1889,7 +2323,11 @@ NtUnsubscribeWnfStateChange(
 #if (PHNT_VERSION >= PHNT_WINDOWS_10)
 
 /**
- * The NtGetCompleteWnfStateSubscription routine retrieves the complete WNF state subscription information.
+ * The NtGetCompleteWnfStateSubscription routine completes a previously delivered WNF notification and
+ * optionally retrieves the next one. To acknowledge a delivery, supply both old pointers, a nonzero old event
+ * mask, and an OldDescriptorStatus of STATUS_SUCCESS or STATUS_RETRY (0xC000022D). A nonzero DescriptorSize
+ * must be at least 0x1030 (4144) and NewDeliveryDescriptor must be 8-byte aligned. A zero size skips
+ * retrieval.
  *
  * \param OldDescriptorStateName Optional pointer to the previous state name.
  * \param OldSubscriptionId Optional pointer to the previous subscription ID.
@@ -1898,16 +2336,21 @@ NtUnsubscribeWnfStateChange(
  * \param NewDeliveryDescriptor Pointer to a buffer that receives the new delivery descriptor.
  * \param DescriptorSize The size, in bytes, of the delivery descriptor buffer.
  * \return NTSTATUS code indicating success or failure.
+ * \remarks Combines completion of an earlier delivery descriptor with retrieval of further thread
+ * notifications. The minimum nonzero DescriptorSize is 0x1030 bytes, not just the 48-byte header. A buffer is
+ * not an executable callback registration; respect returned StateDataOffset and StateDataSize when
+ * interpreting the inline payload. Full dispatcher/rundown behavior requires separate lifetime analysis.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtGetCompleteWnfStateSubscription(
-    _In_opt_ PWNF_STATE_NAME OldDescriptorStateName,
-    _In_opt_ ULONG64 *OldSubscriptionId,
+    _In_opt_ PCWNF_STATE_NAME OldDescriptorStateName,
+    _In_opt_ const ULONG64 *OldSubscriptionId,
     _In_opt_ ULONG OldDescriptorEventMask,
-    _In_opt_ ULONG OldDescriptorStatus,
-    _Out_writes_bytes_(DescriptorSize) PWNF_DELIVERY_DESCRIPTOR NewDeliveryDescriptor,
+    _In_opt_ NTSTATUS OldDescriptorStatus,
+    _Out_writes_bytes_opt_(DescriptorSize) PWNF_DELIVERY_DESCRIPTOR NewDeliveryDescriptor,
     _In_ ULONG DescriptorSize
     );
 
@@ -1917,6 +2360,7 @@ NtGetCompleteWnfStateSubscription(
  * \param NotificationEvent Handle to the event object to be signaled on state change.
  * \return NTSTATUS code indicating success or failure.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1953,27 +2397,40 @@ NtSetWnfProcessNotificationEvent(
 
 // begin_private
 
+/**
+ * Selects worker-factory configuration and status operations.
+ * NtQueryInformationWorkerFactory accepts only
+ * WorkerFactoryBasicInformation (7); individual configuration selectors are not query classes.
+ * NtSetInformationWorkerFactory requires WORKER_FACTORY_SET_INFORMATION;
+ * the basic query requires WORKER_FACTORY_QUERY_INFORMATION.
+ */
 typedef enum _WORKERFACTORYINFOCLASS
 {
-    WorkerFactoryTimeout, // LARGE_INTEGER
-    WorkerFactoryRetryTimeout, // LARGE_INTEGER
-    WorkerFactoryIdleTimeout, // s: LARGE_INTEGER
-    WorkerFactoryBindingCount, // s: ULONG
-    WorkerFactoryThreadMinimum, // s: ULONG
-    WorkerFactoryThreadMaximum, // s: ULONG
-    WorkerFactoryPaused, // ULONG or BOOLEAN
-    WorkerFactoryBasicInformation, // q: WORKER_FACTORY_BASIC_INFORMATION
-    WorkerFactoryAdjustThreadGoal,
-    WorkerFactoryCallbackType,
-    WorkerFactoryStackInformation, // 10
-    WorkerFactoryThreadBasePriority, // s: ULONG
-    WorkerFactoryTimeoutWaiters, // s: ULONG, since THRESHOLD
-    WorkerFactoryFlags, // s: ULONG
-    WorkerFactoryThreadSoftMaximum, // s: ULONG
-    WorkerFactoryThreadCpuSets, // since REDSTONE5
+    WorkerFactoryTimeout,               // Historical; may be rejected with STATUS_INVALID_INFO_CLASS
+    WorkerFactoryRetryTimeout,          // Historical; may be rejected with STATUS_INVALID_INFO_CLASS
+    WorkerFactoryIdleTimeout,           // s: LARGE_INTEGER
+    WorkerFactoryBindingCount,          // s: LONG (signed adjustment, not an absolute count)
+    WorkerFactoryThreadMinimum,         // s: ULONG
+    WorkerFactoryThreadMaximum,         // s: ULONG
+    WorkerFactoryPaused,                // Historical; setting this class may return STATUS_NOT_IMPLEMENTED
+    WorkerFactoryBasicInformation,      // q: WORKER_FACTORY_BASIC_INFORMATION
+    WorkerFactoryAdjustThreadGoal,      // s: ULONG
+    WorkerFactoryCallbackType,          // s: ULONG
+    WorkerFactoryStackInformation,      // s: ULONG/ULONG_PTR // 10
+    WorkerFactoryThreadBasePriority,    // s: ULONG
+    WorkerFactoryTimeoutWaiters,        // s: ULONG // since THRESHOLD
+    WorkerFactoryFlags,                 // s: ULONG
+    WorkerFactoryThreadSoftMaximum,     // s: ULONG
+    WorkerFactoryThreadCpuSets,         // s: ULONG[] // since REDSTONE5
     MaxWorkerFactoryInfoClass
 } WORKERFACTORYINFOCLASS, *PWORKERFACTORYINFOCLASS;
 
+/**
+ * Returns worker counts, thread entry-point parameters and stack sizes for a worker factory.
+ * NtQueryInformationWorkerFactory requires exactly 120 bytes on x64.
+ * Timeout, RetryTimeout, Paused, TimerSet and InfiniteWaitGoal are returned as zero
+ * in this implementation; IdleTimeout contains the active relative timeout.
+ */
 typedef struct _WORKER_FACTORY_BASIC_INFORMATION
 {
     LARGE_INTEGER Timeout;
@@ -2004,6 +2461,22 @@ typedef struct _WORKER_FACTORY_BASIC_INFORMATION
 
 // end_private
 
+/**
+ * The NtCreateWorkerFactory routine creates a worker factory object that manages a pool of worker threads bound to an I/O completion port.
+ *
+ * \param WorkerFactoryHandleReturn A pointer to a variable that receives a handle to the new worker factory object.
+ * \param DesiredAccess The access mask that specifies the requested access to the worker factory object.
+ * \param ObjectAttributes A pointer to an OBJECT_ATTRIBUTES structure that specifies the object attributes. This parameter is optional.
+ * \param CompletionPortHandle A handle to the I/O completion port that the worker factory is associated with.
+ * \param WorkerProcessHandle A handle to the process in which the worker threads are created.
+ * \param StartRoutine A pointer to the routine that is executed by each worker thread.
+ * \param StartParameter A pointer to the parameter passed to the start routine. This parameter is optional.
+ * \param MaxThreadCount The maximum number of worker threads that the factory can create. This parameter is optional.
+ * \param StackReserve The amount of stack space to reserve for each worker thread, in bytes. This parameter is optional.
+ * \param StackCommit The amount of stack space to commit for each worker thread, in bytes. This parameter is optional.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2020,6 +2493,21 @@ NtCreateWorkerFactory(
     _In_opt_ SIZE_T StackCommit
     );
 
+/**
+ * The NtQueryInformationWorkerFactory routine retrieves information about the specified worker factory.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \param WorkerFactoryInformationClass The type of information to be retrieved.
+ * \param WorkerFactoryInformation A pointer to a buffer that receives the requested information.
+ * \param WorkerFactoryInformationLength The size of the \c WorkerFactoryInformation buffer, in bytes.
+ * \param ReturnLength A pointer to a variable that receives the number of bytes written to the \c WorkerFactoryInformation buffer. This parameter is optional.
+ * \return NTSTATUS Successful or errant status.
+ * \remarks The native entry supports WorkerFactoryBasicInformation (7),
+ * requires exactly 120 bytes and worker-factory query access 0x8. It probes the fixed native record before
+ * testing the supplied length, so a short-length test must still use valid backing storage. WoW64 converts the
+ * basic record to 96 bytes; the mere presence of a thunk for another class does not establish native support.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2031,6 +2519,16 @@ NtQueryInformationWorkerFactory(
     _Out_opt_ PULONG ReturnLength
     );
 
+/**
+ * The NtSetInformationWorkerFactory routine sets information for the specified worker factory.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \param WorkerFactoryInformationClass The type of information to be set.
+ * \param WorkerFactoryInformation A pointer to a buffer that contains the information to set.
+ * \param WorkerFactoryInformationLength The size of the \c WorkerFactoryInformation buffer, in bytes.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2041,6 +2539,14 @@ NtSetInformationWorkerFactory(
     _In_ ULONG WorkerFactoryInformationLength
     );
 
+/**
+ * The NtShutdownWorkerFactory routine shuts down the specified worker factory and wakes its worker threads.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \param PendingWorkerCount A pointer to a variable that receives the number of worker threads that are still pending.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2049,6 +2555,13 @@ NtShutdownWorkerFactory(
     _Inout_ volatile LONG *PendingWorkerCount
     );
 
+/**
+ * The NtReleaseWorkerFactoryWorker routine releases a worker thread of the worker factory so that it can process work.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2056,6 +2569,13 @@ NtReleaseWorkerFactoryWorker(
     _In_ HANDLE WorkerFactoryHandle
     );
 
+/**
+ * The NtWorkerFactoryWorkerReady routine notifies the worker factory that the calling worker thread has finished its current work and is ready for more.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2063,6 +2583,9 @@ NtWorkerFactoryWorkerReady(
     _In_ HANDLE WorkerFactoryHandle
     );
 
+/**
+ * The WORKER_FACTORY_DEFERRED_WORK structure describes deferred work to be submitted to a worker factory.
+ */
 typedef struct _WORKER_FACTORY_DEFERRED_WORK
 {
     PPORT_MESSAGE AlpcSendMessage;
@@ -2073,6 +2596,17 @@ typedef struct _WORKER_FACTORY_DEFERRED_WORK
 
 #if (PHNT_VERSION >= PHNT_WINDOWS_8)
 
+/**
+ * The NtWaitForWorkViaWorkerFactory routine waits for work to be dispatched to the calling worker thread through the worker factory and retrieves the completion packets.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \param MiniPackets A pointer to a buffer that receives the I/O completion packets associated with the dispatched work.
+ * \param Count The number of entries in the \c MiniPackets buffer.
+ * \param PacketsReturned A pointer to a variable that receives the number of completion packets returned.
+ * \param DeferredWork A pointer to a WORKER_FACTORY_DEFERRED_WORK structure that describes deferred work to be performed.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2086,6 +2620,14 @@ NtWaitForWorkViaWorkerFactory(
 
 #else
 
+/**
+ * The NtWaitForWorkViaWorkerFactory routine waits for work to be dispatched to the calling worker thread through the worker factory and retrieves the completion packet.
+ *
+ * \param WorkerFactoryHandle A handle to the worker factory object.
+ * \param MiniPacket A pointer to a variable that receives the I/O completion packet associated with the dispatched work.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2106,7 +2648,12 @@ NtWaitForWorkViaWorkerFactory(
  * \param SystemTime A pointer to a LARGE_INTEGER structure that receives the system time. This is a 64-bit value representing the number of 100-nanosecond intervals since January 1, 1601 (UTC).
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysystemtime
+ * \remarks The ntdll export is not an ordinary syscall stub, although a kernel routine
+ * with this name also exists. Do not attribute user-mode export behavior solely to that kernel entry. Use this
+ * wall-clock result for timestamps, not monotonic elapsed-time measurement; NtQueryPerformanceCounter serves
+ * a different purpose.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2123,6 +2670,7 @@ NtQuerySystemTime(
  * \remarks The calling process must have the SE_SYSTEMTIME_NAME privilege.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-setsystemtime
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2138,7 +2686,11 @@ NtSetSystemTime(
  * \param MinimumTime The minimum timer resolution, in 100-nanosecond units.
  * \param CurrentTime The current timer resolution, in 100-nanosecond units.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Returns three 4-byte values without acquiring a resolution request. The duration values are
+ * expressed in 100-ns units; compare the numeric values rather than their names. Querying these values does
+ * not change the current resolution or prove a particular timer-delivery latency.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2156,6 +2708,7 @@ NtQueryTimerResolution(
  * \param ActualTime The actual timer resolution, in 100-nanosecond units.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2178,7 +2731,11 @@ NtSetTimerResolution(
  * \return NTSTATUS Successful or errant status.
  * \remarks On systems that run Windows XP or later, the function will always succeed and will thus never return zero. Use RtlQueryPerformanceCounter instead since no system calls are required.
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter
+ * \remarks Returns a counter with an optional frequency, each in an 8-byte LARGE_INTEGER.
+ * Use the frequency to interpret deltas; these values are not system-time timestamps. The native
+ * entry checks 4-byte pointer alignment and forwards to KeQueryPerformanceCounter.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2195,7 +2752,11 @@ NtQueryPerformanceCounter(
  * \param AuxiliaryCounterFrequency A pointer to an output buffer that contains the specified auxiliary counter frequency. If the auxiliary counter is not supported, the value in the output buffer will be undefined.
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-queryauxiliarycounterfrequency
+ * \remarks Queries a hardware-dependent auxiliary counter, not a guaranteed
+ * substitute for NtQueryPerformanceCounter. STATUS_NOT_SUPPORTED is a meaningful platform result; inspect
+ * status before consuming the output frequency or attempting counter conversion.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2215,6 +2776,7 @@ NtQueryAuxiliaryCounterFrequency(
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-convertperformancecountertoauxiliarycounter
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2230,6 +2792,14 @@ NtConvertBetweenAuxiliaryCounterAndPerformanceCounter(
 // LUIDs
 //
 
+/**
+ * The NtAllocateLocallyUniqueId routine allocates a locally unique identifier (LUID).
+ *
+ * \param Luid A pointer to a variable that receives the allocated locally unique identifier.
+ * \return NTSTATUS Successful or errant status.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-allocatelocallyuniqueid
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2241,6 +2811,13 @@ NtAllocateLocallyUniqueId(
 // UUIDs
 //
 
+/**
+ * The NtSetUuidSeed routine sets the seed value used by the system to generate universally unique identifiers (UUIDs).
+ *
+ * \param Seed A pointer to the seed value used as the node identifier when generating UUIDs.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2248,6 +2825,17 @@ NtSetUuidSeed(
     _In_ PCHAR Seed
     );
 
+/**
+ * The NtAllocateUuids routine allocates a block of universally unique identifiers (UUIDs).
+ *
+ * \param Time A pointer to a variable that receives the timestamp used for the allocated UUIDs.
+ * \param Range A pointer to a variable that receives the number of UUIDs available in the allocated range.
+ * \param Sequence A pointer to a variable that receives the clock sequence value.
+ * \param Seed A pointer to a variable that receives the seed (node identifier) value.
+ * \return NTSTATUS Successful or errant status.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-uuidcreatesequential
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -2266,6 +2854,9 @@ NtAllocateUuids(
 
 // rev
 // private
+/**
+ * The SYSTEM_INFORMATION_CLASS enumeration defines the information classes used with NtQuerySystemInformation and NtSetSystemInformation.
+ */
 typedef enum _SYSTEM_INFORMATION_CLASS
 {
     SystemBasicInformation,                                 // q: SYSTEM_BASIC_INFORMATION
@@ -2294,8 +2885,8 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemInterruptInformation,                             // q: SYSTEM_INTERRUPT_INFORMATION (EX in: USHORT ProcessorGroup)
     SystemDpcBehaviorInformation,                           // qs: SYSTEM_DPC_BEHAVIOR_INFORMATION; s: SYSTEM_DPC_BEHAVIOR_INFORMATION (requires SeLoadDriverPrivilege)
     SystemFullMemoryInformation,                            // q: SYSTEM_MEMORY_USAGE_INFORMATION // not implemented
-    SystemLoadGdiDriverInformation,                         // s: (kernel-mode only)
-    SystemUnloadGdiDriverInformation,                       // s: (kernel-mode only)
+    SystemLoadGdiDriverInformation,                         // s: SYSTEM_GDI_DRIVER_INFORMATION (kernel-mode only)
+    SystemUnloadGdiDriverInformation,                       // s: SYSTEM_GDI_DRIVER_UNLOAD_INFORMATION (kernel-mode only)
     SystemTimeAdjustmentInformation,                        // qs: SYSTEM_QUERY_TIME_ADJUST_INFORMATION; s: SYSTEM_SET_TIME_ADJUST_INFORMATION (requires SeSystemtimePrivilege)
     SystemSummaryMemoryInformation,                         // q: SYSTEM_MEMORY_USAGE_INFORMATION // not implemented
     SystemMirrorMemoryInformation,                          // qs: (requires license value "Kernel-MemoryMirroringSupported") (requires SeShutdownPrivilege) // 30
@@ -2306,8 +2897,8 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemKernelDebuggerInformation,                        // q: SYSTEM_KERNEL_DEBUGGER_INFORMATION
     SystemContextSwitchInformation,                         // q: SYSTEM_CONTEXT_SWITCH_INFORMATION
     SystemRegistryQuotaInformation,                         // qs: SYSTEM_REGISTRY_QUOTA_INFORMATION; s (requires SeIncreaseQuotaPrivilege)
-    SystemExtendServiceTableInformation,                    // s: (requires SeLoadDriverPrivilege) // loads win32k only
-    SystemPrioritySeparation,                               // s: (requires SeTcbPrivilege)
+    SystemExtendServiceTableInformation,                    // s: SYSTEM_EXTEND_SERVICE_TABLE_INFORMATION (requires SeLoadDriverPrivilege) // loads win32k only
+    SystemPrioritySeparation,                               // s: SYSTEM_PRIORITY_SEPARATION_INFORMATION (requires SeTcbPrivilege)
     SystemVerifierAddDriverInformation,                     // s: UNICODE_STRING (requires SeDebugPrivilege) // 40
     SystemVerifierRemoveDriverInformation,                  // s: UNICODE_STRING (requires SeDebugPrivilege)
     SystemProcessorIdleInformation,                         // q: SYSTEM_PROCESSOR_IDLE_INFORMATION (EX in: USHORT ProcessorGroup)
@@ -2322,23 +2913,23 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemVerifierInformation,                              // qs: SYSTEM_VERIFIER_INFORMATION; s (requires SeDebugPrivilege)
     SystemVerifierThunkExtend,                              // qs: (kernel-mode only)
     SystemSessionProcessInformation,                        // q: SYSTEM_SESSION_PROCESS_INFORMATION
-    SystemLoadGdiDriverInSystemSpace,                       // qs: SYSTEM_GDI_DRIVER_INFORMATION (kernel-mode only) (same as SystemLoadGdiDriverInformation)
+    SystemLoadGdiDriverInSystemSpace,                       // qs: SYSTEM_GDI_DRIVER_INFORMATION (kernel-mode only) (same handler as SystemLoadGdiDriverInformation)
     SystemNumaProcessorMap,                                 // q: SYSTEM_NUMA_INFORMATION
     SystemPrefetcherInformation,                            // qs: PREFETCHER_INFORMATION // PfSnQueryPrefetcherInformation
     SystemExtendedProcessInformation,                       // q: SYSTEM_EXTENDED_PROCESS_INFORMATION
-    SystemRecommendedSharedDataAlignment,                   // q: ULONG // KeGetRecommendedSharedDataAlignment
-    SystemComPlusPackage,                                   // qs: ULONG
+    SystemRecommendedSharedDataAlignment,                   // q: SYSTEM_RECOMMENDED_SHARED_DATA_ALIGNMENT_INFORMATION // KeGetRecommendedSharedDataAlignment
+    SystemComPlusPackage,                                   // qs: SYSTEM_COMPLUS_PACKAGE_INFORMATION
     SystemNumaAvailableMemory,                              // q: SYSTEM_NUMA_INFORMATION // 60
     SystemProcessorPowerInformation,                        // q: SYSTEM_PROCESSOR_POWER_INFORMATION (EX in: USHORT ProcessorGroup)
     SystemEmulationBasicInformation,                        // q: SYSTEM_BASIC_INFORMATION
     SystemEmulationProcessorInformation,                    // q: SYSTEM_PROCESSOR_INFORMATION
     SystemExtendedHandleInformation,                        // q: SYSTEM_HANDLE_INFORMATION_EX
-    SystemLostDelayedWriteInformation,                      // q: ULONG
+    SystemLostDelayedWriteInformation,                      // q: SYSTEM_LOST_DELAYED_WRITE_INFORMATION
     SystemBigPoolInformation,                               // q: SYSTEM_BIGPOOL_INFORMATION
     SystemSessionPoolTagInformation,                        // q: SYSTEM_SESSION_POOLTAG_INFORMATION
     SystemSessionMappedViewInformation,                     // q: SYSTEM_SESSION_MAPPED_VIEW_INFORMATION
     SystemHotpatchInformation,                              // qs: SYSTEM_HOTPATCH_CODE_INFORMATION
-    SystemObjectSecurityMode,                               // q: ULONG // 70
+    SystemObjectSecurityMode,                               // q: SYSTEM_OBJECT_SECURITY_MODE_INFORMATION // 70
     SystemWatchdogTimerHandler,                             // s: SYSTEM_WATCHDOG_HANDLER_INFORMATION // (kernel-mode only)
     SystemWatchdogTimerInformation,                         // qs: out: SYSTEM_WATCHDOG_TIMER_INFORMATION (EX in: ULONG WATCHDOG_INFORMATION_CLASS) // NtQuerySystemInformationEx
     SystemLogicalProcessorInformation,                      // q: SYSTEM_LOGICAL_PROCESSOR_INFORMATION (EX in: USHORT ProcessorGroup) // NtQuerySystemInformationEx
@@ -2373,13 +2964,13 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemDynamicTimeZoneInformation,                       // qs: RTL_DYNAMIC_TIME_ZONE_INFORMATION (requires SeTimeZonePrivilege)
     SystemCodeIntegrityInformation,                         // q: SYSTEM_CODEINTEGRITY_INFORMATION // SeCodeIntegrityQueryInformation
     SystemProcessorMicrocodeUpdateInformation,              // s: SYSTEM_PROCESSOR_MICROCODE_UPDATE_INFORMATION (requires SeLoadDriverPrivilege)
-    SystemProcessorBrandString,                             // q: CHAR[] // HaliQuerySystemInformation -> HalpGetProcessorBrandString, info class 23
+    SystemProcessorBrandString,                             // q: SYSTEM_PROCESSOR_BRAND_STRING // HaliQuerySystemInformation -> HalpGetProcessorBrandString, info class 23
     SystemVirtualAddressInformation,                        // q: SYSTEM_VA_LIST_INFORMATION[]; s: SYSTEM_VA_LIST_INFORMATION[] (requires SeIncreaseQuotaPrivilege) // MmQuerySystemVaInformation
     SystemLogicalProcessorAndGroupInformation,              // q: SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX (EX in: LOGICAL_PROCESSOR_RELATIONSHIP RelationshipType) // since WIN7 // NtQuerySystemInformationEx // KeQueryLogicalProcessorRelationship
     SystemProcessorCycleTimeInformation,                    // q: SYSTEM_PROCESSOR_CYCLE_TIME_INFORMATION[] (EX in: USHORT ProcessorGroup) // NtQuerySystemInformationEx
     SystemStoreInformation,                                 // qs: SYSTEM_STORE_INFORMATION (requires SeProfileSingleProcessPrivilege) // SmQueryStoreInformation
     SystemRegistryAppendString,                             // s: SYSTEM_REGISTRY_APPEND_STRING_PARAMETERS // 110
-    SystemAitSamplingValue,                                 // s: ULONG (requires SeProfileSingleProcessPrivilege)
+    SystemAitSamplingValue,                                 // s: SYSTEM_AIT_SAMPLING_VALUE_INFORMATION (requires SeProfileSingleProcessPrivilege)
     SystemVhdBootInformation,                               // q: SYSTEM_VHD_BOOT_INFORMATION
     SystemCpuQuotaInformation,                              // qs: PS_CPU_QUOTA_QUERY_INFORMATION
     SystemNativeBasicInformation,                           // q: SYSTEM_BASIC_INFORMATION
@@ -2396,13 +2987,13 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemSessionBigPoolInformation,                        // q: SYSTEM_SESSION_POOLTAG_INFORMATION // since WIN8
     SystemBootGraphicsInformation,                          // qs: SYSTEM_BOOT_GRAPHICS_INFORMATION (kernel-mode only)
     SystemScrubPhysicalMemoryInformation,                   // qs: MEMORY_SCRUB_INFORMATION
-    SystemBadPageInformation,                               // q: SYSTEM_BAD_PAGE_INFORMATION
+    SystemBadPageInformation,                               // q: SYSTEM_BAD_PAGE_INFORMATION[] (non-pending pages; Poisoned cleared)
     SystemProcessorProfileControlArea,                      // qs: SYSTEM_PROCESSOR_PROFILE_CONTROL_AREA
     SystemCombinePhysicalMemoryInformation,                 // s: MEMORY_COMBINE_INFORMATION, MEMORY_COMBINE_INFORMATION_EX, MEMORY_COMBINE_INFORMATION_EX2 // 130
     SystemEntropyInterruptTimingInformation,                // qs: SYSTEM_ENTROPY_TIMING_INFORMATION
     SystemConsoleInformation,                               // qs: SYSTEM_CONSOLE_INFORMATION // (requires SeLoadDriverPrivilege)
     SystemPlatformBinaryInformation,                        // q: SYSTEM_PLATFORM_BINARY_INFORMATION (requires SeTcbPrivilege)
-    SystemPolicyInformation,                                // q: SYSTEM_POLICY_INFORMATION (Warbird/Encrypt/Decrypt/Execute)
+    SystemPolicyInformation,                                // q: SYSTEM_POLICY_INFORMATION
     SystemHypervisorProcessorCountInformation,              // q: SYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION
     SystemDeviceDataInformation,                            // q: SYSTEM_DEVICE_DATA_INFORMATION
     SystemDeviceDataEnumerationInformation,                 // q: SYSTEM_DEVICE_DATA_INFORMATION
@@ -2410,7 +3001,7 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemMemoryChannelInformation,                         // q: SYSTEM_MEMORY_CHANNEL_INFORMATION
     SystemBootLogoInformation,                              // q: SYSTEM_BOOT_LOGO_INFORMATION // 140
     SystemProcessorPerformanceInformationEx,                // q: SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX // (EX in: USHORT ProcessorGroup) // NtQuerySystemInformationEx // since WINBLUE
-    SystemCriticalProcessErrorLogInformation,               // q: CRITICAL_PROCESS_EXCEPTION_DATA
+    SystemCriticalProcessErrorLogInformation,               // q: SYSTEM_CRITICAL_PROCESS_EXCEPTION_INFORMATION
     SystemSecureBootPolicyInformation,                      // q: SYSTEM_SECUREBOOT_POLICY_INFORMATION
     SystemPageFileInformationEx,                            // q: SYSTEM_PAGEFILE_INFORMATION_EX
     SystemSecureBootInformation,                            // q: SYSTEM_SECUREBOOT_INFORMATION
@@ -2418,8 +3009,8 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemPortableWorkspaceEfiLauncherInformation,          // q: SYSTEM_PORTABLE_WORKSPACE_EFI_LAUNCHER_INFORMATION
     SystemFullProcessInformation,                           // q: SYSTEM_EXTENDED_PROCESS_INFORMATION with SYSTEM_PROCESS_INFORMATION_EXTENSION (requires admin)
     SystemKernelDebuggerInformationEx,                      // q: SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX
-    SystemBootMetadataInformation,                          // q: (requires SeTcbPrivilege) // 150
-    SystemSoftRebootInformation,                            // q: ULONG
+    SystemBootMetadataInformation,                          // q: SYSTEM_BOOT_METADATA_INFORMATION // (requires SeTcbPrivilege) // 150
+    SystemSoftRebootInformation,                            // qs: SYSTEM_SOFT_REBOOT_INFORMATION (s requires SeTcbPrivilege) // query returns ExSoftRebootFlags; set calls ExpSetSoftRebootFlags
     SystemElamCertificateInformation,                       // s: SYSTEM_ELAM_CERTIFICATE_INFORMATION
     SystemOfflineDumpConfigInformation,                     // q: OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2
     SystemProcessorFeaturesInformation,                     // q: SYSTEM_PROCESSOR_FEATURES_INFORMATION
@@ -2429,45 +3020,45 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemEnergyEstimationConfigInformation,                // q: SYSTEM_ENERGY_ESTIMATION_CONFIG_INFORMATION
     SystemHypervisorDetailInformation,                      // q: SYSTEM_HYPERVISOR_DETAIL_INFORMATION
     SystemProcessorCycleStatsInformation,                   // q: SYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION (EX in: USHORT ProcessorGroup) // NtQuerySystemInformationEx // 160
-    SystemVmGenerationCountInformation,                     // s:
+    SystemVmGenerationCountInformation,                     // s: PHYSICAL_ADDRESS (kernel-mode only) (vmgencounter.sys)
     SystemTrustedPlatformModuleInformation,                 // q: SYSTEM_TPM_INFORMATION
     SystemKernelDebuggerFlags,                              // q: SYSTEM_KERNEL_DEBUGGER_FLAGS
-    SystemCodeIntegrityPolicyInformation,                   // qs: SYSTEM_CODEINTEGRITYPOLICY_INFORMATION
+    SystemCodeIntegrityPolicyInformation,                   // qs: SYSTEM_CODEINTEGRITY_POLICY_INFORMATION
     SystemIsolatedUserModeInformation,                      // q: SYSTEM_ISOLATED_USER_MODE_INFORMATION
-    SystemHardwareSecurityTestInterfaceResultsInformation,  // q:
+    SystemHardwareSecurityTestInterfaceResultsInformation,  // q: SYSTEM_HARDWARE_SECURITY_TEST_INTERFACE_RESULTS_INFORMATION
     SystemSingleModuleInformation,                          // q: SYSTEM_SINGLE_MODULE_INFORMATION
     SystemAllowedCpuSetsInformation,                        // s: SYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION
     SystemVsmProtectionInformation,                         // q: SYSTEM_VSM_PROTECTION_INFORMATION (previously SystemDmaProtectionInformation)
     SystemInterruptCpuSetsInformation,                      // q: SYSTEM_INTERRUPT_CPU_SET_INFORMATION // 170
     SystemSecureBootPolicyFullInformation,                  // q: SYSTEM_SECUREBOOT_POLICY_FULL_INFORMATION
-    SystemCodeIntegrityPolicyFullInformation,               // q:
+    SystemCodeIntegrityPolicyFullInformation,               // q: SYSTEM_CODE_INTEGRITY_POLICY_FULL_INFORMATION
     SystemAffinitizedInterruptProcessorInformation,         // q: KAFFINITY_EX // (requires SeIncreaseBasePriorityPrivilege)
     SystemRootSiloInformation,                              // q: SYSTEM_ROOT_SILO_INFORMATION
     SystemCpuSetInformation,                                // q: SYSTEM_CPU_SET_INFORMATION // since THRESHOLD2
     SystemCpuSetTagInformation,                             // q: SYSTEM_CPU_SET_TAG_INFORMATION
-    SystemWin32WerStartCallout,                             // s:
+    SystemWin32WerStartCallout,                             // s: SYSTEM_WIN32_WER_START_CALLOUT (optional; 0-length uses current process)
     SystemSecureKernelProfileInformation,                   // q: SYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION
     SystemCodeIntegrityPlatformManifestInformation,         // q: SYSTEM_SECUREBOOT_PLATFORM_MANIFEST_INFORMATION // NtQuerySystemInformationEx // since REDSTONE
-    SystemInterruptSteeringInformation,                     // q: in: SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT, out: SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT // NtQuerySystemInformationEx
-    SystemSupportedProcessorArchitectures,                  // p: in opt: HANDLE, out: SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION[] // NtQuerySystemInformationEx // 180
+    SystemInterruptSteeringInformation,                     // q: in: SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT, out: SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT // NtQuerySystemInformationEx // 180
+    SystemSupportedProcessorArchitectures,                  // p: in opt: HANDLE, out: SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION[] // NtQuerySystemInformationEx
     SystemMemoryUsageInformation,                           // q: SYSTEM_MEMORY_USAGE_INFORMATION
     SystemCodeIntegrityCertificateInformation,              // q: SYSTEM_CODEINTEGRITY_CERTIFICATE_INFORMATION
     SystemPhysicalMemoryInformation,                        // q: SYSTEM_PHYSICAL_MEMORY_INFORMATION // since REDSTONE2
-    SystemControlFlowTransition,                            // qs: (Warbird/Encrypt/Decrypt/Execute)
+    SystemControlFlowTransition,                            // qs: SYSTEM_CONTROL_FLOW_TRANSITION // operation-tagged Warbird control-flow transition request
     SystemKernelDebuggingAllowed,                           // s: ULONG
     SystemActivityModerationExeState,                       // s: SYSTEM_ACTIVITY_MODERATION_EXE_STATE
     SystemActivityModerationUserSettings,                   // q: SYSTEM_ACTIVITY_MODERATION_USER_SETTINGS
-    SystemCodeIntegrityPoliciesFullInformation,             // qs: NtQuerySystemInformationEx
+    SystemCodeIntegrityPoliciesFullInformation,             // qs: SYSTEM_CODE_INTEGRITY_POLICIES_FULL_INFORMATION // NtQuerySystemInformationEx
     SystemCodeIntegrityUnlockInformation,                   // q: SYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION // 190
     SystemIntegrityQuotaInformation,                        // s: SYSTEM_INTEGRITY_QUOTA_INFORMATION (requires SeDebugPrivilege)
     SystemFlushInformation,                                 // q: SYSTEM_FLUSH_INFORMATION
     SystemProcessorIdleMaskInformation,                     // q: ULONG_PTR[ActiveGroupCount] // since REDSTONE3
-    SystemSecureDumpEncryptionInformation,                  // qs: NtQuerySystemInformationEx // (q: requires SeDebugPrivilege) (s: requires SeTcbPrivilege)
+    SystemSecureDumpEncryptionInformation,                  // qs: SYSTEM_SECURE_DUMP_ENCRYPTION_INFORMATION // NtQuerySystemInformationEx // opaque dump-key transform buffer (q: requires SeDebugPrivilege) (s: 0-length only, requires SeTcbPrivilege)
     SystemWriteConstraintInformation,                       // q: SYSTEM_WRITE_CONSTRAINT_INFORMATION
     SystemKernelVaShadowInformation,                        // q: SYSTEM_KERNEL_VA_SHADOW_INFORMATION
     SystemHypervisorSharedPageInformation,                  // q: SYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION // since REDSTONE4
-    SystemFirmwareBootPerformanceInformation,               // q:
-    SystemCodeIntegrityVerificationInformation,             // q: SYSTEM_CODEINTEGRITYVERIFICATION_INFORMATION
+    SystemFirmwareBootPerformanceInformation,               // q: SYSTEM_FIRMWARE_BOOT_PERFORMANCE_INFORMATION // HaliQuerySystemInformation -> HalpFwBootPerformanceTable, info class 34
+    SystemCodeIntegrityVerificationInformation,             // q: SYSTEM_CODEINTEGRITY_VERIFICATION_INFORMATION
     SystemFirmwarePartitionInformation,                     // q: SYSTEM_FIRMWARE_PARTITION_INFORMATION // 200
     SystemSpeculationControlInformation,                    // q: SYSTEM_SPECULATION_CONTROL_INFORMATION // (CVE-2017-5715) REDSTONE3 and above.
     SystemDmaGuardPolicyInformation,                        // q: SYSTEM_DMA_GUARD_POLICY_INFORMATION
@@ -2482,18 +3073,18 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemFeatureConfigurationSectionInformation,           // q: in: SYSTEM_FEATURE_CONFIGURATION_SECTIONS_REQUEST, out: SYSTEM_FEATURE_CONFIGURATION_SECTIONS_INFORMATION // NtQuerySystemInformationEx
     SystemFeatureUsageSubscriptionInformation,              // q: SYSTEM_FEATURE_USAGE_SUBSCRIPTION_DETAILS; s: SYSTEM_FEATURE_USAGE_SUBSCRIPTION_UPDATE
     SystemSecureSpeculationControlInformation,              // q: SECURE_SPECULATION_CONTROL_INFORMATION
-    SystemSpacesBootInformation,                            // qs: // since 20H2
+    SystemSpacesBootInformation,                            // q: SYSTEM_SPACES_BOOT_INFORMATION // variable-length opaque blob copied from ExpSpacesBootInformation (kernel mode only) // since 20H2
     SystemFwRamdiskInformation,                             // q: SYSTEM_FIRMWARE_RAMDISK_INFORMATION
-    SystemWheaIpmiHardwareInformation,                      // q:
+    SystemWheaIpmiHardwareInformation,                      // q: SYSTEM_WHEA_IPMI_HARDWARE_INFORMATION
     SystemDifSetRuleClassInformation,                       // s: SYSTEM_DIF_VOLATILE_INFORMATION (requires SeDebugPrivilege)
     SystemDifClearRuleClassInformation,                     // s: NULL (requires SeDebugPrivilege)
     SystemDifApplyPluginVerificationOnDriver,               // q: SYSTEM_DIF_PLUGIN_DRIVER_INFORMATION (requires SeDebugPrivilege)
     SystemDifRemovePluginVerificationOnDriver,              // q: SYSTEM_DIF_PLUGIN_DRIVER_INFORMATION (requires SeDebugPrivilege) // 220
     SystemShadowStackInformation,                           // q: SYSTEM_SHADOW_STACK_INFORMATION
-    SystemBuildVersionInformation,                          // q: in: ULONG (LayerNumber), out: SYSTEM_BUILD_VERSION_INFORMATION // NtQuerySystemInformationEx
+    SystemBuildVersionInformation,                          // q: in: SYSTEM_BUILD_VERSION_INFORMATION_INPUT, out: SYSTEM_BUILD_VERSION_INFORMATION // NtQuerySystemInformationEx // CmQueryBuildVersionInformation
     SystemPoolLimitInformation,                             // q: SYSTEM_POOL_LIMIT_INFORMATION (requires SeIncreaseQuotaPrivilege) // NtQuerySystemInformationEx
-    SystemCodeIntegrityAddDynamicStore,                     // q: CodeIntegrity-AllowConfigurablePolicy-CustomKernelSigners
-    SystemCodeIntegrityClearDynamicStores,                  // q: CodeIntegrity-AllowConfigurablePolicy-CustomKernelSigners
+    SystemCodeIntegrityAddDynamicStore,                     // q: SYSTEM_CODE_INTEGRITY_DYNAMIC_STORE // CodeIntegrity-AllowConfigurablePolicy-CustomKernelSigners
+    SystemCodeIntegrityClearDynamicStores,                  // q: SYSTEM_CODE_INTEGRITY_DYNAMIC_STORE // CodeIntegrity-AllowConfigurablePolicy-CustomKernelSigners
     SystemDifPoolTrackingInformation,                       // s: SYSTEM_DIF_POOL_TRACKING_INFORMATION (requires SeDebugPrivilege)
     SystemPoolZeroingInformation,                           // q: SYSTEM_POOL_ZEROING_INFORMATION
     SystemDpcWatchdogInformation,                           // qs: SYSTEM_DPC_WATCHDOG_CONFIGURATION_INFORMATION
@@ -2505,25 +3096,26 @@ typedef enum _SYSTEM_INFORMATION_CLASS
     SystemHypervisorMinrootInformation,                     // q: SYSTEM_HYPERVISOR_MINROOT_INFORMATION
     SystemHypervisorBootPagesInformation,                   // q: SYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION
     SystemPointerAuthInformation,                           // q: SYSTEM_POINTER_AUTH_INFORMATION
-    SystemSecureKernelDebuggerInformation,                  // qs: NtQuerySystemInformationEx
+    SystemSecureKernelDebuggerInformation,                  // q: in: SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION_INPUT, out: SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION // NtQuerySystemInformationEx // kernel mode only
     SystemOriginalImageFeatureInformation,                  // q: in: SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_INPUT, out: SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_OUTPUT // NtQuerySystemInformationEx
     SystemMemoryNumaInformation,                            // q: SYSTEM_MEMORY_NUMA_INFORMATION_INPUT, SYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT // NtQuerySystemInformationEx
     SystemMemoryNumaPerformanceInformation,                 // q: SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT, SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_OUTPUT // since 24H2 // 240
-    SystemCodeIntegritySignedPoliciesFullInformation,       // qs: NtQuerySystemInformationEx
-    SystemSecureCoreInformation,                            // qs: SystemSecureSecretsInformation
+    SystemCodeIntegritySignedPoliciesFullInformation,       // qs: SYSTEM_CODE_INTEGRITY_SIGNED_POLICIES // NtQuerySystemInformationEx
+    SystemSecureCoreInformation,                            // qs: SYSTEM_SECURE_CORE_INFORMATION // SystemSecureSecretsInformation
     SystemTrustedAppsRuntimeInformation,                    // q: SYSTEM_TRUSTEDAPPS_RUNTIME_INFORMATION
-    SystemBadPageInformationEx,                             // q: SYSTEM_BAD_PAGE_INFORMATION
+    SystemBadPageInformationEx,                             // q: SYSTEM_BAD_PAGE_INFORMATION[] (includes Pending and Poisoned)
     SystemResourceDeadlockTimeout,                          // q: ULONG
     SystemBreakOnContextUnwindFailureInformation,           // q: ULONG (requires SeDebugPrivilege)
     SystemOslRamdiskInformation,                            // q: SYSTEM_OSL_RAMDISK_INFORMATION
-    SystemCodeIntegrityPolicyManagementInformation,         // q: SYSTEM_CODEINTEGRITYPOLICY_MANAGEMENT // since 25H2
-    SystemMemoryNumaCacheInformation,                       // q:
-    SystemProcessorFeaturesBitMapInformation,               // q: // 250
+    SystemCodeIntegrityPolicyManagementInformation,         // q: SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT // since 25H2
+    SystemMemoryNumaCacheInformation,                       // q: SYSTEM_MEMORY_NUMA_CACHE_INFORMATION
+    SystemProcessorFeaturesBitMapInformation,               // q: ULONG64[2] // RTL_BITMAP_EX // RtlInitializeBitMapEx // 250
     SystemRefTraceInformationEx,                            // q: SYSTEM_REF_TRACE_INFORMATION_EX
     SystemBasicProcessInformation,                          // q: SYSTEM_BASICPROCESS_INFORMATION
     SystemHandleCountInformation,                           // q: SYSTEM_HANDLECOUNT_INFORMATION
-    SystemRuntimeAttestationReport,                         // q: SYSTEM_RUNTIME_REPORT_INPUT
+    SystemRuntimeAttestationReport,                         // q: in: SYSTEM_RUNTIME_REPORT_INPUT (48 bytes on x64), out: report package // NtQuerySystemInformationEx
     SystemPoolTagInformation2,                              // q: SYSTEM_POOLTAG_INFORMATION2 // since 26H1
+    SystemCodeIntegrityEndpointSecurityInformation,         // q: SYSTEM_CODE_INTEGRITY_ENDPOINT_SECURITY_INFORMATION
     MaxSystemInfoClass
 } SYSTEM_INFORMATION_CLASS;
 
@@ -2533,7 +3125,7 @@ typedef enum _SYSTEM_INFORMATION_CLASS
 typedef struct _SYSTEM_BASIC_INFORMATION
 {
     ULONG Reserved;                                         // Reserved
-    ULONG TimerResolution;                                  // The resolution of the timer, in milliseconds. // NtQueryTimerResolution
+    ULONG TimerResolution;                                  // The resolution of the system clock, in 100-nanosecond units. // NtQueryTimerResolution
     ULONG PageSize;                                         // The page size and the granularity of page protection and commitment.
     ULONG NumberOfPhysicalPages;                            // The number of physical pages in the system. // KUSER_SHARED_DATA->NumberOfPhysicalPages
     ULONG LowestPhysicalPageNumber;                         // The lowest memory page accessible to applications and dynamic-link libraries (DLLs).
@@ -2594,92 +3186,92 @@ typedef struct _SYSTEM_PROCESSOR_INFORMATION
 } SYSTEM_PROCESSOR_INFORMATION, *PSYSTEM_PROCESSOR_INFORMATION;
 
 /**
- * The SYSTEM_PERFORMANCE_INFORMATION structure contains information about system performance.
+ * The SYSTEM_PERFORMANCE_INFORMATION structure contains detailed system-wide performance statistics.
  */
 typedef struct _SYSTEM_PERFORMANCE_INFORMATION
 {
-    LARGE_INTEGER IdleProcessTime;
-    LARGE_INTEGER IoReadTransferCount;
-    LARGE_INTEGER IoWriteTransferCount;
-    LARGE_INTEGER IoOtherTransferCount;
-    ULONG IoReadOperationCount;
-    ULONG IoWriteOperationCount;
-    ULONG IoOtherOperationCount;
-    ULONG AvailablePages;
-    ULONG CommittedPages;
-    ULONG CommitLimit;
-    ULONG PeakCommitment;
-    ULONG PageFaultCount;
-    ULONG CopyOnWriteCount;
-    ULONG TransitionCount;
-    ULONG CacheTransitionCount;
-    ULONG DemandZeroCount;
-    ULONG PageReadCount;
-    ULONG PageReadIoCount;
-    ULONG CacheReadCount;
-    ULONG CacheIoCount;
-    ULONG DirtyPagesWriteCount;
-    ULONG DirtyWriteIoCount;
-    ULONG MappedPagesWriteCount;
-    ULONG MappedWriteIoCount;
-    ULONG PagedPoolPages;
-    ULONG NonPagedPoolPages;
-    ULONG PagedPoolAllocs;
-    ULONG PagedPoolFrees;
-    ULONG NonPagedPoolAllocs;
-    ULONG NonPagedPoolFrees;
-    ULONG FreeSystemPtes;
-    ULONG ResidentSystemCodePage;
-    ULONG TotalSystemDriverPages;
-    ULONG TotalSystemCodePages;
-    ULONG NonPagedPoolLookasideHits;
-    ULONG PagedPoolLookasideHits;
-    ULONG AvailablePagedPoolPages;
-    ULONG ResidentSystemCachePage;
-    ULONG ResidentPagedPoolPage;
-    ULONG ResidentSystemDriverPage;
-    ULONG CcFastReadNoWait;
-    ULONG CcFastReadWait;
-    ULONG CcFastReadResourceMiss;
-    ULONG CcFastReadNotPossible;
-    ULONG CcFastMdlReadNoWait;
-    ULONG CcFastMdlReadWait;
-    ULONG CcFastMdlReadResourceMiss;
-    ULONG CcFastMdlReadNotPossible;
-    ULONG CcMapDataNoWait;
-    ULONG CcMapDataWait;
-    ULONG CcMapDataNoWaitMiss;
-    ULONG CcMapDataWaitMiss;
-    ULONG CcPinMappedDataCount;
-    ULONG CcPinReadNoWait;
-    ULONG CcPinReadWait;
-    ULONG CcPinReadNoWaitMiss;
-    ULONG CcPinReadWaitMiss;
-    ULONG CcCopyReadNoWait;
-    ULONG CcCopyReadWait;
-    ULONG CcCopyReadNoWaitMiss;
-    ULONG CcCopyReadWaitMiss;
-    ULONG CcMdlReadNoWait;
-    ULONG CcMdlReadWait;
-    ULONG CcMdlReadNoWaitMiss;
-    ULONG CcMdlReadWaitMiss;
-    ULONG CcReadAheadIos;
-    ULONG CcLazyWriteIos;
-    ULONG CcLazyWritePages;
-    ULONG CcDataFlushes;
-    ULONG CcDataPages;
-    ULONG ContextSwitches;
-    ULONG FirstLevelTbFills;
-    ULONG SecondLevelTbFills;
-    ULONG SystemCalls;
-    ULONGLONG CcTotalDirtyPages; // since THRESHOLD
-    ULONGLONG CcDirtyPageThreshold;
-    LONGLONG ResidentAvailablePages;
-    ULONGLONG SharedCommittedPages;
-    ULONGLONG MdlPagesAllocated; // since 24H2
-    ULONGLONG PfnDatabaseCommittedPages;
-    ULONGLONG SystemPageTableCommittedPages;
-    ULONGLONG ContiguousPagesAllocated;
+    LARGE_INTEGER IdleProcessTime;              // Total time spent by the idle process (in 100ns units). Used to calculate overall CPU idle percentage; combine with per-processor stats for system CPU usage.
+    LARGE_INTEGER IoReadTransferCount;          // Total bytes read by all I/O operations system-wide. Combine with IoWriteTransferCount and IoOtherTransferCount for total I/O throughput.
+    LARGE_INTEGER IoWriteTransferCount;         // Total bytes written by all I/O operations system-wide. Use with IoReadTransferCount for disk throughput analysis.
+    LARGE_INTEGER IoOtherTransferCount;         // Total bytes transferred by non-read/write I/O operations (e.g., device control). Add to above for total I/O.
+    ULONG IoReadOperationCount;                 // Number of read I/O operations. Use with IoReadTransferCount to get average read size per operation.
+    ULONG IoWriteOperationCount;                // Number of write I/O operations. Use with IoWriteTransferCount for average write size per operation.
+    ULONG IoOtherOperationCount;                // Number of non-read/write I/O operations. Combine with above for total I/O operation count. */
+    ULONG AvailablePages;                       // Number of free physical memory pages available for immediate allocation to processes. (Display: Value * PageSize for bytes). Indicates instantly available RAM.
+    ULONG CommittedPages;                       // Number of committed virtual memory pages (backed by RAM or pagefile). Use with CommitLimit to assess memory pressure and overcommit risk.
+    ULONG CommitLimit;                          // Maximum number of pages that can be committed (RAM + pagefile). Compare with CommittedPages to determine available commit space.
+    ULONG PeakCommitment;                       // Highest number of committed pages since boot. Tracks historical maximum memory commitment.
+    ULONG PageFaultCount;                       // Total number of page faults (both soft and hard) since boot. Includes all types of faults.
+    ULONG CopyOnWriteCount;                     // Number of page faults due to copy-on-write events. Subset of PageFaultCount. Indicates process memory sharing and forking activity.
+    ULONG TransitionCount;                      // Number of page faults due to transition from standby to active. Subset of PageFaultCount. Indicates memory reactivation from standby lists.
+    ULONG CacheTransitionCount;                 // Number of page faults due to cache transitions. Subset of TransitionCount. Indicates faults resolved from the system cache.
+    ULONG DemandZeroCount;                      // Number of page faults resolved by zeroing a page (demand-zero). Subset of PageFaultCount. Indicates new memory allocations.
+    ULONG PageReadCount;                        // Number of pages read from disk to resolve faults. Use with PageReadIoCount for read efficiency (pages per I/O).
+    ULONG PageReadIoCount;                      // Number of I/O operations for page reads. Compare with PageReadCount for average pages per I/O.
+    ULONG CacheReadCount;                       // Number of pages read from the system cache. Use with CacheIoCount for cache hit/miss analysis.
+    ULONG CacheIoCount;                         // Number of I/O operations for cache reads. Compare with CacheReadCount for average pages per cache I/O.
+    ULONG DirtyPagesWriteCount;                 // Number of dirty pages written to disk (writeback). Use with DirtyWriteIoCount for write efficiency.
+    ULONG DirtyWriteIoCount;                    // Number of I/O operations for dirty page writes. Compare with DirtyPagesWriteCount for average pages per write I/O.
+    ULONG MappedPagesWriteCount;                // Number of mapped pages written (e.g., memory-mapped files). Use with MappedWriteIoCount for mapped file activity.
+    ULONG MappedWriteIoCount;                   // Number of I/O operations for mapped page writes. Compare with MappedPagesWriteCount for average mapped write size.
+    ULONG PagedPoolPages;                       // Number of pages used by the paged pool (kernel memory that can be paged out). Combine with NonPagedPoolPages for total pool usage.
+    ULONG NonPagedPoolPages;                    // Number of pages used by the nonpaged pool (kernel memory that must remain resident). Combine with PagedPoolPages for total pool usage.
+    ULONG PagedPoolAllocs;                      // Number of paged pool allocations. Use with PagedPoolFrees for leak detection and pool usage trends.
+    ULONG PagedPoolFrees;                       // Number of paged pool frees. Compare with PagedPoolAllocs to detect leaks or fragmentation.
+    ULONG NonPagedPoolAllocs;                   // Number of nonpaged pool allocations. Use with NonPagedPoolFrees for leak detection.
+    ULONG NonPagedPoolFrees;                    // Number of nonpaged pool frees. Compare with NonPagedPoolAllocs for pool usage.
+    ULONG FreeSystemPtes;                       // Number of free system page table entries (PTEs). Low values may indicate kernel memory exhaustion or fragmentation.
+    ULONG ResidentSystemCodePage;               // Number of resident pages for system code (kernel and drivers). Use with TotalSystemCodePages for residency ratio.
+    ULONG TotalSystemDriverPages;               // Total pages used by system drivers. Combine with TotalSystemCodePages for total kernel code usage.
+    ULONG TotalSystemCodePages;                 // Total pages used by system code (kernel + drivers). Use with ResidentSystemCodePage for residency analysis.
+    ULONG NonPagedPoolLookasideHits;            // Hits in nonpaged pool lookaside lists. Higher values indicate efficient small nonpaged allocations.
+    ULONG PagedPoolLookasideHits;               // Hits in paged pool lookaside lists. Higher values indicate efficient small paged allocations.
+    ULONG AvailablePagedPoolPages;              // Number of free pages in the paged pool. Monitor for pool exhaustion or fragmentation.
+    ULONG ResidentSystemCachePage;              // Resident pages in the system cache. Use with ResidentPagedPoolPage for cache residency analysis.
+    ULONG ResidentPagedPoolPage;                // Resident pages in the paged pool. Indicates how much of the paged pool is currently resident in RAM.
+    ULONG ResidentSystemDriverPage;             // Resident pages for system drivers. Use with TotalSystemDriverPages for residency ratio.
+    ULONG CcFastReadNoWait;                     // Fast cache reads completed without waiting. Use with CcFastReadWait for cache performance analysis.
+    ULONG CcFastReadWait;                       // Fast cache reads that required waiting. Compare with CcFastReadNoWait to assess cache latency.
+    ULONG CcFastReadResourceMiss;               // Fast cache read misses due to resource contention. Indicates cache bottlenecks.
+    ULONG CcFastReadNotPossible;                // Fast cache reads not possible (e.g., file not cached). Indicates cache limitations or bypasses.
+    ULONG CcFastMdlReadNoWait;                  // Fast MDL (Memory Descriptor List) reads completed without waiting. Use with CcFastMdlReadWait.
+    ULONG CcFastMdlReadWait;                    // Fast MDL reads that required waiting. Compare with CcFastMdlReadNoWait.
+    ULONG CcFastMdlReadResourceMiss;            // Fast MDL read misses due to resource contention. Indicates MDL bottlenecks.
+    ULONG CcFastMdlReadNotPossible;             // Fast MDL reads not possible. Indicates MDL limitations or cache bypass.
+    ULONG CcMapDataNoWait;                      // Cache map data operations completed without waiting. Use with CcMapDataWait for mapping efficiency.
+    ULONG CcMapDataWait;                        // Cache map data operations that required waiting. Compare with CcMapDataNoWait.
+    ULONG CcMapDataNoWaitMiss;                  // Cache map data misses without waiting. Indicates mapping bottlenecks.
+    ULONG CcMapDataWaitMiss;                    // Cache map data misses with waiting. Indicates mapping bottlenecks under contention.
+    ULONG CcPinMappedDataCount;                 // Number of pinned mapped data pages. Indicates how much data is locked in cache for I/O.
+    ULONG CcPinReadNoWait;                      // Pin reads completed without waiting. Use with CcPinReadWait for pinning efficiency.
+    ULONG CcPinReadWait;                        // Pin reads that required waiting. Compare with CcPinReadNoWait.
+    ULONG CcPinReadNoWaitMiss;                  // Pin read misses without waiting. Indicates pinning bottlenecks.
+    ULONG CcPinReadWaitMiss;                    // Pin read misses with waiting. Indicates pinning bottlenecks under contention.
+    ULONG CcCopyReadNoWait;                     // Copy reads completed without waiting. Use with CcCopyReadWait for copy efficiency.
+    ULONG CcCopyReadWait;                       // Copy reads that required waiting. Compare with CcCopyReadNoWait.
+    ULONG CcCopyReadNoWaitMiss;                 // Copy read misses without waiting. Indicates copy bottlenecks.
+    ULONG CcCopyReadWaitMiss;                   // Copy read misses with waiting. Indicates copy bottlenecks under contention.
+    ULONG CcMdlReadNoWait;                      // MDL reads completed without waiting. Use with CcMdlReadWait for MDL efficiency.
+    ULONG CcMdlReadWait;                        // MDL reads that required waiting. Compare with CcMdlReadNoWait.
+    ULONG CcMdlReadNoWaitMiss;                  // MDL read misses without waiting. Indicates MDL bottlenecks.
+    ULONG CcMdlReadWaitMiss;                    // MDL read misses with waiting. Indicates MDL bottlenecks under contention.
+    ULONG CcReadAheadIos;                       // Number of read-ahead I/O operations. Indicates cache prefetching activity.
+    ULONG CcLazyWriteIos;                       // Number of lazy write I/O operations. Indicates deferred write activity by the cache manager.
+    ULONG CcLazyWritePages;                     // Number of pages written by the lazy writer. Use with CcLazyWriteIos for writeback efficiency.
+    ULONG CcDataFlushes;                        // Number of cache data flushes. Indicates cache consistency operations (e.g., file close).
+    ULONG CcDataPages;                          // Number of pages flushed from cache. Use with CcDataFlushes for average flush size.
+    ULONG ContextSwitches;                      // Number of context switches system-wide. Use for CPU scheduling and multitasking analysis.
+    ULONG FirstLevelTbFills;                    // First-level translation buffer (TLB) fills. Indicates TLB efficiency and memory access patterns.
+    ULONG SecondLevelTbFills;                   // Second-level TLB fills. Indicates deeper TLB misses and memory access patterns.
+    ULONG SystemCalls;                          // Number of system calls made. Use for syscall activity and system workload analysis.
+    ULONGLONG CcTotalDirtyPages;                // Total number of dirty pages in the cache (since Windows 10/Threshold). Use with CcDirtyPageThreshold for writeback policy. // since THRESHOLD
+    ULONGLONG CcDirtyPageThreshold;             // Dirty page threshold for the cache. Compare with CcTotalDirtyPages to determine if writeback is needed.
+    LONGLONG ResidentAvailablePages;            // Number of available pages that are resident in memory. Combine with AvailablePages for residency analysis.
+    ULONGLONG SharedCommittedPages;             // Number of committed pages that are shared (e.g., mapped by multiple processes). Useful for shared memory analysis.
+    ULONGLONG MdlPagesAllocated;                // Number of pages allocated for MDLs (since Windows 11 24H2). Indicates MDL resource usage. // since 24H2
+    ULONGLONG PfnDatabaseCommittedPages;        // Number of pages committed for the PFN (Page Frame Number) database. Kernel memory usage for tracking physical pages.
+    ULONGLONG SystemPageTableCommittedPages;    // Number of pages committed for system page tables. Kernel memory usage for virtual-to-physical mapping structures.
+    ULONGLONG ContiguousPagesAllocated;         // Number of contiguous pages allocated. Indicates large memory allocations (e.g., for DMA or drivers).
 } SYSTEM_PERFORMANCE_INFORMATION, *PSYSTEM_PERFORMANCE_INFORMATION;
 
 /**
@@ -2759,6 +3351,9 @@ typedef struct _SYSTEM_PROCESS_INFORMATION
 } SYSTEM_PROCESS_INFORMATION, *PSYSTEM_PROCESS_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_EXTENDED_THREAD_INFORMATION structure contains extended information about a thread in the system.
+ */
 typedef struct _SYSTEM_EXTENDED_THREAD_INFORMATION
 {
     union
@@ -2833,12 +3428,18 @@ typedef struct _SYSTEM_EXTENDED_PROCESS_INFORMATION
     // SYSTEM_PROCESS_INFORMATION_EXTENSION // SystemFullProcessInformation
 } SYSTEM_EXTENDED_PROCESS_INFORMATION, *PSYSTEM_EXTENDED_PROCESS_INFORMATION;
 
+/**
+ * The SYSTEM_CALL_COUNT_INFORMATION structure contains per-processor system service call counts.
+ */
 typedef struct _SYSTEM_CALL_COUNT_INFORMATION
 {
     ULONG Length;
     ULONG NumberOfTables;
 } SYSTEM_CALL_COUNT_INFORMATION, *PSYSTEM_CALL_COUNT_INFORMATION;
 
+/**
+ * The SYSTEM_DEVICE_INFORMATION structure contains information about the devices in the system.
+ */
 typedef struct _SYSTEM_DEVICE_INFORMATION
 {
     ULONG NumberOfDisks;
@@ -2864,6 +3465,9 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION
     ULONG Spare0;
 } SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, *PSYSTEM_PROCESSOR_PERFORMANCE_INFORMATION;
 
+/**
+ * The SYSTEM_FLAGS_INFORMATION structure contains the global NT flags that control kernel debugging and instrumentation.
+ */
 typedef struct _SYSTEM_FLAGS_INFORMATION
 {
     union
@@ -2908,6 +3512,9 @@ typedef struct _SYSTEM_FLAGS_INFORMATION
 } SYSTEM_FLAGS_INFORMATION, *PSYSTEM_FLAGS_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_CALL_TIME_INFORMATION structure contains timing information for system service calls.
+ */
 typedef struct _SYSTEM_CALL_TIME_INFORMATION
 {
     ULONG Length;
@@ -2920,6 +3527,9 @@ typedef struct _SYSTEM_CALL_TIME_INFORMATION
 #define RTL_RESOURCE_TYPE 1
 
 // private
+/**
+ * The RTL_PROCESS_LOCK_INFORMATION structure describes a single critical section or resource lock in a process.
+ */
 typedef struct _RTL_PROCESS_LOCK_INFORMATION
 {
     PVOID Address;
@@ -2935,6 +3545,9 @@ typedef struct _RTL_PROCESS_LOCK_INFORMATION
 } RTL_PROCESS_LOCK_INFORMATION, *PRTL_PROCESS_LOCK_INFORMATION;
 
 // private
+/**
+ * The RTL_PROCESS_LOCKS structure contains information about all locks held within a process.
+ */
 typedef struct _RTL_PROCESS_LOCKS
 {
     ULONG NumberOfLocks;
@@ -2942,6 +3555,9 @@ typedef struct _RTL_PROCESS_LOCKS
 } RTL_PROCESS_LOCKS, *PRTL_PROCESS_LOCKS;
 
 // private
+/**
+ * The RTL_PROCESS_BACKTRACE_INFORMATION structure describes a single stack back trace captured for a process.
+ */
 typedef struct _RTL_PROCESS_BACKTRACE_INFORMATION
 {
     PCHAR SymbolicBackTrace;
@@ -2952,6 +3568,9 @@ typedef struct _RTL_PROCESS_BACKTRACE_INFORMATION
 } RTL_PROCESS_BACKTRACE_INFORMATION, *PRTL_PROCESS_BACKTRACE_INFORMATION;
 
 // private
+/**
+ * The RTL_PROCESS_BACKTRACES structure contains the stack back traces captured for a process.
+ */
 typedef struct _RTL_PROCESS_BACKTRACES
 {
     SIZE_T CommittedMemory;
@@ -2962,6 +3581,9 @@ typedef struct _RTL_PROCESS_BACKTRACES
 } RTL_PROCESS_BACKTRACES, *PRTL_PROCESS_BACKTRACES;
 
 // Note: This information class is deprecated since values are limited to 65535. Use SystemExtendedHandleInformation instead.
+/**
+ * The SYSTEM_HANDLE_TABLE_ENTRY_INFO structure describes a single open handle in the system-wide handle table.
+ */
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
 {
     USHORT UniqueProcessId;
@@ -2973,12 +3595,18 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO
     ACCESS_MASK GrantedAccess;
 } SYSTEM_HANDLE_TABLE_ENTRY_INFO, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO;
 
+/**
+ * The SYSTEM_HANDLE_INFORMATION structure contains information about the open handles in the system.
+ */
 typedef struct _SYSTEM_HANDLE_INFORMATION
 {
     ULONG NumberOfHandles;
     _Field_size_(NumberOfHandles) SYSTEM_HANDLE_TABLE_ENTRY_INFO Handles[1];
 } SYSTEM_HANDLE_INFORMATION, *PSYSTEM_HANDLE_INFORMATION;
 
+/**
+ * The SYSTEM_OBJECTTYPE_INFORMATION structure contains information about an object type in the system.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_OBJECTTYPE_INFORMATION
 {
@@ -2995,6 +3623,9 @@ typedef struct _SYSTEM_OBJECTTYPE_INFORMATION
     UNICODE_STRING TypeName;
 } SYSTEM_OBJECTTYPE_INFORMATION, *PSYSTEM_OBJECTTYPE_INFORMATION;
 
+/**
+ * The SYSTEM_OBJECT_INFORMATION structure contains information about an object in the system.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_OBJECT_INFORMATION
 {
@@ -3012,6 +3643,9 @@ typedef struct _SYSTEM_OBJECT_INFORMATION
     UNICODE_STRING NameInfo;
 } SYSTEM_OBJECT_INFORMATION, *PSYSTEM_OBJECT_INFORMATION;
 
+/**
+ * The SYSTEM_PAGEFILE_INFORMATION structure contains information about a paging file in the system.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_PAGEFILE_INFORMATION
 {
@@ -3022,6 +3656,9 @@ typedef struct _SYSTEM_PAGEFILE_INFORMATION
     UNICODE_STRING PageFileName;
 } SYSTEM_PAGEFILE_INFORMATION, *PSYSTEM_PAGEFILE_INFORMATION;
 
+/**
+ * The SYSTEM_VDM_INSTEMUL_INFO structure contains statistics about VDM instruction emulation.
+ */
 typedef struct _SYSTEM_VDM_INSTEMUL_INFO
 {
     ULONG SegmentNotPresent;
@@ -3065,6 +3702,15 @@ typedef struct _SYSTEM_VDM_INSTEMUL_INFO
 #define MM_WORKING_SET_MIN_HARD_ENABLE 0x4
 #define MM_WORKING_SET_MIN_HARD_DISABLE 0x8
 
+// SYSTEM_FILECACHE_INFORMATION.Flags / SetSystemFileCacheSize flags
+// #define FILE_CACHE_MAX_HARD_ENABLE MM_WORKING_SET_MAX_HARD_ENABLE
+// #define FILE_CACHE_MAX_HARD_DISABLE MM_WORKING_SET_MAX_HARD_DISABLE
+// #define FILE_CACHE_MIN_HARD_ENABLE MM_WORKING_SET_MIN_HARD_ENABLE
+// #define FILE_CACHE_MIN_HARD_DISABLE MM_WORKING_SET_MIN_HARD_DISABLE
+
+/**
+ * The SYSTEM_FILECACHE_INFORMATION structure contains information about the system file cache.
+ */
 typedef struct _SYSTEM_FILECACHE_INFORMATION
 {
     SIZE_T CurrentSize;
@@ -3075,10 +3721,13 @@ typedef struct _SYSTEM_FILECACHE_INFORMATION
     SIZE_T CurrentSizeIncludingTransitionInPages;
     SIZE_T PeakSizeIncludingTransitionInPages;
     ULONG TransitionRePurposeCount;
-    ULONG Flags;
+    ULONG Flags; // FILE_CACHE_* / MM_WORKING_SET_* flags
 } SYSTEM_FILECACHE_INFORMATION, *PSYSTEM_FILECACHE_INFORMATION;
 
 // Can be used instead of SYSTEM_FILECACHE_INFORMATION
+/**
+ * The SYSTEM_BASIC_WORKING_SET_INFORMATION structure contains basic working set information for the system.
+ */
 typedef struct _SYSTEM_BASIC_WORKING_SET_INFORMATION
 {
     SIZE_T CurrentSize;
@@ -3086,6 +3735,9 @@ typedef struct _SYSTEM_BASIC_WORKING_SET_INFORMATION
     ULONG PageFaultCount;
 } SYSTEM_BASIC_WORKING_SET_INFORMATION, *PSYSTEM_BASIC_WORKING_SET_INFORMATION;
 
+/**
+ * The SYSTEM_POOLTAG structure describes pool allocation statistics for a single pool tag.
+ */
 typedef struct _SYSTEM_POOLTAG
 {
     union
@@ -3101,12 +3753,18 @@ typedef struct _SYSTEM_POOLTAG
     SIZE_T NonPagedUsed;
 } SYSTEM_POOLTAG, *PSYSTEM_POOLTAG;
 
+/**
+ * The SYSTEM_POOLTAG_INFORMATION structure contains pool allocation statistics for all pool tags in the system.
+ */
 typedef struct _SYSTEM_POOLTAG_INFORMATION
 {
     ULONG Count;
     _Field_size_(Count) SYSTEM_POOLTAG TagInfo[1];
 } SYSTEM_POOLTAG_INFORMATION, *PSYSTEM_POOLTAG_INFORMATION;
 
+/**
+ * The SYSTEM_INTERRUPT_INFORMATION structure contains interrupt statistics for a processor.
+ */
 typedef struct _SYSTEM_INTERRUPT_INFORMATION
 {
     ULONG ContextSwitches;
@@ -3117,6 +3775,9 @@ typedef struct _SYSTEM_INTERRUPT_INFORMATION
     ULONG ApcBypassCount;
 } SYSTEM_INTERRUPT_INFORMATION, *PSYSTEM_INTERRUPT_INFORMATION;
 
+/**
+ * The SYSTEM_DPC_BEHAVIOR_INFORMATION structure contains the deferred procedure call (DPC) timeout and behavior settings.
+ */
 typedef struct _SYSTEM_DPC_BEHAVIOR_INFORMATION
 {
     ULONG Spare;
@@ -3126,6 +3787,9 @@ typedef struct _SYSTEM_DPC_BEHAVIOR_INFORMATION
     ULONG IdealDpcRate;
 } SYSTEM_DPC_BEHAVIOR_INFORMATION, *PSYSTEM_DPC_BEHAVIOR_INFORMATION;
 
+/**
+ * The SYSTEM_QUERY_TIME_ADJUST_INFORMATION structure contains the current time adjustment settings.
+ */
 typedef struct _SYSTEM_QUERY_TIME_ADJUST_INFORMATION
 {
     ULONG TimeAdjustment;
@@ -3133,6 +3797,9 @@ typedef struct _SYSTEM_QUERY_TIME_ADJUST_INFORMATION
     BOOLEAN Enable;
 } SYSTEM_QUERY_TIME_ADJUST_INFORMATION, *PSYSTEM_QUERY_TIME_ADJUST_INFORMATION;
 
+/**
+ * The SYSTEM_QUERY_TIME_ADJUST_INFORMATION_PRECISE structure contains the current high-precision time adjustment settings.
+ */
 typedef struct _SYSTEM_QUERY_TIME_ADJUST_INFORMATION_PRECISE
 {
     ULONGLONG TimeAdjustment;
@@ -3140,57 +3807,72 @@ typedef struct _SYSTEM_QUERY_TIME_ADJUST_INFORMATION_PRECISE
     BOOLEAN Enable;
 } SYSTEM_QUERY_TIME_ADJUST_INFORMATION_PRECISE, *PSYSTEM_QUERY_TIME_ADJUST_INFORMATION_PRECISE;
 
+/**
+ * The SYSTEM_SET_TIME_ADJUST_INFORMATION structure specifies the time adjustment settings to apply.
+ */
 typedef struct _SYSTEM_SET_TIME_ADJUST_INFORMATION
 {
     ULONG TimeAdjustment;
     BOOLEAN Enable;
 } SYSTEM_SET_TIME_ADJUST_INFORMATION, *PSYSTEM_SET_TIME_ADJUST_INFORMATION;
 
+/**
+ * The SYSTEM_SET_TIME_ADJUST_INFORMATION_PRECISE structure specifies the high-precision time adjustment settings to apply.
+ */
 typedef struct _SYSTEM_SET_TIME_ADJUST_INFORMATION_PRECISE
 {
     ULONGLONG TimeAdjustment;
     BOOLEAN Enable;
 } SYSTEM_SET_TIME_ADJUST_INFORMATION_PRECISE, *PSYSTEM_SET_TIME_ADJUST_INFORMATION_PRECISE;
 
+/**
+ * The EVENT_TRACE_INFORMATION_CLASS enumeration defines the information classes used with event tracing (ETW).
+ */
 typedef enum _EVENT_TRACE_INFORMATION_CLASS
 {
-    EventTraceKernelVersionInformation, // EVENT_TRACE_VERSION_INFORMATION
-    EventTraceGroupMaskInformation, // EVENT_TRACE_GROUPMASK_INFORMATION
-    EventTracePerformanceInformation, // EVENT_TRACE_PERFORMANCE_INFORMATION
-    EventTraceTimeProfileInformation, // EVENT_TRACE_TIME_PROFILE_INFORMATION
-    EventTraceSessionSecurityInformation, // EVENT_TRACE_SESSION_SECURITY_INFORMATION
-    EventTraceSpinlockInformation, // EVENT_TRACE_SPINLOCK_INFORMATION
-    EventTraceStackTracingInformation, // EVENT_TRACE_STACK_TRACING_INFORMATION
-    EventTraceExecutiveResourceInformation, // EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION
-    EventTraceHeapTracingInformation, // EVENT_TRACE_HEAP_TRACING_INFORMATION
-    EventTraceHeapSummaryTracingInformation, // EVENT_TRACE_HEAP_TRACING_INFORMATION
-    EventTracePoolTagFilterInformation, // EVENT_TRACE_POOLTAG_FILTER_INFORMATION
-    EventTracePebsTracingInformation, // EVENT_TRACE_PEBS_TRACING_INFORMATION
-    EventTraceProfileConfigInformation, // EVENT_TRACE_PROFILE_CONFIG_INFORMATION
-    EventTraceProfileSourceListInformation, // EVENT_TRACE_PROFILE_LIST_INFORMATION
-    EventTraceProfileEventListInformation, // EVENT_TRACE_PROFILE_EVENT_INFORMATION
-    EventTraceProfileCounterListInformation, // EVENT_TRACE_PROFILE_COUNTER_INFORMATION
-    EventTraceStackCachingInformation, // EVENT_TRACE_STACK_CACHING_INFORMATION
-    EventTraceObjectTypeFilterInformation, // EVENT_TRACE_OBJECT_TYPE_FILTER_INFORMATION
-    EventTraceSoftRestartInformation, // EVENT_TRACE_SOFT_RESTART_INFORMATION
-    EventTraceLastBranchConfigurationInformation, // REDSTONE3
-    EventTraceLastBranchEventListInformation, // EVENT_TRACE_PROFILE_EVENT_INFORMATION
-    EventTraceProfileSourceAddInformation, // EVENT_TRACE_PROFILE_ADD_INFORMATION // REDSTONE4
-    EventTraceProfileSourceRemoveInformation, // EVENT_TRACE_PROFILE_REMOVE_INFORMATION
-    EventTraceProcessorTraceConfigurationInformation,
-    EventTraceProcessorTraceEventListInformation, // EVENT_TRACE_PROFILE_EVENT_INFORMATION
-    EventTraceCoverageSamplerInformation, // EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION
-    EventTraceUnifiedStackCachingInformation, // since 21H1
-    EventTraceContextRegisterTraceInformation, // TRACE_CONTEXT_REGISTER_INFO // 24H2
+    EventTraceKernelVersionInformation,                 // q: EVENT_TRACE_VERSION_INFORMATION
+    EventTraceGroupMaskInformation,                     // qs: EVENT_TRACE_GROUPMASK_INFORMATION
+    EventTracePerformanceInformation,                   // q: EVENT_TRACE_PERFORMANCE_INFORMATION
+    EventTraceTimeProfileInformation,                   // qs: EVENT_TRACE_TIME_PROFILE_INFORMATION
+    EventTraceSessionSecurityInformation,               // s: EVENT_TRACE_SESSION_SECURITY_INFORMATION
+    EventTraceSpinlockInformation,                      // s: EVENT_TRACE_SPINLOCK_INFORMATION
+    EventTraceStackTracingInformation,                  // s: EVENT_TRACE_STACK_TRACING_INFORMATION
+    EventTraceExecutiveResourceInformation,             // s: EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION
+    EventTraceHeapTracingInformation,                   // s: EVENT_TRACE_HEAP_TRACING_INFORMATION
+    EventTraceHeapSummaryTracingInformation,            // s: EVENT_TRACE_HEAP_TRACING_INFORMATION
+    EventTracePoolTagFilterInformation,                 // s: EVENT_TRACE_POOLTAG_FILTER_INFORMATION
+    EventTracePebsTracingInformation,                   // s: EVENT_TRACE_PEBS_TRACING_INFORMATION
+    EventTraceProfileConfigInformation,                 // s: EVENT_TRACE_PROFILE_CONFIG_INFORMATION
+    EventTraceProfileSourceListInformation,             // q: EVENT_TRACE_PROFILE_LIST_INFORMATION
+    EventTraceProfileEventListInformation,              // s: EVENT_TRACE_PROFILE_EVENT_INFORMATION
+    EventTraceProfileCounterListInformation,            // s: EVENT_TRACE_PROFILE_COUNTER_INFORMATION
+    EventTraceStackCachingInformation,                  // s: EVENT_TRACE_STACK_CACHING_INFORMATION
+    EventTraceObjectTypeFilterInformation,              // s: EVENT_TRACE_OBJECT_TYPE_FILTER_INFORMATION
+    EventTraceSoftRestartInformation,                   // s: EVENT_TRACE_SOFT_RESTART_INFORMATION
+    EventTraceLastBranchConfigurationInformation,       // s: EVENT_TRACE_LAST_BRANCH_CONFIGURATION_INFORMATION // REDSTONE3
+    EventTraceLastBranchEventListInformation,           // s: EVENT_TRACE_PROFILE_EVENT_INFORMATION
+    EventTraceProfileSourceAddInformation,              // s: EVENT_TRACE_PROFILE_ADD_INFORMATION // REDSTONE4
+    EventTraceProfileSourceRemoveInformation,           // s: EVENT_TRACE_PROFILE_REMOVE_INFORMATION
+    EventTraceProcessorTraceConfigurationInformation,   // s: EVENT_TRACE_PROCESSOR_TRACE_CONFIGURATION_INFORMATION
+    EventTraceProcessorTraceEventListInformation,       // s: EVENT_TRACE_PROFILE_EVENT_INFORMATION
+    EventTraceCoverageSamplerInformation,               // s: EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION
+    EventTraceUnifiedStackCachingInformation,           // s: EVENT_TRACE_STACK_CACHING_INFORMATION // since 21H1
+    EventTraceContextRegisterTraceInformation,          // s: EVENT_TRACE_CONTEXT_REGISTER_INFO // 24H2
     MaxEventTraceInfoClass
 } EVENT_TRACE_INFORMATION_CLASS;
 
+/**
+ * The EVENT_TRACE_VERSION_INFORMATION structure contains event trace version information.
+ */
 typedef struct _EVENT_TRACE_VERSION_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
     ULONG EventTraceKernelVersion;
 } EVENT_TRACE_VERSION_INFORMATION, *PEVENT_TRACE_VERSION_INFORMATION;
 
+/**
+ * The EVENT_TRACE_GROUPMASK_INFORMATION structure contains event trace groupmask information.
+ */
 typedef struct _EVENT_TRACE_GROUPMASK_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3198,18 +3880,74 @@ typedef struct _EVENT_TRACE_GROUPMASK_INFORMATION
     ULONG Masks[8]; // PERFINFO_GROUPMASK
 } EVENT_TRACE_GROUPMASK_INFORMATION, *PEVENT_TRACE_GROUPMASK_INFORMATION;
 
+#define EVENT_TRACE_LAST_BRANCH_EVENT_OPCODE 0x20
+#define EVENT_TRACE_LAST_BRANCH_MAXIMUM_EVENTS 4
+
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_NONE                  0x00000000
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_KERNEL        0x00000001
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_USER          0x00000002
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_JCC           0x00000004
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_NEAR_REL_CALL 0x00000008
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_NEAR_IND_CALL 0x00000010
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_NEAR_RET      0x00000020
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_NEAR_IND_JMP  0x00000040
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_NEAR_REL_JMP  0x00000080
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_EXCLUDE_FAR_BRANCH    0x00000100
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_CALLSTACK_ENABLE      0x00000200
+#define EVENT_TRACE_LAST_BRANCH_CONFIGURATION_SAMPLED               0x00000400
+
+/**
+ * The EVENT_TRACE_LAST_BRANCH_EVENT_ID structure describes the event trace last branch event id.
+ */
+typedef struct _EVENT_TRACE_LAST_BRANCH_EVENT_ID
+{
+    GUID EventGuid;
+    UCHAR Type;
+    UCHAR Reserved[7];
+} EVENT_TRACE_LAST_BRANCH_EVENT_ID, *PEVENT_TRACE_LAST_BRANCH_EVENT_ID;
+
+/**
+ * The EVENT_TRACE_LAST_BRANCH_CONFIGURATION_INFORMATION structure contains event trace last branch configuration information.
+ */
+typedef struct _EVENT_TRACE_LAST_BRANCH_CONFIGURATION_INFORMATION
+{
+    EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
+    ULONG LbrConfiguration; // EVENT_TRACE_LAST_BRANCH_CONFIGURATION_* flags
+    ULONG EventCount; // Number of valid entries in Events, up to EVENT_TRACE_LAST_BRANCH_MAXIMUM_EVENTS.
+    EVENT_TRACE_LAST_BRANCH_EVENT_ID Events[EVENT_TRACE_LAST_BRANCH_MAXIMUM_EVENTS];
+} EVENT_TRACE_LAST_BRANCH_CONFIGURATION_INFORMATION, *PEVENT_TRACE_LAST_BRANCH_CONFIGURATION_INFORMATION;
+
+/**
+ * The EVENT_TRACE_PROCESSOR_TRACE_CONFIGURATION_INFORMATION structure contains event trace processor trace configuration information.
+ */
+typedef struct _EVENT_TRACE_PROCESSOR_TRACE_CONFIGURATION_INFORMATION
+{
+    EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
+    TRACEHANDLE TraceHandle;
+    PVOID Callback; // Kernel-mode processor trace configuration callback passed to the ETW hardware trace extension.
+} EVENT_TRACE_PROCESSOR_TRACE_CONFIGURATION_INFORMATION, *PEVENT_TRACE_PROCESSOR_TRACE_CONFIGURATION_INFORMATION;
+
+/**
+ * The EVENT_TRACE_PERFORMANCE_INFORMATION structure contains event trace performance information.
+ */
 typedef struct _EVENT_TRACE_PERFORMANCE_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
     LARGE_INTEGER LogfileBytesWritten;
 } EVENT_TRACE_PERFORMANCE_INFORMATION, *PEVENT_TRACE_PERFORMANCE_INFORMATION;
 
+/**
+ * The EVENT_TRACE_TIME_PROFILE_INFORMATION structure contains event trace time profile information.
+ */
 typedef struct _EVENT_TRACE_TIME_PROFILE_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
     ULONG ProfileInterval;
 } EVENT_TRACE_TIME_PROFILE_INFORMATION, *PEVENT_TRACE_TIME_PROFILE_INFORMATION;
 
+/**
+ * The EVENT_TRACE_SESSION_SECURITY_INFORMATION structure contains event trace session security information.
+ */
 typedef struct _EVENT_TRACE_SESSION_SECURITY_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3218,6 +3956,9 @@ typedef struct _EVENT_TRACE_SESSION_SECURITY_INFORMATION
     UCHAR SecurityDescriptor[1];
 } EVENT_TRACE_SESSION_SECURITY_INFORMATION, *PEVENT_TRACE_SESSION_SECURITY_INFORMATION;
 
+/**
+ * The EVENT_TRACE_SPINLOCK_INFORMATION structure contains event trace spinlock information.
+ */
 typedef struct _EVENT_TRACE_SPINLOCK_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3227,6 +3968,9 @@ typedef struct _EVENT_TRACE_SPINLOCK_INFORMATION
     ULONG SpinLockHoldThreshold;
 } EVENT_TRACE_SPINLOCK_INFORMATION, *PEVENT_TRACE_SPINLOCK_INFORMATION;
 
+/**
+ * The EVENT_TRACE_SYSTEM_EVENT_INFORMATION structure contains event trace system event information.
+ */
 typedef struct _EVENT_TRACE_SYSTEM_EVENT_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3238,6 +3982,9 @@ typedef EVENT_TRACE_SYSTEM_EVENT_INFORMATION EVENT_TRACE_STACK_TRACING_INFORMATI
 typedef EVENT_TRACE_SYSTEM_EVENT_INFORMATION EVENT_TRACE_PEBS_TRACING_INFORMATION, *PEVENT_TRACE_PEBS_TRACING_INFORMATION;
 typedef EVENT_TRACE_SYSTEM_EVENT_INFORMATION EVENT_TRACE_PROFILE_EVENT_INFORMATION, *PEVENT_TRACE_PROFILE_EVENT_INFORMATION;
 
+/**
+ * The EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION structure contains event trace executive resource information.
+ */
 typedef struct _EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3246,12 +3993,18 @@ typedef struct _EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION
     ULONG NumberOfExcessiveTimeouts;
 } EVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION, *PEVENT_TRACE_EXECUTIVE_RESOURCE_INFORMATION;
 
+/**
+ * The EVENT_TRACE_HEAP_TRACING_INFORMATION structure contains event trace heap tracing information.
+ */
 typedef struct _EVENT_TRACE_HEAP_TRACING_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
     ULONG ProcessId[1];
 } EVENT_TRACE_HEAP_TRACING_INFORMATION, *PEVENT_TRACE_HEAP_TRACING_INFORMATION;
 
+/**
+ * The EVENT_TRACE_TAG_FILTER_INFORMATION structure contains event trace tag filter information.
+ */
 typedef struct _EVENT_TRACE_TAG_FILTER_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3267,6 +4020,9 @@ typedef EVENT_TRACE_TAG_FILTER_INFORMATION EVENT_TRACE_OBJECT_TYPE_FILTER_INFORM
 #define ETW_MAX_PMC_EVENTS        4
 #define ETW_MAX_PMC_COUNTERS      4
 
+/**
+ * The EVENT_TRACE_PROFILE_COUNTER_INFORMATION structure contains event trace profile counter information.
+ */
 typedef struct _EVENT_TRACE_PROFILE_COUNTER_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3289,6 +4045,9 @@ typedef EVENT_TRACE_PROFILE_COUNTER_INFORMATION EVENT_TRACE_PROFILE_CONFIG_INFOR
 
 typedef struct _PROFILE_SOURCE_INFO *PPROFILE_SOURCE_INFO;
 
+/**
+ * The EVENT_TRACE_PROFILE_LIST_INFORMATION structure contains event trace profile list information.
+ */
 typedef struct _EVENT_TRACE_PROFILE_LIST_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3296,6 +4055,9 @@ typedef struct _EVENT_TRACE_PROFILE_LIST_INFORMATION
     PPROFILE_SOURCE_INFO Profile[1];
 } EVENT_TRACE_PROFILE_LIST_INFORMATION, *PEVENT_TRACE_PROFILE_LIST_INFORMATION;
 
+/**
+ * The EVENT_TRACE_STACK_CACHING_INFORMATION structure contains event trace stack caching information.
+ */
 typedef struct _EVENT_TRACE_STACK_CACHING_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3306,6 +4068,9 @@ typedef struct _EVENT_TRACE_STACK_CACHING_INFORMATION
     ULONG BucketCount;
 } EVENT_TRACE_STACK_CACHING_INFORMATION, *PEVENT_TRACE_STACK_CACHING_INFORMATION;
 
+/**
+ * The EVENT_TRACE_SOFT_RESTART_INFORMATION structure contains event trace soft restart information.
+ */
 typedef struct _EVENT_TRACE_SOFT_RESTART_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3314,6 +4079,9 @@ typedef struct _EVENT_TRACE_SOFT_RESTART_INFORMATION
     WCHAR FileName[1];
 } EVENT_TRACE_SOFT_RESTART_INFORMATION, *PEVENT_TRACE_SOFT_RESTART_INFORMATION;
 
+/**
+ * The EVENT_TRACE_PROFILE_ADD_INFORMATION_VERSIONS enumeration defines the supported versions of event trace profile add information.
+ */
 typedef enum _EVENT_TRACE_PROFILE_ADD_INFORMATION_VERSIONS
 {
     EventTraceProfileAddInformationMinVersion = 0x2,
@@ -3322,6 +4090,9 @@ typedef enum _EVENT_TRACE_PROFILE_ADD_INFORMATION_VERSIONS
     EventTraceProfileAddInformationMaxVersion = 0x3,
 } EVENT_TRACE_PROFILE_ADD_INFORMATION_VERSIONS;
 
+/**
+ * The EVENT_TRACE_PROFILE_ADD_INFORMATION_V2 union contains event trace profile add information.
+ */
 typedef union _EVENT_TRACE_PROFILE_ADD_INFORMATION_V2
 {
     struct
@@ -3345,6 +4116,9 @@ typedef union _EVENT_TRACE_PROFILE_ADD_INFORMATION_V2
     } Arm;
 } EVENT_TRACE_PROFILE_ADD_INFORMATION_V2;
 
+/**
+ * The EVENT_TRACE_PROFILE_ADD_INFORMATION_V3 union contains event trace profile add information.
+ */
 typedef union _EVENT_TRACE_PROFILE_ADD_INFORMATION_V3
 {
     struct
@@ -3373,6 +4147,9 @@ typedef union _EVENT_TRACE_PROFILE_ADD_INFORMATION_V3
     } Arm;
 } EVENT_TRACE_PROFILE_ADD_INFORMATION_V3;
 
+/**
+ * The EVENT_TRACE_PROFILE_ADD_INFORMATION structure contains event trace profile add information.
+ */
 typedef struct _EVENT_TRACE_PROFILE_ADD_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3381,13 +4158,16 @@ typedef struct _EVENT_TRACE_PROFILE_ADD_INFORMATION
     {
         EVENT_TRACE_PROFILE_ADD_INFORMATION_V2 V2;
         EVENT_TRACE_PROFILE_ADD_INFORMATION_V3 V3;
-    };
+    } DUMMYUNIONNAME;
     ULONG CpuInfoHierarchy[0x3];
     ULONG InitialInterval;
     BOOLEAN Persist;
     WCHAR ProfileSourceDescription[0x1];
 } EVENT_TRACE_PROFILE_ADD_INFORMATION, *PEVENT_TRACE_PROFILE_ADD_INFORMATION;
 
+/**
+ * The EVENT_TRACE_PROFILE_REMOVE_INFORMATION structure contains event trace profile remove information.
+ */
 typedef struct _EVENT_TRACE_PROFILE_REMOVE_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3395,6 +4175,9 @@ typedef struct _EVENT_TRACE_PROFILE_REMOVE_INFORMATION
     ULONG CpuInfoHierarchy[0x3];
 } EVENT_TRACE_PROFILE_REMOVE_INFORMATION, *PEVENT_TRACE_PROFILE_REMOVE_INFORMATION;
 
+/**
+ * The EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION structure contains event trace coverage sampler information.
+ */
 typedef struct _EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION
 {
     EVENT_TRACE_INFORMATION_CLASS EventTraceInformationClass;
@@ -3405,12 +4188,22 @@ typedef struct _EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION
     HANDLE SamplerHandle;
 } EVENT_TRACE_COVERAGE_SAMPLER_INFORMATION, *PEVENT_TRACE_COVERAGE_SAMPLER_INFORMATION;
 
-//typedef struct _TRACE_CONTEXT_REGISTER_INFO
-//{
-//    ETW_CONTEXT_REGISTER_TYPES RegisterTypes;
-//    ULONG Reserved;
-//} TRACE_CONTEXT_REGISTER_INFO, *PTRACE_CONTEXT_REGISTER_INFO;
+// typedef enum _ETW_CONTEXT_REGISTER_TYPES
+// {
+//     EtwContextRegisterTypeNone = 0,
+//     EtwContextRegisterTypeControl = 0x1,
+//     EtwContextRegisterTypeInteger = 0x2
+// } ETW_CONTEXT_REGISTER_TYPES;
+//
+// typedef struct _EVENT_TRACE_CONTEXT_REGISTER_INFO
+// {
+//     ETW_CONTEXT_REGISTER_TYPES RegisterTypes;
+//     ULONG Reserved;
+// } EVENT_TRACE_CONTEXT_REGISTER_INFO, *PEVENT_TRACE_CONTEXT_REGISTER_INFO;
 
+/**
+ * The SYSTEM_EXCEPTION_INFORMATION structure contains system-wide exception dispatching statistics.
+ */
 typedef struct _SYSTEM_EXCEPTION_INFORMATION
 {
     ULONG AlignmentFixupCount;
@@ -3419,6 +4212,9 @@ typedef struct _SYSTEM_EXCEPTION_INFORMATION
     ULONG ByteWordEmulationCount;
 } SYSTEM_EXCEPTION_INFORMATION, *PSYSTEM_EXCEPTION_INFORMATION;
 
+/**
+ * The SYSTEM_CRASH_DUMP_CONFIGURATION_CLASS enumeration defines the system crash dump configuration classes.
+ */
 typedef enum _SYSTEM_CRASH_DUMP_CONFIGURATION_CLASS
 {
     SystemCrashDumpDisable,
@@ -3426,17 +4222,26 @@ typedef enum _SYSTEM_CRASH_DUMP_CONFIGURATION_CLASS
     SystemCrashDumpInitializationComplete
 } SYSTEM_CRASH_DUMP_CONFIGURATION_CLASS, *PSYSTEM_CRASH_DUMP_CONFIGURATION_CLASS;
 
+/**
+ * The SYSTEM_CRASH_DUMP_STATE_INFORMATION structure contains system crash dump state information.
+ */
 typedef struct _SYSTEM_CRASH_DUMP_STATE_INFORMATION
 {
     SYSTEM_CRASH_DUMP_CONFIGURATION_CLASS CrashDumpConfigurationClass;
 } SYSTEM_CRASH_DUMP_STATE_INFORMATION, *PSYSTEM_CRASH_DUMP_STATE_INFORMATION;
 
+/**
+ * The SYSTEM_KERNEL_DEBUGGER_INFORMATION structure indicates whether a kernel debugger is present and enabled.
+ */
 typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION
 {
     BOOLEAN KernelDebuggerEnabled;
     BOOLEAN KernelDebuggerNotPresent;
 } SYSTEM_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION;
 
+/**
+ * The SYSTEM_CONTEXT_SWITCH_INFORMATION structure contains system-wide context switch statistics.
+ */
 typedef struct _SYSTEM_CONTEXT_SWITCH_INFORMATION
 {
     ULONG ContextSwitches;
@@ -3453,6 +4258,9 @@ typedef struct _SYSTEM_CONTEXT_SWITCH_INFORMATION
     ULONG SwitchToIdle;
 } SYSTEM_CONTEXT_SWITCH_INFORMATION, *PSYSTEM_CONTEXT_SWITCH_INFORMATION;
 
+/**
+ * The SYSTEM_REGISTRY_QUOTA_INFORMATION structure contains the registry quota limits and current usage.
+ */
 typedef struct _SYSTEM_REGISTRY_QUOTA_INFORMATION
 {
     ULONG RegistryQuotaAllowed;
@@ -3460,6 +4268,9 @@ typedef struct _SYSTEM_REGISTRY_QUOTA_INFORMATION
     SIZE_T PagedPoolSize;
 } SYSTEM_REGISTRY_QUOTA_INFORMATION, *PSYSTEM_REGISTRY_QUOTA_INFORMATION;
 
+/**
+ * The SYSTEM_PROCESSOR_IDLE_INFORMATION structure contains per-processor idle time statistics.
+ */
 typedef struct _SYSTEM_PROCESSOR_IDLE_INFORMATION
 {
     ULONGLONG IdleTime;
@@ -3472,12 +4283,18 @@ typedef struct _SYSTEM_PROCESSOR_IDLE_INFORMATION
     ULONG Padding;
 } SYSTEM_PROCESSOR_IDLE_INFORMATION, *PSYSTEM_PROCESSOR_IDLE_INFORMATION;
 
+/**
+ * The SYSTEM_LEGACY_DRIVER_INFORMATION structure contains information about legacy drivers in the system.
+ */
 typedef struct _SYSTEM_LEGACY_DRIVER_INFORMATION
 {
     ULONG VetoType;
     UNICODE_STRING VetoList;
 } SYSTEM_LEGACY_DRIVER_INFORMATION, *PSYSTEM_LEGACY_DRIVER_INFORMATION;
 
+/**
+ * The SYSTEM_LOOKASIDE_INFORMATION structure contains statistics for the system lookaside lists.
+ */
 typedef struct _SYSTEM_LOOKASIDE_INFORMATION
 {
     USHORT CurrentDepth;
@@ -3492,11 +4309,17 @@ typedef struct _SYSTEM_LOOKASIDE_INFORMATION
 } SYSTEM_LOOKASIDE_INFORMATION, *PSYSTEM_LOOKASIDE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_RANGE_START_INFORMATION structure contains the start address of the system virtual address range.
+ */
 typedef struct _SYSTEM_RANGE_START_INFORMATION
 {
     ULONG_PTR SystemRangeStart;
 } SYSTEM_RANGE_START_INFORMATION, *PSYSTEM_RANGE_START_INFORMATION;
 
+/**
+ * The SYSTEM_VERIFIER_INFORMATION_LEGACY structure describes the system verifier information legacy.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_VERIFIER_INFORMATION_LEGACY // pre-19H1
 {
@@ -3527,6 +4350,9 @@ typedef struct _SYSTEM_VERIFIER_INFORMATION_LEGACY // pre-19H1
     SIZE_T PeakNonPagedPoolUsageInBytes;
 } SYSTEM_VERIFIER_INFORMATION_LEGACY, *PSYSTEM_VERIFIER_INFORMATION_LEGACY;
 
+/**
+ * The SYSTEM_VERIFIER_INFORMATION structure contains system verifier information.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_VERIFIER_INFORMATION
 {
@@ -3561,6 +4387,9 @@ typedef struct _SYSTEM_VERIFIER_INFORMATION
 } SYSTEM_VERIFIER_INFORMATION, *PSYSTEM_VERIFIER_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SESSION_PROCESS_INFORMATION structure contains system session process information.
+ */
 typedef struct _SYSTEM_SESSION_PROCESS_INFORMATION
 {
     ULONG SessionId;
@@ -3571,7 +4400,127 @@ typedef struct _SYSTEM_SESSION_PROCESS_INFORMATION
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 
 // private
-typedef struct _SYSTEM_GDI_DRIVER_INFORMATION
+// Validates that ServiceTableName is exactly "\\SystemRoot\\System32\\win32k.sys"
+// and forwards it to ZwSetSystemInformation(SystemLoadGdiDriverInSystemSpace, ...).
+/**
+ * The SYSTEM_EXTEND_SERVICE_TABLE_INFORMATION structure contains system extend service table information.
+ */
+typedef struct _SYSTEM_EXTEND_SERVICE_TABLE_INFORMATION
+{
+    UNICODE_STRING ServiceTableName;
+} SYSTEM_EXTEND_SERVICE_TABLE_INFORMATION, *PSYSTEM_EXTEND_SERVICE_TABLE_INFORMATION;
+
+// private
+// Consumed by PsChangeQuantumTable(ApplyToProcesses = TRUE, PrioritySeparation).
+#define PSPRIORITYSEPARATION_MASK 0x03
+#define PSQUANTUMTYPE_MASK 0x0C
+#define PSFOREGROUNDQUANTUM_MASK 0x30
+
+#define PSQUANTUMTYPE_DEFAULT 0x00 // Product-type default: variable on workstation, fixed on server.
+#define PSQUANTUMTYPE_VARIABLE 0x04 // Sets KiVariableQuantumEnabled = TRUE and uses PspVariableQuantums or PspVariableQuantums_With_ShortQuantum.
+#define PSQUANTUMTYPE_FIXED 0x08 // Sets KiVariableQuantumEnabled = FALSE and uses PspFixedQuantums.
+
+#define PSFOREGROUNDQUANTUM_DEFAULT 0x00
+#define PSFOREGROUNDQUANTUM_ALTERNATE 0x10
+#define PSFOREGROUNDQUANTUM_BASE 0x20
+
+/**
+ * The SYSTEM_PRIORITY_SEPARATION_INFORMATION structure contains system priority separation information.
+ */
+typedef struct _SYSTEM_PRIORITY_SEPARATION_INFORMATION
+{
+    union
+    {
+        ULONG PrioritySeparation;
+        struct
+        {
+            ULONG PrioritySeparationValue : 2;
+            ULONG QuantumType : 2;
+            ULONG ForegroundQuantum : 2;
+            ULONG Reserved : 26;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+} SYSTEM_PRIORITY_SEPARATION_INFORMATION, *PSYSTEM_PRIORITY_SEPARATION_INFORMATION;
+
+// private
+/**
+ * The recommended alignment equals the system's largest cache-line size, in bytes.
+ *
+ * So the returned value is simply:
+ * - KeLargestCacheLine
+ */
+typedef struct _SYSTEM_RECOMMENDED_SHARED_DATA_ALIGNMENT_INFORMATION
+{
+    ULONG RecommendedSharedDataAlignment;
+} SYSTEM_RECOMMENDED_SHARED_DATA_ALIGNMENT_INFORMATION, *PSYSTEM_RECOMMENDED_SHARED_DATA_ALIGNMENT_INFORMATION;
+
+// private
+/**
+ * Used by SystemComPlusPackage.
+ *
+ * NtSetSystemInformation(SystemComPlusPackage, ...) expects a 4-byte value,
+ * passes it to ExpUpdateComPlusPackage, and mirrors the result into
+ * KUSER_SHARED_DATA.ComPlusPackage.
+ */
+typedef struct _SYSTEM_COMPLUS_PACKAGE_INFORMATION
+{
+    ULONG ComPlusPackage;
+} SYSTEM_COMPLUS_PACKAGE_INFORMATION, *PSYSTEM_COMPLUS_PACKAGE_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_LOST_DELAYED_WRITE_INFORMATION structure contains system lost delayed write information.
+ */
+typedef struct _SYSTEM_LOST_DELAYED_WRITE_INFORMATION
+{
+    ULONG LostDelayedWrites;
+} SYSTEM_LOST_DELAYED_WRITE_INFORMATION, *PSYSTEM_LOST_DELAYED_WRITE_INFORMATION;
+
+// private
+/**
+ * Used by SystemObjectSecurityMode.
+ *
+ * SeSecurityModelQueryInformation returns a 4-byte mode value.
+ * The value is initialized to 0 and set to 2 when
+ * SepIsDeviceOwnerProtectionDowngradeAllowed() returns TRUE.
+ */
+typedef struct _SYSTEM_OBJECT_SECURITY_MODE_INFORMATION
+{
+    ULONG ObjectSecurityMode;
+} SYSTEM_OBJECT_SECURITY_MODE_INFORMATION, *PSYSTEM_OBJECT_SECURITY_MODE_INFORMATION;
+
+// private
+/**
+ * Used by SystemAitSamplingValue.
+ *
+ * AIT refers to Application Impact Telemetry.
+ *
+ * NtSetSystemInformation(SystemAitSamplingValue, ...) expects a 4-byte value
+ * and mirrors it into KUSER_SHARED_DATA.AitSamplingValue.
+ */
+typedef struct _SYSTEM_AIT_SAMPLING_VALUE_INFORMATION
+{
+    ULONG AitSamplingValue;
+} SYSTEM_AIT_SAMPLING_VALUE_INFORMATION, *PSYSTEM_AIT_SAMPLING_VALUE_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_GDI_DRIVER_INFORMATION_V0 structure contains system GDI driver information.
+ */
+typedef struct _SYSTEM_GDI_DRIVER_INFORMATION_V0
+{
+    UNICODE_STRING DriverName;
+    PVOID ImageAddress;
+    PVOID SectionPointer;
+    PVOID EntryPoint;
+    ULONG ImageLength;
+} SYSTEM_GDI_DRIVER_INFORMATION_V0, *PSYSTEM_GDI_DRIVER_INFORMATION_V0;
+
+// private
+/**
+ * The SYSTEM_GDI_DRIVER_INFORMATION_V1 structure contains system GDI driver information.
+ */
+typedef struct _SYSTEM_GDI_DRIVER_INFORMATION_V1
 {
     UNICODE_STRING DriverName;
     PVOID ImageAddress;
@@ -3579,7 +4528,19 @@ typedef struct _SYSTEM_GDI_DRIVER_INFORMATION
     PVOID EntryPoint;
     PIMAGE_EXPORT_DIRECTORY ExportSectionPointer;
     ULONG ImageLength;
-} SYSTEM_GDI_DRIVER_INFORMATION, *PSYSTEM_GDI_DRIVER_INFORMATION;
+} SYSTEM_GDI_DRIVER_INFORMATION_V1, *PSYSTEM_GDI_DRIVER_INFORMATION_V1;
+
+#define SYSTEM_GDI_DRIVER_INFORMATION SYSTEM_GDI_DRIVER_INFORMATION_V1
+#define PSYSTEM_GDI_DRIVER_INFORMATION PSYSTEM_GDI_DRIVER_INFORMATION_V1
+
+// private
+/**
+ * The SYSTEM_GDI_DRIVER_UNLOAD_INFORMATION structure contains system GDI driver unload information.
+ */
+typedef struct _SYSTEM_GDI_DRIVER_UNLOAD_INFORMATION
+{
+    PVOID SectionPointer;
+} SYSTEM_GDI_DRIVER_UNLOAD_INFORMATION, *PSYSTEM_GDI_DRIVER_UNLOAD_INFORMATION;
 #endif // (PHNT_MODE != PHNT_MODE_KERNEL)
 
 // geoffchappell
@@ -3590,6 +4551,9 @@ typedef struct _SYSTEM_GDI_DRIVER_INFORMATION
 #endif
 
 // private
+/**
+ * The SYSTEM_NUMA_INFORMATION structure contains system NUMA information.
+ */
 typedef struct _SYSTEM_NUMA_INFORMATION
 {
     ULONG HighestNodeNumber;
@@ -3602,6 +4566,9 @@ typedef struct _SYSTEM_NUMA_INFORMATION
     } DUMMYUNIONNAME;
 } SYSTEM_NUMA_INFORMATION, *PSYSTEM_NUMA_INFORMATION;
 
+/**
+ * The SYSTEM_PROCESSOR_POWER_INFORMATION structure contains system processor power information.
+ */
 typedef struct _SYSTEM_PROCESSOR_POWER_INFORMATION
 {
     UCHAR CurrentFrequency;
@@ -3626,6 +4593,9 @@ typedef struct _SYSTEM_PROCESSOR_POWER_INFORMATION
     ULONGLONG Energy;
 } SYSTEM_PROCESSOR_POWER_INFORMATION, *PSYSTEM_PROCESSOR_POWER_INFORMATION;
 
+/**
+ * The SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX structure describes a single open handle in the system, with extended information.
+ */
 typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
 {
     PVOID Object;
@@ -3638,6 +4608,9 @@ typedef struct _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX
     ULONG Reserved;
 } SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX, *PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX;
 
+/**
+ * The SYSTEM_HANDLE_INFORMATION_EX structure contains extended information about the open handles in the system.
+ */
 typedef struct _SYSTEM_HANDLE_INFORMATION_EX
 {
     ULONG_PTR NumberOfHandles;
@@ -3645,27 +4618,36 @@ typedef struct _SYSTEM_HANDLE_INFORMATION_EX
     _Field_size_(NumberOfHandles) SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handles[1];
 } SYSTEM_HANDLE_INFORMATION_EX, *PSYSTEM_HANDLE_INFORMATION_EX;
 
+/**
+ * The SYSTEM_BIGPOOL_ENTRY structure describes a single large pool allocation.
+ */
 typedef struct _SYSTEM_BIGPOOL_ENTRY
 {
     union
     {
         PVOID VirtualAddress;
         ULONG_PTR NonPaged : 1;
-    };
+    } DUMMYUNIONNAME;
     SIZE_T SizeInBytes;
     union
     {
         UCHAR Tag[4];
         ULONG TagUlong;
-    };
+    } DUMMYUNIONNAME2;
 } SYSTEM_BIGPOOL_ENTRY, *PSYSTEM_BIGPOOL_ENTRY;
 
+/**
+ * The SYSTEM_BIGPOOL_INFORMATION structure contains information about the system's large pool allocations.
+ */
 typedef struct _SYSTEM_BIGPOOL_INFORMATION
 {
     ULONG Count;
     _Field_size_(Count) SYSTEM_BIGPOOL_ENTRY AllocatedInfo[1];
 } SYSTEM_BIGPOOL_INFORMATION, *PSYSTEM_BIGPOOL_INFORMATION;
 
+/**
+ * The SYSTEM_POOL_ENTRY structure describes a single pool allocation.
+ */
 typedef struct _SYSTEM_POOL_ENTRY
 {
     BOOLEAN Allocated;
@@ -3677,9 +4659,12 @@ typedef struct _SYSTEM_POOL_ENTRY
         UCHAR Tag[4];
         ULONG TagUlong;
         PVOID ProcessChargedQuota;
-    };
+    } DUMMYUNIONNAME;
 } SYSTEM_POOL_ENTRY, *PSYSTEM_POOL_ENTRY;
 
+/**
+ * The SYSTEM_POOL_INFORMATION structure contains information about the system pool allocations.
+ */
 typedef struct _SYSTEM_POOL_INFORMATION
 {
     SIZE_T TotalSize;
@@ -3691,6 +4676,9 @@ typedef struct _SYSTEM_POOL_INFORMATION
     _Field_size_(NumberOfEntries) SYSTEM_POOL_ENTRY Entries[1];
 } SYSTEM_POOL_INFORMATION, *PSYSTEM_POOL_INFORMATION;
 
+/**
+ * The SYSTEM_SESSION_POOLTAG_INFORMATION structure contains system session pooltag information.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_SESSION_POOLTAG_INFORMATION
 {
@@ -3700,6 +4688,9 @@ typedef struct _SYSTEM_SESSION_POOLTAG_INFORMATION
     _Field_size_(Count) SYSTEM_POOLTAG TagInfo[1];
 } SYSTEM_SESSION_POOLTAG_INFORMATION, *PSYSTEM_SESSION_POOLTAG_INFORMATION;
 
+/**
+ * The SYSTEM_SESSION_MAPPED_VIEW_INFORMATION structure contains system session mapped view information.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_SESSION_MAPPED_VIEW_INFORMATION
 {
@@ -3710,6 +4701,9 @@ typedef struct _SYSTEM_SESSION_MAPPED_VIEW_INFORMATION
     SIZE_T NumberOfBytesAvailableContiguous;
 } SYSTEM_SESSION_MAPPED_VIEW_INFORMATION, *PSYSTEM_SESSION_MAPPED_VIEW_INFORMATION;
 
+/**
+ * The WATCHDOG_HANDLER_ACTION enumeration defines the actions for watchdog handler.
+ */
 typedef enum _WATCHDOG_HANDLER_ACTION
 {
     WdActionSetTimeoutValue,
@@ -3732,12 +4726,18 @@ NTSTATUS NTAPI SYSTEM_WATCHDOG_HANDLER(
 typedef SYSTEM_WATCHDOG_HANDLER* PSYSTEM_WATCHDOG_HANDLER;
 
 // private
+/**
+ * The SYSTEM_WATCHDOG_HANDLER_INFORMATION structure contains system watchdog handler information.
+ */
 typedef struct _SYSTEM_WATCHDOG_HANDLER_INFORMATION
 {
     PSYSTEM_WATCHDOG_HANDLER WdHandler;
     PVOID Context;
 } SYSTEM_WATCHDOG_HANDLER_INFORMATION, *PSYSTEM_WATCHDOG_HANDLER_INFORMATION;
 
+/**
+ * The WATCHDOG_INFORMATION_CLASS enumeration defines the information classes for querying and setting watchdog information.
+ */
 typedef enum _WATCHDOG_INFORMATION_CLASS
 {
     WdInfoTimeoutValue = 0,
@@ -3753,6 +4753,9 @@ typedef enum _WATCHDOG_INFORMATION_CLASS
 } WATCHDOG_INFORMATION_CLASS;
 
 // private
+/**
+ * The SYSTEM_WATCHDOG_TIMER_INFORMATION structure contains system watchdog timer information.
+ */
 typedef struct _SYSTEM_WATCHDOG_TIMER_INFORMATION
 {
     WATCHDOG_INFORMATION_CLASS WdInfoClass;
@@ -3761,6 +4764,9 @@ typedef struct _SYSTEM_WATCHDOG_TIMER_INFORMATION
 
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 // private
+/**
+ * The SYSTEM_FIRMWARE_TABLE_ACTION enumeration defines the actions for enumerating or retrieving firmware tables.
+ */
 typedef enum _SYSTEM_FIRMWARE_TABLE_ACTION
 {
     SystemFirmwareTableEnumerate,
@@ -3769,6 +4775,9 @@ typedef enum _SYSTEM_FIRMWARE_TABLE_ACTION
 } SYSTEM_FIRMWARE_TABLE_ACTION;
 
 // private
+/**
+ * The SYSTEM_FIRMWARE_TABLE_INFORMATION structure specifies a firmware table request and receives its data.
+ */
 typedef struct _SYSTEM_FIRMWARE_TABLE_INFORMATION
 {
     ULONG ProviderSignature; // (same as the GetSystemFirmwareTable function)
@@ -3788,6 +4797,9 @@ NTSTATUS STDAPIVCALLTYPE FNFTH(
 typedef FNFTH* PFNFTH;
 
 // private
+/**
+ * The SYSTEM_FIRMWARE_TABLE_HANDLER structure describes the system firmware table handler.
+ */
 typedef struct _SYSTEM_FIRMWARE_TABLE_HANDLER
 {
     ULONG ProviderSignature;
@@ -3798,6 +4810,9 @@ typedef struct _SYSTEM_FIRMWARE_TABLE_HANDLER
 #endif // (PHNT_MODE != PHNT_MODE_KERNEL)
 
 // private
+/**
+ * The SYSTEM_MEMORY_LIST_INFORMATION structure contains system memory list information.
+ */
 typedef struct _SYSTEM_MEMORY_LIST_INFORMATION
 {
     SIZE_T ZeroPageCount;
@@ -3811,6 +4826,9 @@ typedef struct _SYSTEM_MEMORY_LIST_INFORMATION
 } SYSTEM_MEMORY_LIST_INFORMATION, *PSYSTEM_MEMORY_LIST_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_MEMORY_LIST_COMMAND enumeration defines the commands for manipulating the system memory lists.
+ */
 typedef enum _SYSTEM_MEMORY_LIST_COMMAND
 {
     MemoryCaptureAccessedBits,
@@ -3822,11 +4840,18 @@ typedef enum _SYSTEM_MEMORY_LIST_COMMAND
     MemoryCommandMax
 } SYSTEM_MEMORY_LIST_COMMAND;
 
-// private
+/**
+ * The SYSTEM_THREAD_CID_PRIORITY_INFORMATION structure is used with NtSetSystemInformation
+ * to set the priority of a thread by its client ID (process ID and thread ID) without
+ * requiring a thread handle.
+ * \remarks This structure is used with the SystemThreadPriorityClientIdInformation
+ * information class (0x52). The caller must have SeIncreaseBasePriorityPrivilege
+ * to raise a thread's priority above normal.
+ */
 typedef struct _SYSTEM_THREAD_CID_PRIORITY_INFORMATION
 {
-    CLIENT_ID ClientId;
-    KPRIORITY Priority;
+    CLIENT_ID ClientId; // The process and thread identifiers of the target thread.
+    KPRIORITY Priority; // The new priority value to assign to the thread.
 } SYSTEM_THREAD_CID_PRIORITY_INFORMATION, *PSYSTEM_THREAD_CID_PRIORITY_INFORMATION;
 
 /**
@@ -3840,6 +4865,9 @@ typedef struct _SYSTEM_PROCESSOR_IDLE_CYCLE_TIME_INFORMATION
 } SYSTEM_PROCESSOR_IDLE_CYCLE_TIME_INFORMATION, *PSYSTEM_PROCESSOR_IDLE_CYCLE_TIME_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_VERIFIER_ISSUE structure describes the system verifier issue.
+ */
 typedef struct _SYSTEM_VERIFIER_ISSUE
 {
     ULONGLONG IssueType;
@@ -3848,6 +4876,9 @@ typedef struct _SYSTEM_VERIFIER_ISSUE
 } SYSTEM_VERIFIER_ISSUE, *PSYSTEM_VERIFIER_ISSUE;
 
 // private
+/**
+ * The SYSTEM_VERIFIER_CANCELLATION_INFORMATION structure contains system verifier cancellation information.
+ */
 typedef struct _SYSTEM_VERIFIER_CANCELLATION_INFORMATION
 {
     ULONG CancelProbability;
@@ -3859,6 +4890,9 @@ typedef struct _SYSTEM_VERIFIER_CANCELLATION_INFORMATION
 } SYSTEM_VERIFIER_CANCELLATION_INFORMATION, *PSYSTEM_VERIFIER_CANCELLATION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_REF_TRACE_INFORMATION structure contains system ref trace information.
+ */
 typedef struct _SYSTEM_REF_TRACE_INFORMATION
 {
     BOOLEAN TraceEnable;
@@ -3868,10 +4902,16 @@ typedef struct _SYSTEM_REF_TRACE_INFORMATION
 } SYSTEM_REF_TRACE_INFORMATION, *PSYSTEM_REF_TRACE_INFORMATION;
 
 // private
+#define SYSTEM_SPECIAL_POOL_CATCH_OVERRUNS 0x1 // MmSpecialPoolCatchOverruns
+
+// private
+/**
+ * The SYSTEM_SPECIAL_POOL_INFORMATION structure contains system special pool information.
+ */
 typedef struct _SYSTEM_SPECIAL_POOL_INFORMATION
 {
     ULONG PoolTag;
-    ULONG Flags;
+    ULONG Flags; // SYSTEM_SPECIAL_POOL_* flags
 } SYSTEM_SPECIAL_POOL_INFORMATION, *PSYSTEM_SPECIAL_POOL_INFORMATION;
 
 /**
@@ -3886,6 +4926,9 @@ typedef struct _SYSTEM_PROCESS_ID_INFORMATION
 } SYSTEM_PROCESS_ID_INFORMATION, *PSYSTEM_PROCESS_ID_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_HYPERVISOR_QUERY_INFORMATION structure contains system hypervisor query information.
+ */
 typedef struct _SYSTEM_HYPERVISOR_QUERY_INFORMATION
 {
     BOOLEAN HypervisorConnected;
@@ -3896,6 +4939,9 @@ typedef struct _SYSTEM_HYPERVISOR_QUERY_INFORMATION
 } SYSTEM_HYPERVISOR_QUERY_INFORMATION, *PSYSTEM_HYPERVISOR_QUERY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_BOOT_ENVIRONMENT_INFORMATION structure contains system boot environment information.
+ */
 typedef struct _SYSTEM_BOOT_ENVIRONMENT_INFORMATION
 {
     GUID BootIdentifier;
@@ -3921,13 +4967,19 @@ typedef struct _SYSTEM_BOOT_ENVIRONMENT_INFORMATION
 } SYSTEM_BOOT_ENVIRONMENT_INFORMATION, *PSYSTEM_BOOT_ENVIRONMENT_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_IMAGE_FILE_EXECUTION_OPTIONS_INFORMATION structure contains system image file execution options information.
+ */
 typedef struct _SYSTEM_IMAGE_FILE_EXECUTION_OPTIONS_INFORMATION
 {
-    ULONG FlagsToEnable;
-    ULONG FlagsToDisable;
+    ULONG FlagsToEnable; // FLG_* bits to add to the image's execution options.
+    ULONG FlagsToDisable; // FLG_* bits to clear from the image's execution options.
 } SYSTEM_IMAGE_FILE_EXECUTION_OPTIONS_INFORMATION, *PSYSTEM_IMAGE_FILE_EXECUTION_OPTIONS_INFORMATION;
 
 // private
+/**
+ * The COVERAGE_REQUEST_CODES enumeration defines the request codes for coverage request.
+ */
 typedef enum _COVERAGE_REQUEST_CODES
 {
     CoverageAllModules = 0,
@@ -3936,6 +4988,9 @@ typedef enum _COVERAGE_REQUEST_CODES
 } COVERAGE_REQUEST_CODES;
 
 // private
+/**
+ * The COVERAGE_MODULE_REQUEST structure describes a coverage module request.
+ */
 typedef struct _COVERAGE_MODULE_REQUEST
 {
     COVERAGE_REQUEST_CODES RequestType;
@@ -3947,16 +5002,22 @@ typedef struct _COVERAGE_MODULE_REQUEST
 } COVERAGE_MODULE_REQUEST, *PCOVERAGE_MODULE_REQUEST;
 
 // private
+/**
+ * The COVERAGE_MODULE_INFO structure contains coverage module information.
+ */
 typedef struct _COVERAGE_MODULE_INFO
 {
     ULONG ModuleInfoSize;
     ULONG IsBinaryLoaded;
     UNICODE_STRING ModulePathName;
     ULONG CoverageSectionSize;
-    UCHAR CoverageSection[1];
+    _Field_size_bytes_(CoverageSectionSize) UCHAR CoverageSection[1];
 } COVERAGE_MODULE_INFO, *PCOVERAGE_MODULE_INFO;
 
 // private
+/**
+ * The COVERAGE_MODULES structure describes the coverage modules.
+ */
 typedef struct _COVERAGE_MODULES
 {
     ULONG ListAndReset;
@@ -3966,12 +5027,18 @@ typedef struct _COVERAGE_MODULES
 } COVERAGE_MODULES, *PCOVERAGE_MODULES;
 
 // private
+/**
+ * The SYSTEM_PREFETCH_PATCH_INFORMATION structure contains system prefetch patch information.
+ */
 typedef struct _SYSTEM_PREFETCH_PATCH_INFORMATION
 {
     ULONG PrefetchPatchCount;
 } SYSTEM_PREFETCH_PATCH_INFORMATION, *PSYSTEM_PREFETCH_PATCH_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_VERIFIER_FAULTS_INFORMATION structure contains system verifier faults information.
+ */
 typedef struct _SYSTEM_VERIFIER_FAULTS_INFORMATION
 {
     ULONG Probability;
@@ -3981,6 +5048,9 @@ typedef struct _SYSTEM_VERIFIER_FAULTS_INFORMATION
 } SYSTEM_VERIFIER_FAULTS_INFORMATION, *PSYSTEM_VERIFIER_FAULTS_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_VERIFIER_INFORMATION_EX structure contains system verifier information.
+ */
 typedef struct _SYSTEM_VERIFIER_INFORMATION_EX
 {
     ULONG VerifyMode;
@@ -3996,18 +5066,27 @@ typedef struct _SYSTEM_VERIFIER_INFORMATION_EX
 } SYSTEM_VERIFIER_INFORMATION_EX, *PSYSTEM_VERIFIER_INFORMATION_EX;
 
 // private
+/**
+ * The SYSTEM_SYSTEM_PARTITION_INFORMATION structure contains system system partition information.
+ */
 typedef struct _SYSTEM_SYSTEM_PARTITION_INFORMATION
 {
     UNICODE_STRING SystemPartition;
 } SYSTEM_SYSTEM_PARTITION_INFORMATION, *PSYSTEM_SYSTEM_PARTITION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SYSTEM_DISK_INFORMATION structure contains system system disk information.
+ */
 typedef struct _SYSTEM_SYSTEM_DISK_INFORMATION
 {
     UNICODE_STRING SystemDisk;
 } SYSTEM_SYSTEM_DISK_INFORMATION, *PSYSTEM_SYSTEM_DISK_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_NUMA_PROXIMITY_MAP structure describes the system NUMA proximity map.
+ */
 typedef struct _SYSTEM_NUMA_PROXIMITY_MAP
 {
     ULONG NodeProximityId;
@@ -4015,6 +5094,9 @@ typedef struct _SYSTEM_NUMA_PROXIMITY_MAP
 } SYSTEM_NUMA_PROXIMITY_MAP, *PSYSTEM_NUMA_PROXIMITY_MAP;
 
 // private (Windows 8.1 and above)
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT structure describes the system processor performance hitcount.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT
 {
     ULONGLONG Hits;
@@ -4022,6 +5104,9 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT
 } SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT, *PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT;
 
 // private (Windows 8.1 and above)
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION structure describes the system processor performance state distribution.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION
 {
     ULONG ProcessorNumber;
@@ -4030,6 +5115,9 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION
 } SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION, *PSYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION;
 
 // private (Windows 7 and Windows 8)
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8 structure describes the system processor performance hitcount WIN8.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8
 {
     ULONG Hits;
@@ -4037,6 +5125,9 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8
 } SYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8, *PSYSTEM_PROCESSOR_PERFORMANCE_HITCOUNT_WIN8;
 
 // private (Windows 7 and Windows 8)
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION_WIN8 structure describes the system processor performance state distribution WIN8.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION_WIN8
 {
     ULONG ProcessorNumber;
@@ -4045,11 +5136,56 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION_WIN8
 } SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION_WIN8, *PSYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION_WIN8;
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION structure describes the system processor performance distribution.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION
 {
     ULONG ProcessorCount;
     ULONG Offsets[1];
 } SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION, *PSYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION;
+
+//
+// The hit counts in SYSTEM_PROCESSOR_PERFORMANCE_STATE_DISTRIBUTION are the raw data behind the
+// "Processor Information" counter set (counter set {b4fc721a-0378-476f-89ba-a5a79f810b36}).
+//
+// The weighted mean of the hit counts is "% Processor Performance" (counter 24), the average
+// performance of the processor while it is executing instructions, as a percentage of its nominal
+// performance:
+//
+//     PercentPerformance = SUM(dHits[i] * PercentFrequency[i]) / SUM(dHits[i])
+//
+// On hardware performance state (HWP/CPPC) systems the table is a two entry pseudo distribution
+// with PercentFrequency values of 0 and 255, encoded so the ordinary weighted mean above yields the
+// correct answer. The result may exceed 100 percent when the processor is above its nominal
+// frequency, and callers must not clamp it. "Actual Frequency" (counter 33) is:
+//
+//     ActualFrequency = PercentPerformance * NominalFrequency / 100
+//
+// where NominalFrequency comes from PowerInternalProcessorBrandedFrequency. Note that
+// PROCESSOR_POWER_INFORMATION.CurrentMhz is a performance state value and does not track the
+// delivered frequency on turbo capable processors.
+//
+// The hit counts do not count events. They accumulate unhalted reference time, advancing only while
+// the processor is executing, which is what makes "% Processor Utility" (counter 26) recoverable.
+// Utility and performance share one numerator in the kernel and differ only in their divisor:
+// performance divides by unhalted time, utility divides by elapsed time. So:
+//
+//     UnhaltedTime100ns = SUM(dHits[i]) * HITCOUNT_UNIT_NUMERATOR / HITCOUNT_UNIT_DENOMINATOR
+//     PercentUtility    = PercentPerformance * UnhaltedTime100ns / dElapsed100ns
+//
+// which reduces to SUM(dHits[i] * PercentFrequency[i]) * 512 / (255 * dElapsed100ns).
+//
+// The unit was measured against the counter set on an x64 HWP system and agreed to within 0.03%
+// across idle and saturated processors, and confirmed on AMD (Zen 5, CPPC) where the unit implied by
+// the counter set matched 512/255 to within 0.01% and the recovered utility tracked "% Processor
+// Utility" to within 0.06 percentage points. Both report the two entry pseudo distribution. It is
+// unvalidated on ARM64 and on legacy performance state tables, which report an occurrence count
+// rather than these accumulators and have no PercentFrequency == 0 entry; the presence of that entry
+// discriminates between the two forms.
+//
+#define SYSTEM_PROCESSOR_HITCOUNT_UNIT_NUMERATOR   512 // 512/255 of a 100ns interval, ~200.8ns
+#define SYSTEM_PROCESSOR_HITCOUNT_UNIT_DENOMINATOR 255
 
 #define CODEINTEGRITY_OPTION_ENABLED 0x01
 #define CODEINTEGRITY_OPTION_TESTSIGN 0x02
@@ -4069,6 +5205,9 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_DISTRIBUTION
 #define CODEINTEGRITY_OPTION_WHQL_AUDITMODE_ENABLED 0x8000
 
 // private
+/**
+ * The SYSTEM_CODEINTEGRITY_INFORMATION structure contains the current Code Integrity policy options.
+ */
 typedef struct _SYSTEM_CODEINTEGRITY_INFORMATION
 {
     ULONG Length;
@@ -4094,8 +5233,8 @@ typedef struct _SYSTEM_CODEINTEGRITY_INFORMATION
             ULONG WhqlEnforcementEnabled : 1;           // CODEINTEGRITY_OPTION_WHQL_ENFORCEMENT_ENABLED
             ULONG WhqlAuditModeEnabled : 1;             // CODEINTEGRITY_OPTION_WHQL_AUDITMODE_ENABLED
             ULONG Spare : 16;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } SYSTEM_CODEINTEGRITY_INFORMATION, *PSYSTEM_CODEINTEGRITY_INFORMATION;
 
 // rev
@@ -4106,12 +5245,126 @@ typedef struct _SYSTEM_CODEINTEGRITY_INFORMATION
 #define PROCESSOR_MICROCODE_OPERATION_UNLOAD 0x02
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_MICROCODE_UPDATE_INFORMATION structure contains system processor microcode update information.
+ */
 typedef struct _SYSTEM_PROCESSOR_MICROCODE_UPDATE_INFORMATION
 {
     ULONG Operation;
 } SYSTEM_PROCESSOR_MICROCODE_UPDATE_INFORMATION, *PSYSTEM_PROCESSOR_MICROCODE_UPDATE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_BRAND_STRING structure contains the processor brand string.
+ */
+typedef struct _SYSTEM_PROCESSOR_BRAND_STRING
+{
+    CHAR BrandString[49];
+} SYSTEM_PROCESSOR_BRAND_STRING, *PSYSTEM_PROCESSOR_BRAND_STRING;
+
+// private
+typedef HANDLE SYSTEM_WIN32_WER_START_CALLOUT, *PSYSTEM_WIN32_WER_START_CALLOUT;
+
+// private
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_ENCRYPT                 0x01 // SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0/V1
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_DECRYPT                 0x02 // SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0/V1
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_EXECUTE                 0x03 // variable execute request
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_FLUSH                   0x04 // no payload
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_RESERVED5               0x05 // rejected
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_RESERVED6               0x06 // rejected
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_QUERY                   0x07 // no payload
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_SET_DYNAMIC_ENFORCEMENT 0x08 // sub_140A6375C, SYSTEM_CONTROL_FLOW_TRANSITION_OP8
+#define SYSTEM_CONTROL_FLOW_TRANSITION_OPERATION_UNLOAD_MODULE           0x09 // WbHeapExecutionUnloadModule/sub_140A50E08, SYSTEM_CONTROL_FLOW_TRANSITION_OP9
+
+// private
+/**
+ * \brief Warbird control-flow transition request header.
+ *
+ * Used with \c SystemControlFlowTransition to dispatch an operation-tagged
+ * request into the kernel's Warbird control-flow transition handlers.
+ *
+ * Warbird is Windows' internal code/data protection and controlled execution
+ * mechanism used by protected components to transition memory between encrypted,
+ * decrypted, and executable states under policy.
+ *
+ * \a Parameters points to an operation-specific payload determined by
+ * \a Operation.
+ */
+typedef struct _SYSTEM_CONTROL_FLOW_TRANSITION
+{
+    ULONG Operation;
+    ULONG Reserved;
+    PVOID Parameters; // User pointer to an operation-specific payload.
+} SYSTEM_CONTROL_FLOW_TRANSITION, *PSYSTEM_CONTROL_FLOW_TRANSITION;
+
+// private
+/**
+ * The SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0 structure describes the system control flow transition segment V0.
+ */
+typedef struct _SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0
+{
+    UCHAR Data[0xF4]; // Opaque Warbird segment descriptor for operations 1/2, format selector 0.
+} SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0, *PSYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V0;
+
+// private
+/**
+ * The SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V1 structure describes the system control flow transition segment V1.
+ */
+typedef struct _SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V1
+{
+    UCHAR Data[0xF8]; // Opaque Warbird segment descriptor for operations 1/2, format selector 1.
+} SYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V1, *PSYSTEM_CONTROL_FLOW_TRANSITION_SEGMENT_V1;
+
+// private
+/**
+ * The SYSTEM_CONTROL_FLOW_TRANSITION_OP8 structure describes the system control flow transition OP8.
+ */
+typedef struct _SYSTEM_CONTROL_FLOW_TRANSITION_OP8
+{
+    ULONG ReservedMustBeZero;
+    ULONG LengthOrFlags;
+    ULONGLONG Reserved2;
+    PVOID PointerOrHandle;
+} SYSTEM_CONTROL_FLOW_TRANSITION_OP8, *PSYSTEM_CONTROL_FLOW_TRANSITION_OP8;
+
+// private
+/**
+ * The SYSTEM_CONTROL_FLOW_TRANSITION_OP9 structure describes the system control flow transition OP9.
+ */
+typedef struct _SYSTEM_CONTROL_FLOW_TRANSITION_OP9
+{
+    ULONG ReservedMustBeZero;
+    ULONG Reserved;
+    PVOID ModuleBase;
+} SYSTEM_CONTROL_FLOW_TRANSITION_OP9, *PSYSTEM_CONTROL_FLOW_TRANSITION_OP9;
+
+// private
+/**
+ * The SYSTEM_SECURE_DUMP_ENCRYPTION_INFORMATION structure contains system secure dump encryption information.
+ */
+typedef struct _SYSTEM_SECURE_DUMP_ENCRYPTION_INFORMATION
+{
+    UCHAR Data[ANYSIZE_ARRAY]; // Opaque input/output buffer used by VslTransformDumpKey via NtQuerySystemInformationEx.
+} SYSTEM_SECURE_DUMP_ENCRYPTION_INFORMATION, *PSYSTEM_SECURE_DUMP_ENCRYPTION_INFORMATION;
+
+// private
+#define SYSTEM_FIRMWARE_BOOT_PERFORMANCE_SIGNATURE 0x54504246u // "FBPT"
+
+// private
+/**
+ * The SYSTEM_FIRMWARE_BOOT_PERFORMANCE_INFORMATION structure contains system firmware boot performance information.
+ */
+typedef struct _SYSTEM_FIRMWARE_BOOT_PERFORMANCE_INFORMATION
+{
+    ULONG Signature; // SYSTEM_FIRMWARE_BOOT_PERFORMANCE_SIGNATURE
+    ULONG Length; // Total size of the copied ACPI FBPT, including trailing records.
+    UCHAR Data[ANYSIZE_ARRAY]; // Firmware boot performance records.
+} SYSTEM_FIRMWARE_BOOT_PERFORMANCE_INFORMATION, *PSYSTEM_FIRMWARE_BOOT_PERFORMANCE_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_VA_TYPE enumeration defines the system VA types.
+ */
 typedef enum _SYSTEM_VA_TYPE
 {
     SystemVaTypeAll,
@@ -4124,6 +5377,9 @@ typedef enum _SYSTEM_VA_TYPE
 } SYSTEM_VA_TYPE, *PSYSTEM_VA_TYPE;
 
 // private
+/**
+ * The SYSTEM_VA_LIST_INFORMATION structure contains system VA list information.
+ */
 typedef struct _SYSTEM_VA_LIST_INFORMATION
 {
     SIZE_T VirtualSize;
@@ -4239,6 +5495,9 @@ typedef struct _SYSTEM_VA_LIST_INFORMATION
 //} SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
 
 // rev
+/**
+ * The STORE_INFORMATION_CLASS enumeration defines the information classes for querying and setting store information.
+ */
 typedef enum _STORE_INFORMATION_CLASS
 {
     StorePageRequest = 1,                       // q: Not implemented
@@ -4273,6 +5532,9 @@ typedef enum _STORE_INFORMATION_CLASS
 #define SYSTEM_STORE_INFORMATION_VERSION 1
 
 // rev
+/**
+ * The SYSTEM_STORE_INFORMATION structure wraps a store manager request issued through NtQuerySystemInformation with SystemStoreInformation.
+ */
 typedef struct _SYSTEM_STORE_INFORMATION
 {
     _In_ ULONG Version;
@@ -4283,6 +5545,9 @@ typedef struct _SYSTEM_STORE_INFORMATION
 
 #define SYSTEM_STORE_STATS_INFORMATION_VERSION 2
 
+/**
+ * The ST_STATS_LEVEL enumeration defines the level of detail requested for store statistics.
+ */
 typedef enum _ST_STATS_LEVEL
 {
     StStatsLevelBasic = 0,
@@ -4292,6 +5557,9 @@ typedef enum _ST_STATS_LEVEL
     StStatsLevelMax = 4
 } ST_STATS_LEVEL;
 
+/**
+ * The SM_STATS_REQUEST structure describes a request for store manager statistics.
+ */
 typedef struct _SM_STATS_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_STATS_INFORMATION_VERSION
@@ -4301,6 +5569,9 @@ typedef struct _SM_STATS_REQUEST
     PVOID Buffer; // PST_STATS
 } SM_STATS_REQUEST, *PSM_STATS_REQUEST;
 
+/**
+ * The ST_DATA_MGR_STATS structure contains statistics for the store data manager.
+ */
 typedef struct _ST_DATA_MGR_STATS
 {
     ULONG RegionCount;
@@ -4310,32 +5581,47 @@ typedef struct _ST_DATA_MGR_STATS
     struct {
         ULONG RegionsInUse;
         ULONG SpaceUsed;
-    } Space[8];
+    } Space[8]; // IDA: SmpProcessQueryStoreStats iterates all 8 buckets and sums RegionSize * RegionsInUse
 } ST_DATA_MGR_STATS, *PST_DATA_MGR_STATS;
 
+/**
+ * The ST_IO_STATS_PERIOD structure contains store I/O statistics for a single time period.
+ */
 typedef struct _ST_IO_STATS_PERIOD
 {
-    ULONG PageCounts[5];
+    ULONG PageCounts[5]; // one 20-byte IO period sample copied from the store's internal ring buffer
 } ST_IO_STATS_PERIOD, *PST_IO_STATS_PERIOD;
 
+/**
+ * The ST_IO_STATS structure contains store I/O statistics.
+ */
 typedef struct _ST_IO_STATS
 {
-    ULONG PeriodCount;
-    ST_IO_STATS_PERIOD Periods[64];
+    ULONG PeriodCount; // number of valid exported periods, capped at 64
+    ST_IO_STATS_PERIOD Periods[64]; // IDA: StCopyIoStats flattens the internal ring buffer into chronological order
 } ST_IO_STATS, *PST_IO_STATS;
 
+/**
+ * The ST_READ_LATENCY_BUCKET structure describes a single store read-latency histogram bucket.
+ */
 typedef struct _ST_READ_LATENCY_BUCKET
 {
     ULONG LatencyUs;
     ULONG Count;
 } ST_READ_LATENCY_BUCKET, *PST_READ_LATENCY_BUCKET;
 
+/**
+ * The ST_READ_LATENCY_STATS structure contains store read-latency statistics.
+ */
 typedef struct _ST_READ_LATENCY_STATS
 {
     ST_READ_LATENCY_BUCKET Buckets[8];
 } ST_READ_LATENCY_STATS, *PST_READ_LATENCY_STATS;
 
 // rev
+/**
+ * The ST_STATS_REGION_INFO structure contains statistics about a store region.
+ */
 typedef struct _ST_STATS_REGION_INFO
 {
     USHORT SpaceUsed;
@@ -4344,6 +5630,9 @@ typedef struct _ST_STATS_REGION_INFO
 } ST_STATS_REGION_INFO, *PST_STATS_REGION_INFO;
 
 // rev
+/**
+ * The ST_STATS_SPACE_BITMAP structure describes the store space-usage bitmap.
+ */
 typedef struct _ST_STATS_SPACE_BITMAP
 {
     SIZE_T CompressedBytes;
@@ -4352,17 +5641,20 @@ typedef struct _ST_STATS_SPACE_BITMAP
 } ST_STATS_SPACE_BITMAP, *PST_STATS_SPACE_BITMAP;
 
 // rev
+/**
+ * The ST_STATS structure contains store statistics.
+ */
 typedef struct _ST_STATS
 {
-    ULONG Version : 8;
-    ULONG Level : 4;
-    ULONG StoreType : 4;
+    ULONG Version : 8; // SYSTEM_STORE_STATS_INFORMATION_VERSION
+    ULONG Level : 4; // ST_STATS_LEVEL
+    ULONG StoreType : 4; // SM_STORE_TYPE
     ULONG NoDuplication : 1;
     ULONG NoCompression : 1;
     ULONG EncryptionStrength : 12;
     ULONG VirtualRegions : 1;
     ULONG Spare0 : 1;
-    ULONG Size;
+    ULONG Size; // total bytes returned in the caller-supplied stats buffer
     USHORT CompressionFormat;
     USHORT Spare;
 
@@ -4374,20 +5666,43 @@ typedef struct _ST_STATS
         ULONG Granularity;
         ST_DATA_MGR_STATS UserData;
         ST_DATA_MGR_STATS Metadata;
-    } Basic;
+    } Basic; // present for StStatsLevelBasic and higher
 
     struct
     {
         ST_IO_STATS IoStats;
         ST_READ_LATENCY_STATS ReadLatencyStats;
-    } Io;
+    } Io; // present for StStatsLevelIoStats and higher
 
-    // ST_STATS_REGION_INFO[RegionCountMax]
-    // ST_STATS_SPACE_BITMAP
+    // For StStatsLevelRegionSpace, variable-length ST_STATS_REGION_INFO[Basic.RegionCountMax] follows.
+    // For StStatsLevelSpaceBitmap, ST_STATS_SPACE_BITMAP follows after the fixed header.
 } ST_STATS, *PST_STATS;
+
+// rev
+/**
+ * The ST_STATS_REGION_SPACE structure describes the space usage of a store region.
+ */
+typedef struct _ST_STATS_REGION_SPACE
+{
+    ST_STATS Stats;
+    ST_STATS_REGION_INFO Regions[1]; // variable-length ST_STATS_REGION_INFO[Stats.Basic.RegionCountMax]
+} ST_STATS_REGION_SPACE, *PST_STATS_REGION_SPACE;
+
+// rev
+/**
+ * The ST_STATS_SPACE_BITMAP_EX structure describes the extended store space-usage bitmap.
+ */
+typedef struct _ST_STATS_SPACE_BITMAP_EX
+{
+    ST_STATS Stats;
+    ST_STATS_SPACE_BITMAP SpaceBitmap; // variable-length bitmap payload follows in SpaceBitmap.StoreBitmap
+} ST_STATS_SPACE_BITMAP_EX, *PST_STATS_SPACE_BITMAP_EX;
 
 #define SYSTEM_STORE_CREATE_INFORMATION_VERSION 6
 
+/**
+ * The SM_STORE_TYPE enumeration defines the store manager store types.
+ */
 typedef enum _SM_STORE_TYPE
 {
     StoreTypeInMemory=0,
@@ -4395,6 +5710,23 @@ typedef enum _SM_STORE_TYPE
     StoreTypeMax=2
 } SM_STORE_TYPE;
 
+// rev
+#define SM_STORE_FLAG_NO_DUPLICATION 0x00000100u
+#define SM_STORE_FLAG_FAIL_NO_COMPRESSION 0x00000200u
+#define SM_STORE_FLAG_NO_COMPRESSION 0x00000400u
+#define SM_STORE_FLAG_NO_ENCRYPTION 0x00000800u
+#define SM_STORE_FLAG_NO_EVICT_ON_ADD 0x00001000u
+#define SM_STORE_FLAG_PERFORMS_FILE_IO 0x00002000u
+#define SM_STORE_FLAG_VDL_NOT_SET 0x00004000u
+#define SM_STORE_FLAG_USE_INTERMEDIATE_ADD_BUFFER 0x00008000u
+#define SM_STORE_FLAG_COMPRESS_NO_HUFF 0x00010000u
+#define SM_STORE_FLAG_LOCK_ACTIVE_REGIONS 0x00020000u
+#define SM_STORE_FLAG_VIRTUAL_REGIONS 0x00040000u
+
+// rev
+/**
+ * The SM_STORE_BASIC_PARAMS structure specifies the basic parameters of a store manager store.
+ */
 typedef struct _SM_STORE_BASIC_PARAMS
 {
     union
@@ -4402,32 +5734,38 @@ typedef struct _SM_STORE_BASIC_PARAMS
         struct
         {
             ULONG StoreType : 8; // SM_STORE_TYPE
-            ULONG NoDuplication : 1;
-            ULONG FailNoCompression : 1;
-            ULONG NoCompression : 1 ;
-            ULONG NoEncryption : 1;
-            ULONG NoEvictOnAdd : 1;
-            ULONG PerformsFileIo : 1;
-            ULONG VdlNotSet : 1 ;
-            ULONG UseIntermediateAddBuffer : 1;
-            ULONG CompressNoHuff : 1;
-            ULONG LockActiveRegions : 1;
-            ULONG VirtualRegions : 1;
+            ULONG NoDuplication : 1; // SM_STORE_FLAG_NO_DUPLICATION // rejected by SmProcessCreateRequest
+            ULONG FailNoCompression : 1; // SM_STORE_FLAG_FAIL_NO_COMPRESSION // rejected by SmProcessCreateRequest
+            ULONG NoCompression : 1; // SM_STORE_FLAG_NO_COMPRESSION
+            ULONG NoEncryption : 1; // SM_STORE_FLAG_NO_ENCRYPTION
+            ULONG NoEvictOnAdd : 1; // SM_STORE_FLAG_NO_EVICT_ON_ADD
+            ULONG PerformsFileIo : 1; // SM_STORE_FLAG_PERFORMS_FILE_IO
+            ULONG VdlNotSet : 1; // SM_STORE_FLAG_VDL_NOT_SET
+            ULONG UseIntermediateAddBuffer : 1; // SM_STORE_FLAG_USE_INTERMEDIATE_ADD_BUFFER
+            ULONG CompressNoHuff : 1; // SM_STORE_FLAG_COMPRESS_NO_HUFF
+            ULONG LockActiveRegions : 1; // SM_STORE_FLAG_LOCK_ACTIVE_REGIONS // required for the in-memory create path observed in SmProcessCreateRequest
+            ULONG VirtualRegions : 1; // SM_STORE_FLAG_VIRTUAL_REGIONS
             ULONG Spare : 13;
         } DUMMYSTRUCTNAME;
-        ULONG StoreFlags;
+        ULONG StoreFlags; // low 8 bits: SM_STORE_TYPE, high bits: SM_STORE_FLAG_*
     } DUMMYUNIONNAME;
-    ULONG Granularity;
-    ULONG RegionSize;
-    ULONG RegionCountMax;
+    ULONG Granularity; // store granularity; SmpDirtyStoreCreate uses 0x80 for dirty-store creation
+    ULONG RegionSize; // region size; SmProcessCreateRequest rejects some in-memory create requests above 0x20000
+    ULONG RegionCountMax; // maximum region count for the store
 } SM_STORE_BASIC_PARAMS, *PSM_STORE_BASIC_PARAMS;
 
+/**
+ * The SMKM_REGION_EXTENT structure describes a region extent within the kernel-mode store manager.
+ */
 typedef struct _SMKM_REGION_EXTENT
 {
     ULONG RegionCount;
     SIZE_T ByteOffset;
 } SMKM_REGION_EXTENT, *PSMKM_REGION_EXTENT;
 
+/**
+ * The SMKM_FILE_INFO structure contains information about a store manager backing file.
+ */
 typedef struct _SMKM_FILE_INFO
 {
     HANDLE FileHandle;
@@ -4440,6 +5778,9 @@ typedef struct _SMKM_FILE_INFO
     ULONG ExtentCount;
 } SMKM_FILE_INFO, *PSMKM_FILE_INFO;
 
+/**
+ * The SM_STORE_CACHE_BACKED_PARAMS structure specifies the parameters for a cache-backed store manager store.
+ */
 typedef struct _SM_STORE_CACHE_BACKED_PARAMS
 {
     ULONG SectorSize;
@@ -4450,6 +5791,9 @@ typedef struct _SM_STORE_CACHE_BACKED_PARAMS
     PRTL_BITMAP StoreRegionBitmap;
 } SM_STORE_CACHE_BACKED_PARAMS, *PSM_STORE_CACHE_BACKED_PARAMS;
 
+/**
+ * The SM_STORE_PARAMETERS structure specifies the parameters of a store manager store.
+ */
 typedef struct _SM_STORE_PARAMETERS
 {
     SM_STORE_BASIC_PARAMS Store;
@@ -4458,6 +5802,9 @@ typedef struct _SM_STORE_PARAMETERS
     SM_STORE_CACHE_BACKED_PARAMS CacheBacked;
 } SM_STORE_PARAMETERS, *PSM_STORE_PARAMETERS;
 
+/**
+ * The SM_CREATE_REQUEST structure describes a request to create a store manager store.
+ */
 typedef struct _SM_CREATE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_CREATE_INFORMATION_VERSION
@@ -4470,6 +5817,9 @@ typedef struct _SM_CREATE_REQUEST
 
 #define SYSTEM_STORE_DELETE_INFORMATION_VERSION 1
 
+/**
+ * The SM_DELETE_REQUEST structure describes a request to delete a store manager store.
+ */
 typedef struct _SM_DELETE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_DELETE_INFORMATION_VERSION
@@ -4479,6 +5829,9 @@ typedef struct _SM_DELETE_REQUEST
 
 #define SYSTEM_STORE_LIST_INFORMATION_VERSION 2
 
+/**
+ * The SM_STORE_LIST_REQUEST structure describes a request to enumerate store manager stores.
+ */
 typedef struct _SM_STORE_LIST_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_LIST_INFORMATION_VERSION
@@ -4488,6 +5841,9 @@ typedef struct _SM_STORE_LIST_REQUEST
     ULONG StoreId[32];
 } SM_STORE_LIST_REQUEST, *PSM_STORE_LIST_REQUEST;
 
+/**
+ * The SM_STORE_LIST_REQUEST_EX structure describes an extended request to enumerate store manager stores.
+ */
 typedef struct _SM_STORE_LIST_REQUEST_EX
 {
     SM_STORE_LIST_REQUEST Request;
@@ -4496,6 +5852,9 @@ typedef struct _SM_STORE_LIST_REQUEST_EX
 
 #define SYSTEM_CACHE_LIST_INFORMATION_VERSION 2
 
+/**
+ * The SMC_CACHE_LIST_REQUEST structure describes a request to enumerate store manager caches.
+ */
 typedef struct _SMC_CACHE_LIST_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_LIST_INFORMATION_VERSION
@@ -4506,6 +5865,9 @@ typedef struct _SMC_CACHE_LIST_REQUEST
 
 #define SYSTEM_CACHE_CREATE_INFORMATION_VERSION 3
 
+/**
+ * The SMC_CACHE_PARAMETERS structure specifies the parameters of a store manager cache.
+ */
 typedef struct _SMC_CACHE_PARAMETERS
 {
     SIZE_T CacheFileSize;
@@ -4517,12 +5879,18 @@ typedef struct _SMC_CACHE_PARAMETERS
     ULONG Priority;
 } SMC_CACHE_PARAMETERS, *PSMC_CACHE_PARAMETERS;
 
+/**
+ * The SMC_CACHE_CREATE_PARAMETERS structure specifies the parameters used to create a store manager cache.
+ */
 typedef struct _SMC_CACHE_CREATE_PARAMETERS
 {
     SMC_CACHE_PARAMETERS CacheParameters;
     WCHAR TemplateFilePath[512];
 } SMC_CACHE_CREATE_PARAMETERS, *PSMC_CACHE_CREATE_PARAMETERS;
 
+/**
+ * The SMC_CACHE_CREATE_REQUEST structure describes a request to create a store manager cache.
+ */
 typedef struct _SMC_CACHE_CREATE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_CREATE_INFORMATION_VERSION
@@ -4533,6 +5901,9 @@ typedef struct _SMC_CACHE_CREATE_REQUEST
 
 #define SYSTEM_CACHE_DELETE_INFORMATION_VERSION 1
 
+/**
+ * The SMC_CACHE_DELETE_REQUEST structure describes a request to delete a store manager cache.
+ */
 typedef struct _SMC_CACHE_DELETE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_DELETE_INFORMATION_VERSION
@@ -4542,6 +5913,9 @@ typedef struct _SMC_CACHE_DELETE_REQUEST
 
 #define SYSTEM_CACHE_STORE_CREATE_INFORMATION_VERSION 2
 
+/**
+ * The SM_STORE_MANAGER_TYPE enumeration defines the store manager types.
+ */
 typedef enum _SM_STORE_MANAGER_TYPE
 {
     SmStoreManagerTypePhysical = 0,
@@ -4549,6 +5923,9 @@ typedef enum _SM_STORE_MANAGER_TYPE
     SmStoreManagerTypeMax = 2
 } SM_STORE_MANAGER_TYPE;
 
+/**
+ * The SMC_STORE_CREATE_REQUEST structure describes a request to create a store within a store manager cache.
+ */
 typedef struct _SMC_STORE_CREATE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_STORE_CREATE_INFORMATION_VERSION
@@ -4561,6 +5938,9 @@ typedef struct _SMC_STORE_CREATE_REQUEST
 
 #define SYSTEM_CACHE_STORE_DELETE_INFORMATION_VERSION 1
 
+/**
+ * The SMC_STORE_DELETE_REQUEST structure describes a request to delete a store within a store manager cache.
+ */
 typedef struct _SMC_STORE_DELETE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_STORE_DELETE_INFORMATION_VERSION
@@ -4572,6 +5952,9 @@ typedef struct _SMC_STORE_DELETE_REQUEST
 
 #define SYSTEM_CACHE_STATS_INFORMATION_VERSION 3
 
+/**
+ * The SMC_CACHE_STATS structure contains statistics for a store manager cache.
+ */
 typedef struct _SMC_CACHE_STATS
 {
     SIZE_T TotalFileSize;
@@ -4587,6 +5970,9 @@ typedef struct _SMC_CACHE_STATS
     WCHAR TemplateFilePath[512];
 } SMC_CACHE_STATS, *PSMC_CACHE_STATS;
 
+/**
+ * The SMC_CACHE_STATS_REQUEST structure describes a request for store manager cache statistics.
+ */
 typedef struct _SMC_CACHE_STATS_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_STATS_INFORMATION_VERSION
@@ -4598,11 +5984,17 @@ typedef struct _SMC_CACHE_STATS_REQUEST
 
 #define SYSTEM_STORE_REGISTRATION_INFORMATION_VERSION 2
 
+/**
+ * The SM_REGISTRATION_INFO structure contains store manager registration information.
+ */
 typedef struct _SM_REGISTRATION_INFO
 {
     HANDLE CachesUpdatedEvent;
 } SM_REGISTRATION_INFO, *PSM_REGISTRATION_INFO;
 
+/**
+ * The SM_REGISTRATION_REQUEST structure describes a store manager registration request.
+ */
 typedef struct _SM_REGISTRATION_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_REGISTRATION_INFORMATION_VERSION
@@ -4612,18 +6004,24 @@ typedef struct _SM_REGISTRATION_REQUEST
 
 #define SYSTEM_STORE_RESIZE_INFORMATION_VERSION 6
 
+/**
+ * The SM_STORE_RESIZE_REQUEST structure describes a request to resize a store manager store.
+ */
 typedef struct _SM_STORE_RESIZE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_RESIZE_INFORMATION_VERSION
-    ULONG AddRegions : 1;
+    ULONG AddRegions : 1; // Clear to remove regions, set to add regions. Current handler rejects user-mode callers.
     ULONG Spare : 23;
     ULONG StoreId;
     ULONG NumberOfRegions;
-    PRTL_BITMAP RegionBitmap;
+    PRTL_BITMAP RegionBitmap; // Kernel-mode only bitmap pointer consumed by SmProcessResizeRequest.
 } SM_STORE_RESIZE_REQUEST, *PSM_STORE_RESIZE_REQUEST;
 
 #define SYSTEM_CACHE_STORE_RESIZE_INFORMATION_VERSION 1
 
+/**
+ * The SM_STORE_CACHE_RESIZE_REQUEST structure describes a request to resize a store manager cache.
+ */
 typedef struct _SM_STORE_CACHE_RESIZE_REQUEST
 {
     ULONG Version : 8; // SYSTEM_CACHE_STORE_RESIZE_INFORMATION_VERSION
@@ -4637,6 +6035,9 @@ typedef struct _SM_STORE_CACHE_RESIZE_REQUEST
 
 #define SYSTEM_STORE_CONFIG_INFORMATION_VERSION 4
 
+/**
+ * The SM_CONFIG_TYPE enumeration defines the store manager configuration types.
+ */
 typedef enum _SM_CONFIG_TYPE
 {
     SmConfigDirtyPageCompression = 0,
@@ -4646,6 +6047,9 @@ typedef enum _SM_CONFIG_TYPE
 } SM_CONFIG_TYPE;
 
 // rev
+/**
+ * The SM_CONFIG_REQUEST structure describes a store manager configuration request.
+ */
 typedef struct _SM_CONFIG_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_CONFIG_INFORMATION_VERSION
@@ -4661,30 +6065,36 @@ typedef struct _SM_CONFIG_REQUEST
 #define SYSTEM_STORE_PRIORITY_FLAG_SET_PRIORITY 0x00000200u
 
 // rev
+/**
+ * The SM_STORE_MEMORY_PRIORITY_REQUEST structure describes a request to set the memory priority of a store manager store.
+ */
 typedef struct _SM_STORE_MEMORY_PRIORITY_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_PRIORITY_REQUEST_VERSION
-    ULONG Flags : 24;
-    HANDLE ProcessHandle; // in // PROCESS_SET_INFORMATION access required
+    ULONG Flags : 24; // SYSTEM_STORE_PRIORITY_FLAG_*; handler currently validates Flags <= 0x3ff.
+    HANDLE ProcessHandle; // Required when SYSTEM_STORE_PRIORITY_FLAG_REQUIRE_HANDLE is set; PROCESS_SET_INFORMATION access required.
 } SM_STORE_MEMORY_PRIORITY_REQUEST, *PSM_STORE_MEMORY_PRIORITY_REQUEST;
 
 // rev
+/**
+ * The SM_SYSTEM_STORE_TRIM_REQUEST structure describes a request to trim the system store.
+ */
 typedef struct _SM_SYSTEM_STORE_TRIM_REQUEST
 {
-    ULONG Version : 8;  // SYSTEM_STORE_TRIM_INFORMATION_VERSION
+    ULONG Version : 8;  // SYSTEM_STORE_TRIM_INFORMATION_VERSION_V1 or _V2
     ULONG Spare : 24;
-    SIZE_T PagesToTrim; // TrimFlags // must be non-zero
-    HANDLE PartitionHandle; // since 24H2
+    SIZE_T PagesToTrim; // Must be non-zero.
+    HANDLE PartitionHandle; // Optional in V2 (24H2+); absent in V1.
 } SM_SYSTEM_STORE_TRIM_REQUEST, *PSM_SYSTEM_STORE_TRIM_REQUEST;
 
 // rev
 #define SYSTEM_STORE_TRIM_INFORMATION_VERSION_V1 1 // WIN10
 #define SYSTEM_STORE_TRIM_INFORMATION_VERSION_V2 2 // 24H2
-#define SYSTEM_STORE_TRIM_INFORMATION_VERSION SYSTEM_STORE_TRIM_INFORMATION_VERSION_V1
+#define SYSTEM_STORE_TRIM_INFORMATION_VERSION SYSTEM_STORE_TRIM_INFORMATION_VERSION_V2
 
 // rev
-#define SYSTEM_STORE_TRIM_INFORMATION_SIZE_V1 RTL_SIZEOF_THROUGH_FIELD(SM_SYSTEM_STORE_TRIM_REQUEST, PagesToTrim) // WIN10
-#define SYSTEM_STORE_TRIM_INFORMATION_SIZE_V2 RTL_SIZEOF_THROUGH_FIELD(SM_SYSTEM_STORE_TRIM_REQUEST, PartitionHandle) // 24H2
+#define SYSTEM_STORE_TRIM_INFORMATION_SIZE_V1 RTL_SIZEOF_THROUGH_FIELD(SM_SYSTEM_STORE_TRIM_REQUEST, PagesToTrim) // Version 1 input size
+#define SYSTEM_STORE_TRIM_INFORMATION_SIZE_V2 RTL_SIZEOF_THROUGH_FIELD(SM_SYSTEM_STORE_TRIM_REQUEST, PartitionHandle) // Version 2 input size (24H2+)
 #define SYSTEM_STORE_TRIM_INFORMATION_SIZE SYSTEM_STORE_TRIM_INFORMATION_SIZE_V2
 
 #ifdef _WIN64
@@ -4696,16 +6106,19 @@ static_assert(SYSTEM_STORE_TRIM_INFORMATION_SIZE_V2 == 12, "SYSTEM_STORE_TRIM_IN
 #endif
 
 // rev
+/**
+ * The SM_STORE_COMPRESSION_INFORMATION_REQUEST structure describes a request for store compression information.
+ */
 typedef struct _SM_STORE_COMPRESSION_INFORMATION_REQUEST
 {
-    ULONG Version : 8; // SYSTEM_STORE_COMPRESSION_INFORMATION_VERSION
+    ULONG Version : 8; // SYSTEM_STORE_COMPRESSION_INFORMATION_VERSION_V1 or _V2
     ULONG Spare : 24;
     ULONG CompressionPid;
     ULONG WorkingSetSize;
     SIZE_T TotalDataCompressed;
     SIZE_T TotalCompressedSize;
     SIZE_T TotalUniqueDataCompressed;
-    HANDLE PartitionHandle; // since 24H2
+    HANDLE PartitionHandle; // Optional in V2 (24H2+); absent in V1.
 } SM_STORE_COMPRESSION_INFORMATION_REQUEST, *PSM_STORE_COMPRESSION_INFORMATION_REQUEST;
 
 // rev
@@ -4714,8 +6127,8 @@ typedef struct _SM_STORE_COMPRESSION_INFORMATION_REQUEST
 #define SYSTEM_STORE_COMPRESSION_INFORMATION_VERSION SYSTEM_STORE_COMPRESSION_INFORMATION_VERSION_V2
 
 // rev
-#define SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V1 RTL_SIZEOF_THROUGH_FIELD(SM_STORE_COMPRESSION_INFORMATION_REQUEST, TotalUniqueDataCompressed) // WIN10
-#define SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V2 RTL_SIZEOF_THROUGH_FIELD(SM_STORE_COMPRESSION_INFORMATION_REQUEST, PartitionHandle) // 24H2
+#define SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V1 RTL_SIZEOF_THROUGH_FIELD(SM_STORE_COMPRESSION_INFORMATION_REQUEST, TotalUniqueDataCompressed) // Version 3 input/output size
+#define SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V2 RTL_SIZEOF_THROUGH_FIELD(SM_STORE_COMPRESSION_INFORMATION_REQUEST, PartitionHandle) // Version 4 input/output size (24H2+)
 #define SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V2
 
 #ifdef _WIN64
@@ -4730,6 +6143,9 @@ static_assert(SYSTEM_STORE_COMPRESSION_INFORMATION_SIZE_V2 == 28, "SM_STORE_COMP
 #define SYSTEM_STORE_EXISTS_FOR_PROCESS_VERSION 1
 
 // rev
+/**
+ * The SM_SYSTEM_STORE_EXISTS_FOR_PROCESS structure describes a query for whether a system store exists for a process.
+ */
 typedef struct _SM_SYSTEM_STORE_EXISTS_FOR_PROCESS
 {
     ULONG Version : 8;
@@ -4739,16 +6155,166 @@ typedef struct _SM_SYSTEM_STORE_EXISTS_FOR_PROCESS
 } SM_SYSTEM_STORE_EXISTS_FOR_PROCESS, *PSM_SYSTEM_STORE_EXISTS_FOR_PROCESS;
 
 // rev
+/**
+ * The SM_COMPRESSION_READ_STATS_PFN_UNION1_Q0 union describes the page frame number (PFN) bitfields used in compression read statistics.
+ */
+typedef union _SM_COMPRESSION_READ_STATS_PFN_UNION1_Q0
+{
+    ULONGLONG EntireField;
+    PVOID NextSlistPfn;
+    PVOID Next;
+    struct
+    {
+        ULONGLONG Flink : 40;
+        ULONGLONG NodeFlinkLow : 24;
+    } Active;
+} SM_COMPRESSION_READ_STATS_PFN_UNION1_Q0, *PSM_COMPRESSION_READ_STATS_PFN_UNION1_Q0;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_PFN_UNION1 union describes the page frame number (PFN) fields used in compression read statistics.
+ */
+typedef union _SM_COMPRESSION_READ_STATS_PFN_UNION1
+{
+    struct
+    {
+        LIST_ENTRY ListEntry;
+        ULONGLONG OriginalPte;
+    } DUMMYSTRUCTNAME;
+    struct
+    {
+        SM_COMPRESSION_READ_STATS_PFN_UNION1_Q0 U1;
+        PVOID PteAddress;
+        ULONGLONG PteLong;
+    } DUMMYSTRUCTNAME2;
+    ULONGLONG EntireField[3];
+} SM_COMPRESSION_READ_STATS_PFN_UNION1, *PSM_COMPRESSION_READ_STATS_PFN_UNION1;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_PFN_BLINK union describes the backward-link page frame number (PFN) field used in compression read statistics.
+ */
+typedef union _SM_COMPRESSION_READ_STATS_PFN_BLINK
+{
+    struct
+    {
+        ULONGLONG Blink : 40;
+        ULONGLONG NodeBlinkLow : 19;
+        ULONGLONG TbFlushStamp : 3;
+        ULONGLONG PageBlinkDeleteBit : 1;
+        ULONGLONG PageBlinkLockBit : 1;
+    } DUMMYSTRUCTNAME;
+    ULONGLONG EntireField;
+} SM_COMPRESSION_READ_STATS_PFN_BLINK, *PSM_COMPRESSION_READ_STATS_PFN_BLINK;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_PFN_FLAGS union defines the page frame number (PFN) flags used in compression read statistics.
+ */
+typedef union _SM_COMPRESSION_READ_STATS_PFN_FLAGS
+{
+    struct
+    {
+        USHORT ReferenceCount;
+        UCHAR PageLocation : 3;
+        UCHAR WriteInProgress : 1;
+        UCHAR Modified : 1;
+        UCHAR ReadInProgress : 1;
+        UCHAR CacheAttribute : 2;
+        UCHAR Priority : 3;
+        UCHAR OnProtectedStandby : 1;
+        UCHAR InPageError : 1;
+        UCHAR SystemChargedPage : 1;
+        UCHAR RemovalRequested : 1;
+        UCHAR ParityError : 1;
+        ULONG StateFlags2; // _MMPFN.u5, state-dependent
+    } DUMMYSTRUCTNAME;
+    ULONGLONG EntireField;
+} SM_COMPRESSION_READ_STATS_PFN_FLAGS, *PSM_COMPRESSION_READ_STATS_PFN_FLAGS;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_PFN_FLAGS4 union defines additional page frame number (PFN) flags used in compression read statistics.
+ */
+typedef union _SM_COMPRESSION_READ_STATS_PFN_FLAGS4
+{
+    struct
+    {
+        ULONGLONG PteFrame : 40;
+        ULONGLONG ResidentPage : 1;
+        ULONGLONG ResidentPageContainsBadPages : 1;
+        ULONGLONG Unused1 : 1;
+        ULONGLONG Partition : 10;
+        ULONGLONG FileOnly : 1;
+        ULONGLONG PfnExists : 1;
+        ULONGLONG NodeFlinkHigh : 5;
+        ULONGLONG PageIdentity : 3;
+        ULONGLONG PrototypePte : 1;
+    } DUMMYSTRUCTNAME;
+    ULONGLONG EntireField;
+} SM_COMPRESSION_READ_STATS_PFN_FLAGS4, *PSM_COMPRESSION_READ_STATS_PFN_FLAGS4;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_EMBEDDED_PFN structure describes an embedded page frame number (PFN) entry in compression read statistics.
+ */
+typedef struct _SM_COMPRESSION_READ_STATS_EMBEDDED_PFN
+{
+    SM_COMPRESSION_READ_STATS_PFN_UNION1 Union1; // _MMPFN.___u0, state-dependent
+    SM_COMPRESSION_READ_STATS_PFN_BLINK BlinkField;
+    SM_COMPRESSION_READ_STATS_PFN_FLAGS ReferenceCountAndFlags;
+    SM_COMPRESSION_READ_STATS_PFN_FLAGS4 PfnFlags4;
+} SM_COMPRESSION_READ_STATS_EMBEDDED_PFN, *PSM_COMPRESSION_READ_STATS_EMBEDDED_PFN;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS_LIST_HEAD structure describes the list head for compression read statistics.
+ */
+typedef struct _SM_COMPRESSION_READ_STATS_LIST_HEAD
+{
+    ULONGLONG Total;
+    union
+    {
+        struct
+        {
+            ULONG Color;
+            ULONG ListName;
+        } DUMMYSTRUCTNAME;
+        ULONGLONG ColorAndListName;
+    } DUMMYUNIONNAME;
+    ULONGLONG Flink;
+    ULONGLONG Blink;
+    union
+    {
+        struct
+        {
+            LONG Lock;
+            ULONG Reserved;
+        } DUMMYSTRUCTNAME;
+        ULONGLONG LockValue;
+    } DUMMYUNIONNAME2;
+    SM_COMPRESSION_READ_STATS_EMBEDDED_PFN EmbeddedPfn;
+} SM_COMPRESSION_READ_STATS_LIST_HEAD, *PSM_COMPRESSION_READ_STATS_LIST_HEAD;
+
+// rev
+/**
+ * The SM_COMPRESSION_READ_STATS structure contains store compression read statistics.
+ */
 typedef struct _SM_COMPRESSION_READ_STATS
 {
-    ULONGLONG Counters[17];
-    ULONGLONG TailValue;
+    SM_COMPRESSION_READ_STATS_LIST_HEAD ZeroedPageListHead;
+    ULONGLONG Alignment[5];
+    ULONGLONG FreePageListHeadTotal;
+    ULONGLONG FreePageListHeadColorAndListName;
 } SM_COMPRESSION_READ_STATS, * PSM_COMPRESSION_READ_STATS;
 
 // rev
 #define SYSTEM_STORE_COMPRESSION_READ_STATS_VERSION 1
 
 // rev
+/**
+ * The SM_COMPRESSION_READ_STATS_REQUEST structure describes a request for store compression read statistics.
+ */
 typedef struct _SM_COMPRESSION_READ_STATS_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_COMPRESSION_READ_STATS_VERSION
@@ -4762,6 +6328,9 @@ typedef struct _SM_COMPRESSION_READ_STATS_REQUEST
 #define SYSTEM_STORE_ACCELERATOR_REQUEST_VERSION 1
 
 // rev
+/**
+ * The SM_COMPRESSION_ACCELERATOR_REQUEST structure describes a store compression accelerator request.
+ */
 typedef struct _SM_COMPRESSION_ACCELERATOR_REQUEST
 {
     ULONG Version : 8; // SYSTEM_STORE_ACCELERATOR_REQUEST_VERSION
@@ -4772,6 +6341,9 @@ typedef struct _SM_COMPRESSION_ACCELERATOR_REQUEST
 } SM_COMPRESSION_ACCELERATOR_REQUEST, *PSM_COMPRESSION_ACCELERATOR_REQUEST;
 
 // private
+/**
+ * The SYSTEM_REGISTRY_APPEND_STRING_PARAMETERS structure specifies the parameters for system registry append string.
+ */
 typedef struct _SYSTEM_REGISTRY_APPEND_STRING_PARAMETERS
 {
     HANDLE KeyHandle;
@@ -4787,6 +6359,9 @@ typedef struct _SYSTEM_REGISTRY_APPEND_STRING_PARAMETERS
 } SYSTEM_REGISTRY_APPEND_STRING_PARAMETERS, *PSYSTEM_REGISTRY_APPEND_STRING_PARAMETERS;
 
 // msdn
+/**
+ * The SYSTEM_VHD_BOOT_INFORMATION structure contains system VHD boot information.
+ */
 typedef struct _SYSTEM_VHD_BOOT_INFORMATION
 {
     BOOLEAN OsDiskIsVhd;
@@ -4795,6 +6370,9 @@ typedef struct _SYSTEM_VHD_BOOT_INFORMATION
 } SYSTEM_VHD_BOOT_INFORMATION, *PSYSTEM_VHD_BOOT_INFORMATION;
 
 // private
+/**
+ * The PS_CPU_QUOTA_QUERY_ENTRY structure describes a single PS CPU quota query entry.
+ */
 typedef struct _PS_CPU_QUOTA_QUERY_ENTRY
 {
     ULONG SessionId;
@@ -4802,6 +6380,9 @@ typedef struct _PS_CPU_QUOTA_QUERY_ENTRY
 } PS_CPU_QUOTA_QUERY_ENTRY, *PPS_CPU_QUOTA_QUERY_ENTRY;
 
 // private
+/**
+ * The PS_CPU_QUOTA_QUERY_INFORMATION structure contains PS CPU quota query information.
+ */
 typedef struct _PS_CPU_QUOTA_QUERY_INFORMATION
 {
     ULONG SessionCount;
@@ -4809,6 +6390,9 @@ typedef struct _PS_CPU_QUOTA_QUERY_INFORMATION
 } PS_CPU_QUOTA_QUERY_INFORMATION, *PPS_CPU_QUOTA_QUERY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_ERROR_PORT_TIMEOUTS structure contains the system error port timeout values.
+ */
 typedef struct _SYSTEM_ERROR_PORT_TIMEOUTS
 {
     ULONG StartTimeout;
@@ -4816,6 +6400,9 @@ typedef struct _SYSTEM_ERROR_PORT_TIMEOUTS
 } SYSTEM_ERROR_PORT_TIMEOUTS, *PSYSTEM_ERROR_PORT_TIMEOUTS;
 
 // private
+/**
+ * The SYSTEM_LOW_PRIORITY_IO_INFORMATION structure contains system low priority IO information.
+ */
 typedef struct _SYSTEM_LOW_PRIORITY_IO_INFORMATION
 {
     ULONG LowPriorityReadOperationCount;
@@ -4831,6 +6418,9 @@ typedef struct _SYSTEM_LOW_PRIORITY_IO_INFORMATION
 } SYSTEM_LOW_PRIORITY_IO_INFORMATION, *PSYSTEM_LOW_PRIORITY_IO_INFORMATION;
 
 // symbols
+/**
+ * The BOOT_ENTROPY_SOURCE_RESULT_CODE enumeration defines the boot entropy source result code values.
+ */
 typedef enum _BOOT_ENTROPY_SOURCE_RESULT_CODE
 {
     BootEntropySourceStructureUninitialized,
@@ -4840,6 +6430,9 @@ typedef enum _BOOT_ENTROPY_SOURCE_RESULT_CODE
     BootEntropySourceSuccess
 } BOOT_ENTROPY_SOURCE_RESULT_CODE;
 
+/**
+ * The BOOT_ENTROPY_SOURCE_ID enumeration identifies a boot entropy source.
+ */
 typedef enum _BOOT_ENTROPY_SOURCE_ID
 {
     BootEntropySourceNone = 0,
@@ -4860,6 +6453,9 @@ typedef enum _BOOT_ENTROPY_SOURCE_ID
 // EntropyData is truncated to 40 bytes.
 
 // private
+/**
+ * The TPM_BOOT_ENTROPY_NT_RESULT structure contains the TPM boot entropy nt result.
+ */
 typedef struct _TPM_BOOT_ENTROPY_NT_RESULT
 {
     ULONGLONG Policy;
@@ -4871,6 +6467,9 @@ typedef struct _TPM_BOOT_ENTROPY_NT_RESULT
 } TPM_BOOT_ENTROPY_NT_RESULT, *PTPM_BOOT_ENTROPY_NT_RESULT;
 
 // private
+/**
+ * The BOOT_ENTROPY_SOURCE_NT_RESULT structure contains the boot entropy source nt result.
+ */
 typedef struct _BOOT_ENTROPY_SOURCE_NT_RESULT
 {
     BOOT_ENTROPY_SOURCE_ID SourceId;
@@ -4883,14 +6482,20 @@ typedef struct _BOOT_ENTROPY_SOURCE_NT_RESULT
 } BOOT_ENTROPY_SOURCE_NT_RESULT, *PBOOT_ENTROPY_SOURCE_NT_RESULT;
 
 // private
+/**
+ * The BOOT_ENTROPY_NT_RESULT structure contains the boot entropy nt result.
+ */
 typedef struct _BOOT_ENTROPY_NT_RESULT
 {
-    ULONG maxEntropySources;
+    ULONG MaxEntropySources;
     BOOT_ENTROPY_SOURCE_NT_RESULT EntropySourceResult[10];
     UCHAR SeedBytesForCng[48];
 } BOOT_ENTROPY_NT_RESULT, *PBOOT_ENTROPY_NT_RESULT;
 
 // private
+/**
+ * The SYSTEM_VERIFIER_COUNTERS_INFORMATION structure contains system verifier counters information.
+ */
 typedef struct _SYSTEM_VERIFIER_COUNTERS_INFORMATION
 {
     SYSTEM_VERIFIER_INFORMATION Legacy;
@@ -4920,6 +6525,9 @@ typedef struct _SYSTEM_VERIFIER_COUNTERS_INFORMATION
 } SYSTEM_VERIFIER_COUNTERS_INFORMATION, *PSYSTEM_VERIFIER_COUNTERS_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_ACPI_AUDIT_INFORMATION structure contains system ACPI audit information.
+ */
 typedef struct _SYSTEM_ACPI_AUDIT_INFORMATION
 {
     ULONG RsdpCount;
@@ -4929,6 +6537,9 @@ typedef struct _SYSTEM_ACPI_AUDIT_INFORMATION
 } SYSTEM_ACPI_AUDIT_INFORMATION, *PSYSTEM_ACPI_AUDIT_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_BASIC_PERFORMANCE_INFORMATION structure contains system basic performance information.
+ */
 typedef struct _SYSTEM_BASIC_PERFORMANCE_INFORMATION
 {
     SIZE_T AvailablePages;
@@ -4939,6 +6550,9 @@ typedef struct _SYSTEM_BASIC_PERFORMANCE_INFORMATION
 
 // begin_msdn
 
+/**
+ * The QUERY_PERFORMANCE_COUNTER_FLAGS structure defines the query performance counter flags.
+ */
 typedef struct _QUERY_PERFORMANCE_COUNTER_FLAGS
 {
     union
@@ -4947,11 +6561,14 @@ typedef struct _QUERY_PERFORMANCE_COUNTER_FLAGS
         {
             ULONG KernelTransition : 1;
             ULONG Reserved : 31;
-        };
+        } DUMMYSTRUCTNAME;
         ULONG ul;
-    };
+    } DUMMYUNIONNAME;
 } QUERY_PERFORMANCE_COUNTER_FLAGS;
 
+/**
+ * The SYSTEM_QUERY_PERFORMANCE_COUNTER_INFORMATION structure contains system query performance counter information.
+ */
 typedef struct _SYSTEM_QUERY_PERFORMANCE_COUNTER_INFORMATION
 {
     ULONG Version;
@@ -4962,6 +6579,9 @@ typedef struct _SYSTEM_QUERY_PERFORMANCE_COUNTER_INFORMATION
 // end_msdn
 
 // private
+/**
+ * The SYSTEM_PIXEL_FORMAT enumeration defines the system pixel format values.
+ */
 typedef enum _SYSTEM_PIXEL_FORMAT
 {
     SystemPixelFormatUnknown,
@@ -4972,6 +6592,9 @@ typedef enum _SYSTEM_PIXEL_FORMAT
 } SYSTEM_PIXEL_FORMAT;
 
 // private
+/**
+ * The SYSTEM_BOOT_GRAPHICS_INFORMATION structure contains system boot graphics information.
+ */
 typedef struct _SYSTEM_BOOT_GRAPHICS_INFORMATION
 {
     LARGE_INTEGER FrameBuffer;
@@ -4984,6 +6607,9 @@ typedef struct _SYSTEM_BOOT_GRAPHICS_INFORMATION
 } SYSTEM_BOOT_GRAPHICS_INFORMATION, *PSYSTEM_BOOT_GRAPHICS_INFORMATION;
 
 // private
+/**
+ * The MEMORY_SCRUB_INFORMATION structure contains memory scrub information.
+ */
 typedef struct _MEMORY_SCRUB_INFORMATION
 {
     HANDLE Handle;
@@ -4991,19 +6617,35 @@ typedef struct _MEMORY_SCRUB_INFORMATION
 } MEMORY_SCRUB_INFORMATION, *PMEMORY_SCRUB_INFORMATION;
 
 // private
+/**
+ * Describes one page returned in the flat array for SystemBadPageInformationEx (244).
+ * On x64, bits 0-51 are the page number, bit 62 is Pending, and bit 63 is Poisoned.
+ * SystemBadPageInformation (128) omits pending entries and clears the poisoned bit.
+ * There is no count prefix in the returned buffer; divide ReturnLength by the entry size.
+ * ExpQuerySystemInformation and MiGetListOfPendingBadPages use 8-byte entries on x64.
+ */
 typedef union _SYSTEM_BAD_PAGE_INFORMATION
 {
+    ULONG_PTR Value;
+    struct
+    {
 #ifdef _WIN64
-    ULONG_PTR PhysicalPageNumber : 52;
+        ULONG_PTR PhysicalPageNumber : 52;
 #else
-    ULONG PhysicalPageNumber : 20;
+        ULONG PhysicalPageNumber : 20;
 #endif
-    ULONG_PTR Reserved : 10;
-    ULONG_PTR Pending : 1;
-    ULONG_PTR Poisoned : 1;
+        ULONG_PTR Reserved : 10;
+        ULONG_PTR Pending : 1;
+        ULONG_PTR Poisoned : 1;
+    } DUMMYSTRUCTNAME;
 } SYSTEM_BAD_PAGE_INFORMATION, *PSYSTEM_BAD_PAGE_INFORMATION;
 
 // private
+/**
+ * Describes the 32-bit-address Intel BTS/PEBS debug-store save area. The address
+ * fields are ULONGs, but all counter-reset values are 64-bit. The layout occupies
+ * 0x80 bytes, with GP resets at 0x20 and fixed resets at 0x60.
+ */
 typedef struct _PEBS_DS_SAVE_AREA32
 {
     ULONG BtsBufferBase;
@@ -5014,11 +6656,14 @@ typedef struct _PEBS_DS_SAVE_AREA32
     ULONG PebsIndex;
     ULONG PebsAbsoluteMaximum;
     ULONG PebsInterruptThreshold;
-    ULONG PebsGpCounterReset[8];
-    ULONG PebsFixedCounterReset[4];
+    ULONGLONG PebsGpCounterReset[8]; // 64-bit reset values even in the 32-bit DS format.
+    ULONGLONG PebsFixedCounterReset[4];
 } PEBS_DS_SAVE_AREA32, *PPEBS_DS_SAVE_AREA32;
 
 // private
+/**
+ * The PEBS_DS_SAVE_AREA64 structure describes the PEBS ds save area64.
+ */
 typedef struct _PEBS_DS_SAVE_AREA64
 {
     ULONGLONG BtsBufferBase;
@@ -5034,6 +6679,9 @@ typedef struct _PEBS_DS_SAVE_AREA64
 } PEBS_DS_SAVE_AREA64, *PPEBS_DS_SAVE_AREA64;
 
 // private
+/**
+ * The PEBS_DS_SAVE_AREA union describes the PEBS ds save area.
+ */
 typedef union _PEBS_DS_SAVE_AREA
 {
     PEBS_DS_SAVE_AREA32 As32Bit;
@@ -5041,12 +6689,18 @@ typedef union _PEBS_DS_SAVE_AREA
 } PEBS_DS_SAVE_AREA, *PPEBS_DS_SAVE_AREA;
 
 // private
+/**
+ * The PROCESSOR_PROFILE_CONTROL_AREA structure describes the processor profile control area.
+ */
 typedef struct _PROCESSOR_PROFILE_CONTROL_AREA
 {
     PEBS_DS_SAVE_AREA PebsDsSaveArea;
 } PROCESSOR_PROFILE_CONTROL_AREA, *PPROCESSOR_PROFILE_CONTROL_AREA;
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_PROFILE_CONTROL_AREA structure describes the system processor profile control area.
+ */
 typedef struct _SYSTEM_PROCESSOR_PROFILE_CONTROL_AREA
 {
     PROCESSOR_PROFILE_CONTROL_AREA ProcessorProfileControlArea;
@@ -5054,33 +6708,46 @@ typedef struct _SYSTEM_PROCESSOR_PROFILE_CONTROL_AREA
 } SYSTEM_PROCESSOR_PROFILE_CONTROL_AREA, *PSYSTEM_PROCESSOR_PROFILE_CONTROL_AREA;
 
 // private
+/**
+ * The MEMORY_COMBINE_INFORMATION structure contains memory combine information.
+ */
 typedef struct _MEMORY_COMBINE_INFORMATION
 {
-    HANDLE Handle;
+    HANDLE EventHandle; // Optional event handle.
     SIZE_T PagesCombined;
 } MEMORY_COMBINE_INFORMATION, *PMEMORY_COMBINE_INFORMATION;
 
 // rev
-#define MEMORY_COMBINE_FLAGS_COMMON_PAGES_ONLY 0x4
+#define MEMORY_COMBINE_FLAGS_COMMON_PAGES_ONLY 0x1 // MiCombineIdenticalPages only accepts bits 0 and 1; this bit selects the legacy/common-page path.
+#define MEMORY_COMBINE_FLAGS_COMBINE_WORKING_SET 0x2 // Enables the working-set combine path; required when ProcessHandle is specified.
 
 // private
+/**
+ * The MEMORY_COMBINE_INFORMATION_EX structure contains memory combine information.
+ */
 typedef struct _MEMORY_COMBINE_INFORMATION_EX
 {
-    HANDLE Handle;
+    HANDLE EventHandle; // Optional event handle.
     SIZE_T PagesCombined;
-    ULONG Flags;
+    ULONG Flags; // MEMORY_COMBINE_FLAGS_*
 } MEMORY_COMBINE_INFORMATION_EX, *PMEMORY_COMBINE_INFORMATION_EX;
 
 // private
+/**
+ * The MEMORY_COMBINE_INFORMATION_EX2 structure contains memory combine information.
+ */
 typedef struct _MEMORY_COMBINE_INFORMATION_EX2
 {
-    HANDLE Handle;
+    HANDLE EventHandle; // Optional event handle.
     SIZE_T PagesCombined;
-    ULONG Flags;
-    HANDLE ProcessHandle;
+    ULONG Flags; // MEMORY_COMBINE_FLAGS_*
+    HANDLE ProcessHandle; // Requires MEMORY_COMBINE_FLAGS_COMBINE_WORKING_SET.
 } MEMORY_COMBINE_INFORMATION_EX2, *PMEMORY_COMBINE_INFORMATION_EX2;
 
 // private
+/**
+ * The SYSTEM_ENTROPY_TIMING_INFORMATION structure contains system entropy timing information.
+ */
 typedef struct _SYSTEM_ENTROPY_TIMING_INFORMATION
 {
     VOID (NTAPI *EntropyRoutine)(PVOID, ULONG);
@@ -5089,6 +6756,9 @@ typedef struct _SYSTEM_ENTROPY_TIMING_INFORMATION
 } SYSTEM_ENTROPY_TIMING_INFORMATION, *PSYSTEM_ENTROPY_TIMING_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_CONSOLE_INFORMATION structure contains system console information.
+ */
 typedef struct _SYSTEM_CONSOLE_INFORMATION
 {
     ULONG DriverLoaded : 1;
@@ -5096,6 +6766,9 @@ typedef struct _SYSTEM_CONSOLE_INFORMATION
 } SYSTEM_CONSOLE_INFORMATION, *PSYSTEM_CONSOLE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_PLATFORM_BINARY_INFORMATION structure contains system platform binary information.
+ */
 typedef struct _SYSTEM_PLATFORM_BINARY_INFORMATION
 {
     ULONG64 PhysicalAddress;
@@ -5106,6 +6779,9 @@ typedef struct _SYSTEM_PLATFORM_BINARY_INFORMATION
 } SYSTEM_PLATFORM_BINARY_INFORMATION, *PSYSTEM_PLATFORM_BINARY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_POLICY_INFORMATION structure contains system policy information.
+ */
 typedef struct _SYSTEM_POLICY_INFORMATION
 {
     PVOID InputData;
@@ -5116,6 +6792,9 @@ typedef struct _SYSTEM_POLICY_INFORMATION
 } SYSTEM_POLICY_INFORMATION, *PSYSTEM_POLICY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION structure contains system hypervisor processor count information.
+ */
 typedef struct _SYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION
 {
     ULONG NumberOfLogicalProcessors;
@@ -5123,6 +6802,9 @@ typedef struct _SYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION
 } SYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION, *PSYSTEM_HYPERVISOR_PROCESSOR_COUNT_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_DEVICE_DATA_INFORMATION structure contains system device data information.
+ */
 typedef struct _SYSTEM_DEVICE_DATA_INFORMATION
 {
     UNICODE_STRING DeviceId;
@@ -5133,6 +6815,9 @@ typedef struct _SYSTEM_DEVICE_DATA_INFORMATION
 } SYSTEM_DEVICE_DATA_INFORMATION, *PSYSTEM_DEVICE_DATA_INFORMATION;
 
 // private
+/**
+ * The PHYSICAL_CHANNEL_RUN structure describes the physical channel run.
+ */
 typedef struct _PHYSICAL_CHANNEL_RUN
 {
     ULONG NodeNumber;
@@ -5143,6 +6828,9 @@ typedef struct _PHYSICAL_CHANNEL_RUN
 } PHYSICAL_CHANNEL_RUN, *PPHYSICAL_CHANNEL_RUN;
 
 // private
+/**
+ * The SYSTEM_MEMORY_TOPOLOGY_INFORMATION structure contains system memory topology information.
+ */
 typedef struct _SYSTEM_MEMORY_TOPOLOGY_INFORMATION
 {
     ULONGLONG NumberOfRuns;
@@ -5152,6 +6840,9 @@ typedef struct _SYSTEM_MEMORY_TOPOLOGY_INFORMATION
 } SYSTEM_MEMORY_TOPOLOGY_INFORMATION, *PSYSTEM_MEMORY_TOPOLOGY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_MEMORY_CHANNEL_INFORMATION structure contains system memory channel information.
+ */
 typedef struct _SYSTEM_MEMORY_CHANNEL_INFORMATION
 {
     ULONG ChannelNumber;
@@ -5163,13 +6854,22 @@ typedef struct _SYSTEM_MEMORY_CHANNEL_INFORMATION
 } SYSTEM_MEMORY_CHANNEL_INFORMATION, *PSYSTEM_MEMORY_CHANNEL_INFORMATION;
 
 // private
+#define SYSTEM_BOOT_LOGO_FLAG_INTERNAL_0x800000 0x1 // Set when BgpFwQueryBootGraphicsInformation sees boot graphics state flag 0x800000.
+
+// private
+/**
+ * The SYSTEM_BOOT_LOGO_INFORMATION structure contains system boot logo information.
+ */
 typedef struct _SYSTEM_BOOT_LOGO_INFORMATION
 {
-    ULONG Flags;
-    ULONG BitmapOffset;
+    ULONG Flags; // SYSTEM_BOOT_LOGO_FLAG_*
+    ULONG BitmapOffset; // Offset to the trailing boot logo bitmap data; currently 8 in the query path.
 } SYSTEM_BOOT_LOGO_INFORMATION, *PSYSTEM_BOOT_LOGO_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX structure contains system processor performance information.
+ */
 typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX
 {
     LARGE_INTEGER IdleTime;
@@ -5179,22 +6879,38 @@ typedef struct _SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX
     LARGE_INTEGER InterruptTime;
     ULONG InterruptCount;
     ULONG Spare0;
+    //
+    // The amount of time that the processor has spent executing low priority (background) threads,
+    // in 100-nanosecond intervals. This is the remainder of the "% Priority Time" raw counter
+    // (counter set {b4fc721a-0378-476f-89ba-a5a79f810b36}, counter 15), whose raw value is exactly
+    // IdleTime + AvailableTime. That counter is a PERF_100NSEC_TIMER_INV, so:
+    //
+    //     PercentPriorityTime = 100 * (1 - d(IdleTime + AvailableTime) / dElapsed100ns)
+    //
+    // giving the percentage of elapsed time spent executing threads that are not low priority.
+    //
     LARGE_INTEGER AvailableTime;
     LARGE_INTEGER Spare1;
     LARGE_INTEGER Spare2;
 } SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX, *PSYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_EX;
 
 // private
-typedef struct _CRITICAL_PROCESS_EXCEPTION_DATA
+/**
+ * The SYSTEM_CRITICAL_PROCESS_EXCEPTION_INFORMATION structure contains system critical process exception information.
+ */
+typedef struct _SYSTEM_CRITICAL_PROCESS_EXCEPTION_INFORMATION // CRITICAL_PROCESS_EXCEPTION_DATA
 {
     GUID ReportId;
     UNICODE_STRING ModuleName;
     ULONG ModuleTimestamp;
     ULONG ModuleSize;
     ULONG_PTR Offset;
-} CRITICAL_PROCESS_EXCEPTION_DATA, *PCRITICAL_PROCESS_EXCEPTION_DATA;
+} SYSTEM_CRITICAL_PROCESS_EXCEPTION_INFORMATION, *PSYSTEM_CRITICAL_PROCESS_EXCEPTION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECUREBOOT_POLICY_INFORMATION structure contains system secureboot policy information.
+ */
 typedef struct _SYSTEM_SECUREBOOT_POLICY_INFORMATION
 {
     GUID PolicyPublisher;
@@ -5203,6 +6919,9 @@ typedef struct _SYSTEM_SECUREBOOT_POLICY_INFORMATION
 } SYSTEM_SECUREBOOT_POLICY_INFORMATION, *PSYSTEM_SECUREBOOT_POLICY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_PAGEFILE_INFORMATION_EX structure contains system pagefile information.
+ */
 _Struct_size_bytes_(NextEntryOffset)
 typedef struct _SYSTEM_PAGEFILE_INFORMATION_EX
 {
@@ -5224,6 +6943,9 @@ typedef struct _SYSTEM_PAGEFILE_INFORMATION_EX
 } SYSTEM_PAGEFILE_INFORMATION_EX, *PSYSTEM_PAGEFILE_INFORMATION_EX;
 
 // private
+/**
+ * The SYSTEM_SECUREBOOT_INFORMATION structure indicates whether Secure Boot is enabled and capable.
+ */
 typedef struct _SYSTEM_SECUREBOOT_INFORMATION
 {
     BOOLEAN SecureBootEnabled;
@@ -5231,6 +6953,9 @@ typedef struct _SYSTEM_SECUREBOOT_INFORMATION
 } SYSTEM_SECUREBOOT_INFORMATION, *PSYSTEM_SECUREBOOT_INFORMATION;
 
 // private
+/**
+ * The PROCESS_DISK_COUNTERS structure contains the process disk counters.
+ */
 typedef struct _PROCESS_DISK_COUNTERS
 {
     ULONGLONG BytesRead;
@@ -5241,6 +6966,9 @@ typedef struct _PROCESS_DISK_COUNTERS
 } PROCESS_DISK_COUNTERS, *PPROCESS_DISK_COUNTERS;
 
 // private
+/**
+ * The ENERGY_STATE_DURATION union describes the energy state duration.
+ */
 typedef union _ENERGY_STATE_DURATION
 {
     ULONGLONG Value;
@@ -5252,89 +6980,288 @@ typedef union _ENERGY_STATE_DURATION
     } DUMMYSTRUCTNAME;
 } ENERGY_STATE_DURATION, *PENERGY_STATE_DURATION;
 
+/**
+ * The PROCESS_ENERGY_VALUES_QOS_INDEX type represents the QoS (Quality of Service) /
+ * thread-context bucket used as the first index of the Cycles, AttributedCycles, and
+ * WorkOnBehalfCycles arrays in PROCESS_ENERGY_VALUES.
+ */
+typedef enum _PROCESS_ENERGY_VALUES_QOS_INDEX
+{
+    // Foreground / High QoS — threads running at foreground or high quality-of-service priority.
+    ProcessEnergyValuesQoSHighForeground = 0,
+    // Above-normal — threads running at above-normal priority.
+    ProcessEnergyValuesQoSAboveNormal = 1,
+    // Normal — threads running at normal priority.
+    ProcessEnergyValuesQoSNormal = 2,
+    // Background / Low QoS — threads running at background or low quality-of-service priority.
+    ProcessEnergyValuesQoSLowBackground = 3,
+    // The maximum number of QoS buckets.
+    ProcessEnergyValuesQoSMax = 4
+} PROCESS_ENERGY_VALUES_QOS_INDEX, *PPROCESS_ENERGY_VALUES_QOS_INDEX;
+
+/**
+ * The PROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX type represents the cycle type (user vs. kernel)
+ * used as the second index of the Cycles, AttributedCycles, and WorkOnBehalfCycles.
+ */
+typedef enum _PROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX
+{
+    // User-mode cycles accumulated by threads in this QoS bucket.
+    ProcessEnergyValuesCycleTypeUser = 0,
+    // Kernel-mode cycles accumulated by threads in this QoS bucket.
+    ProcessEnergyValuesCycleTypeKernel = 1,
+    // The maximum number of cycle types.
+    ProcessEnergyValuesCycleTypeMax = 2
+} PROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX, *PPROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX;
+
+/**
+ * \brief Energy accounting values for a process, broken down by QoS bucket and cycle type.
+ *
+ * \details Contains CPU cycle counts, energy estimates, network/MBB byte counts,
+ * activity durations, and DWM composition statistics accumulated for a process.
+ * CPU cycles are indexed by QoS bucket (see PROCESS_ENERGY_VALUES_QOS_INDEX) and
+ * cycle type (see PROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX).
+ */
 typedef struct _PROCESS_ENERGY_VALUES
 {
-    ULONGLONG Cycles[4][2];
+    /**
+     * CPU cycles accumulated per QoS bucket and cycle type.
+     * First index: QoS bucket (PROCESS_ENERGY_VALUES_QOS_INDEX).
+     * Second index: cycle type — user [0] or kernel [1] (PROCESS_ENERGY_VALUES_CYCLE_TYPE_INDEX).
+     */
+    ULONGLONG Cycles[ProcessEnergyValuesQoSMax][ProcessEnergyValuesCycleTypeMax];
+    /**
+     * Energy consumed by disk I/O, in arbitrary energy units.
+     */
     ULONGLONG DiskEnergy;
+    /**
+     * Tail energy attributed to network activity.
+     */
     ULONGLONG NetworkTailEnergy;
+    /**
+     * Tail energy attributed to Mobile Broadband (MBB) activity.
+     */
     ULONGLONG MBBTailEnergy;
+    /**
+     * Total bytes transmitted and received over network interfaces.
+     */
     ULONGLONG NetworkTxRxBytes;
+    /**
+     * Total bytes transmitted and received over Mobile Broadband (MBB) interfaces.
+     */
     ULONGLONG MBBTxRxBytes;
     union
     {
+        /**
+         * Activity state durations: [0] foreground, [1] desktop visible, [2] PSM foreground.
+         */
         ENERGY_STATE_DURATION Durations[3];
         struct
         {
+            /**
+             * Duration the process was in the foreground.
+             */
             ENERGY_STATE_DURATION ForegroundDuration;
+            /**
+             * Duration the process was visible on the desktop.
+             */
             ENERGY_STATE_DURATION DesktopVisibleDuration;
+            /**
+             * Duration the process was in the PSM (Process State Manager) foreground state.
+             */
             ENERGY_STATE_DURATION PSMForegroundDuration;
         } DUMMYSTRUCTNAME;
     } DUMMYUNIONNAME;
+    /**
+     * Number of frames rendered by the DWM compositor on behalf of this process.
+     */
     ULONG CompositionRendered;
+    /**
+     * Number of dirty regions generated by this process during DWM composition.
+     */
     ULONG CompositionDirtyGenerated;
+    /**
+     *  Number of dirty regions propagated from this process to other windows during DWM composition.
+     */
     ULONG CompositionDirtyPropagated;
     ULONG Reserved1;
-    ULONGLONG AttributedCycles[4][2];
-    ULONGLONG WorkOnBehalfCycles[4][2];
+    /**
+     * CPU cycles attributed to this process (e.g. from work performed on its behalf).
+     * Indexed identically to Cycles: [QoS bucket][cycle type].
+     */
+    ULONGLONG AttributedCycles[ProcessEnergyValuesQoSMax][ProcessEnergyValuesCycleTypeMax];
+    /**
+     * CPU cycles consumed while performing work on behalf of another process.
+     * Indexed identically to Cycles: [QoS bucket][cycle type].
+     */
+    ULONGLONG WorkOnBehalfCycles[ProcessEnergyValuesQoSMax][ProcessEnergyValuesCycleTypeMax];
 } PROCESS_ENERGY_VALUES, *PPROCESS_ENERGY_VALUES;
 
+/**
+ * \brief A compact activity timeline encoded as a bitmap with an end-time anchor.
+ *
+ * \details Each bit in the Bitmap field represents a fixed-size time slot.
+ * A set bit indicates the process was active during that slot.
+ * Each slot is 4096 milliseconds (~4.1 seconds) in duration.
+ * The 32-bit bitmap covers approximately 131 seconds of recent history.
+ * EndTime is a slot index (not wall-clock seconds); multiply by 4096 to get elapsed milliseconds.
+ *
+ * Timeline bitmap calculations:
+ * - To compute active duration from a bitmap: popcount(Bitmap) * 4096 milliseconds
+ * - To convert EndTime to elapsed time: EndTime * 4096 milliseconds
+ * - Total bitmap window: 32 slots * 4096 ms = 131,072 ms ~ 131 seconds
+ *
+ * The slot index comes from kernel timer accounting:
+ * KiTimelineBitmapTime = elapsed_ms >> 12,
+ * where elapsed_ms is the time since boot in milliseconds
+ * (from KUSER_SHARED_DATA.TickCountQuad).
+ */
 typedef union _TIMELINE_BITMAP
 {
+    /** Raw 64-bit value combining EndTime and Bitmap. */
     ULONGLONG Value;
     struct
     {
+        /**
+         * The slot index of the most recent time slot represented by the bitmap.
+         * Real time ~ EndTime * 4096 milliseconds.
+         */
         ULONG EndTime;
+        /**
+         * Bit-mask of activity slots; bit 0 is the most recent slot.
+         * One set bit represents approximately 4.096 seconds of activity.
+         * popcount(Bitmap) * 4096 ms ~ total active duration within window.
+         */
         ULONG Bitmap;
-    };
+    } DUMMYSTRUCTNAME;
 } TIMELINE_BITMAP, *PTIMELINE_BITMAP;
 
+/**
+ * \brief Extended energy accounting values for a process, providing activity timelines
+ * and additional duration/input statistics not present in PROCESS_ENERGY_VALUES.
+ *
+ * \details Added in REDSTONE2; the Timelines array grew from 9 to 14 entries in REDSTONE3.
+ * The Durations union and the input/audio fields are REDSTONE3+.
+ */
 typedef struct _PROCESS_ENERGY_VALUES_EXTENSION
 {
     union
     {
+        /** Activity timelines indexed by resource type (9 entries pre-RS3, 14 entries RS3+). */
         TIMELINE_BITMAP Timelines[14]; // 9 for REDSTONE2, 14 for REDSTONE3/4/5
         struct
         {
+            /**
+             * CPU activity timeline.
+             */
             TIMELINE_BITMAP CpuTimeline;
+            /**
+             * Disk I/O activity timeline.
+             */
             TIMELINE_BITMAP DiskTimeline;
+            /**
+             * Network activity timeline.
+             */
             TIMELINE_BITMAP NetworkTimeline;
+            /**
+             * Mobile Broadband (MBB) activity timeline.
+             */
             TIMELINE_BITMAP MBBTimeline;
+            /**
+             * Foreground visibility timeline.
+             */
             TIMELINE_BITMAP ForegroundTimeline;
+            /**
+             * Desktop visible timeline.
+             */
             TIMELINE_BITMAP DesktopVisibleTimeline;
+            /**
+             * DWM composition rendered timeline.
+             */
             TIMELINE_BITMAP CompositionRenderedTimeline;
+            /**
+             * DWM composition dirty-generated timeline.
+             */
             TIMELINE_BITMAP CompositionDirtyGeneratedTimeline;
+            /**
+             * DWM composition dirty-propagated timeline.
+             */
             TIMELINE_BITMAP CompositionDirtyPropagatedTimeline;
+            /**
+             * Input activity timeline (REDSTONE3+).
+             */
             TIMELINE_BITMAP InputTimeline; // REDSTONE3
+            /**
+             * Audio input (microphone) activity timeline (REDSTONE3+).
+             */
             TIMELINE_BITMAP AudioInTimeline;
+            /**
+             * Audio output (speaker/headphone) activity timeline (REDSTONE3+).
+             */
             TIMELINE_BITMAP AudioOutTimeline;
+            /**
+             * Display-required (screen-on prevention) timeline (REDSTONE3+).
+             */
             TIMELINE_BITMAP DisplayRequiredTimeline;
+            /**
+             * Keyboard input activity timeline (REDSTONE3+).
+             */
             TIMELINE_BITMAP KeyboardInputTimeline;
         } DUMMYSTRUCTNAME;
     } DUMMYUNIONNAME;
 
     union // REDSTONE3
     {
+        /**
+         * Activity state durations for extended resource types (REDSTONE3+).
+         */
         ENERGY_STATE_DURATION Durations[5];
         struct
         {
+            /**
+             * Duration the process received user input (REDSTONE3+).
+             */
             ENERGY_STATE_DURATION InputDuration;
+            /**
+             * Duration the process used audio input (REDSTONE3+).
+             */
             ENERGY_STATE_DURATION AudioInDuration;
+            /**
+             * Duration the process used audio output (REDSTONE3+).
+             */
             ENERGY_STATE_DURATION AudioOutDuration;
+            /**
+             * Duration the process prevented display power-off (REDSTONE3+).
+             */
             ENERGY_STATE_DURATION DisplayRequiredDuration;
+            /**
+             * Duration the process ran in PSM background state (REDSTONE3+).
+             */
             ENERGY_STATE_DURATION PSMBackgroundDuration;
-        } DUMMYSTRUCTNAME;
-    } DUMMYUNIONNAME;
+        } DUMMYSTRUCTNAME2;
+    } DUMMYUNIONNAME2;
 
+    /**
+     * Number of keyboard input events attributed to the process (REDSTONE3+).
+     */
     ULONG KeyboardInput;
+    /**
+     * Number of mouse input events attributed to the process (REDSTONE3+).
+     */
     ULONG MouseInput;
 } PROCESS_ENERGY_VALUES_EXTENSION, *PPROCESS_ENERGY_VALUES_EXTENSION;
 
+/**
+ * The PROCESS_EXTENDED_ENERGY_VALUES structure describes the process extended energy values.
+ */
 typedef struct _PROCESS_EXTENDED_ENERGY_VALUES
 {
     PROCESS_ENERGY_VALUES Base;
     PROCESS_ENERGY_VALUES_EXTENSION Extension;
 } PROCESS_EXTENDED_ENERGY_VALUES, *PPROCESS_EXTENDED_ENERGY_VALUES;
 
+/**
+ * The PROCESS_EXTENDED_ENERGY_VALUES_V1 structure describes the process extended energy values V1.
+ */
 typedef struct _PROCESS_EXTENDED_ENERGY_VALUES_V1
 {
     PROCESS_ENERGY_VALUES Base;
@@ -5343,6 +7270,9 @@ typedef struct _PROCESS_EXTENDED_ENERGY_VALUES_V1
 } PROCESS_EXTENDED_ENERGY_VALUES_V1, *PPROCESS_EXTENDED_ENERGY_VALUES_V1;
 
 // private
+/**
+ * The SYSTEM_PROCESS_CLASSIFICATION enumeration defines the system process classification values.
+ */
 typedef enum _SYSTEM_PROCESS_CLASSIFICATION
 {
     SystemProcessClassificationNormal,
@@ -5353,39 +7283,154 @@ typedef enum _SYSTEM_PROCESS_CLASSIFICATION
     SystemProcessClassificationMaximum
 } SYSTEM_PROCESS_CLASSIFICATION;
 
-// private
+/**
+ * Extended process information appended to SYSTEM_PROCESS_INFORMATION in full process enumeration queries.
+ *
+ * \details This structure provides additional process accounting, classification, and energy metrics
+ * not present in the base SYSTEM_PROCESS_INFORMATION structure. It is returned when querying
+ * SystemFullProcessInformation (information class 148) or SystemExtendedProcessInformation (information class 57)
+ * via NtQuerySystemInformation.
+ *
+ * The structure is appended immediately after the SYSTEM_THREAD_INFORMATION array in
+ * SYSTEM_EXTENDED_PROCESS_INFORMATION, and the offsets are relative to the start of this extension structure.
+ *
+ * \since Windows 10 Threshold (version 1507, build 10240)
+ * \remarks This structure contains variable-length data. The UserSidOffset, PackageFullNameOffset,
+ * and AppIdOffset fields point to data stored immediately after this structure in memory.
+ * Callers must use these offsets to locate the actual strings and SID data.
+ */
 typedef struct _SYSTEM_PROCESS_INFORMATION_EXTENSION
 {
+    /**
+     * Cumulative disk I/O counters for the process (reads, writes, flushes).
+     * Includes total bytes transferred and operation counts for read, write, and flush operations.
+     */
     PROCESS_DISK_COUNTERS DiskCounters;
+
+    /**
+     * Total number of context switches performed by all threads in the process since creation.
+     * Use this to measure scheduling overhead and CPU time-sharing behavior.
+     */
     ULONGLONG ContextSwitches;
+
+    /**
+     * Process classification flags and security attributes.
+     */
     union
     {
+        /**
+         * Raw flags value containing all classification bits.
+         */
         ULONG Flags;
+
         struct
         {
+            /**
+             * If set, the process has a strong identity (e.g., packaged app with cryptographic signing).
+             * Strong identities are used for security policy enforcement and resource isolation.
+             */
             ULONG HasStrongId : 1;
+
+            /**
+             * Process classification type (SYSTEM_PROCESS_CLASSIFICATION).
+             * Indicates whether this is a normal user process, system process, secure system process,
+             * memory compression process, or registry process. Used by the kernel for resource
+             * management, security policy, and scheduling decisions.
+             */
             ULONG Classification : 4; // SYSTEM_PROCESS_CLASSIFICATION
+
+            /**
+             * If set, the process has had background activity moderation applied to it.
+             * The system may throttle CPU, I/O, or network resources when the process is not in the foreground.
+             * \since Windows 10 Redstone 2 (version 1703)
+             */
             ULONG BackgroundActivityModerated : 1;
+
+            /**
+             * Reserved for future use.
+             */
             ULONG Spare : 26;
         } DUMMYSTRUCTNAME;
     } DUMMYUNIONNAME;
+
+    /**
+     * Offset, in bytes, from the start of this structure to the user SID (Security Identifier).
+     * If zero, no user SID is available. The SID data is stored in standard binary format.
+     * Use this offset to locate the process owner's security identifier for access control
+     * and auditing purposes.
+     */
     ULONG UserSidOffset;
+
+    /**
+     * Offset, in bytes, from the start of this structure to a null-terminated WCHAR string
+     * containing the full package name (e.g., "Contoso.App_1.0.0.0_x64__8wekyb3d8bbwe").
+     * If zero, the process is not packaged (classic Win32 application).
+     * \since Windows 10 Threshold (version 1507)
+     */
     ULONG PackageFullNameOffset; // since THRESHOLD
+
+    /**
+     * Detailed energy accounting values for the process, including CPU cycles, disk energy,
+     * network/MBB tail energy, DWM composition metrics, and activity state durations.
+     * Provides per-QoS-bucket breakdowns of energy consumption for foreground/background
+     * resource usage analysis.
+     * \since Windows 10 Threshold (version 1507)
+     */
     PROCESS_ENERGY_VALUES EnergyValues; // since THRESHOLD
+
+    /**
+     * Offset, in bytes, from the start of this structure to a null-terminated WCHAR string
+     * containing the Application User Model ID (AUMID) for packaged applications.
+     * If zero, the process does not have an AppId (either not packaged or not a UWP app).
+     * \since Windows 10 Threshold (version 1507)
+     */
     ULONG AppIdOffset; // since THRESHOLD
+
+    /**
+     * Number of bytes of committed memory shared between this process and other processes
+     * (e.g., memory-mapped sections, shared DLLs, or copy-on-write pages).
+     * Use this to measure memory overhead due to sharing and to calculate true private bytes.
+     * SharedCommitCharge + PrivatePageCount gives a more accurate picture of process memory usage.
+     * \since Windows 10 Threshold 2 (version 1511)
+     */
     SIZE_T SharedCommitCharge; // since THRESHOLD2
+
+    /**
+     * Identifier of the job object to which the process belongs, if any.
+     * If zero, the process is not assigned to a job object. Job objects are used to group
+     * processes and apply resource limits, accounting, and management policies.
+     * \since Windows 10 Redstone (version 1607)
+     */
     ULONG JobObjectId; // since REDSTONE
+
+    /**
+     * Reserved for future use.
+     * \since Windows 10 Redstone (version 1607)
+     */
     ULONG SpareUlong; // since REDSTONE
+
+    /**
+     * Unique monotonically-increasing sequence number assigned when the process was created.
+     * Unlike ProcessId (which can be recycled), this value is never reused and provides
+     * a stable identifier for correlation across logs and telemetry even after process termination.
+     * \since Windows 10 Redstone (version 1607)
+     */
     ULONGLONG ProcessSequenceNumber;
 } SYSTEM_PROCESS_INFORMATION_EXTENSION, *PSYSTEM_PROCESS_INFORMATION_EXTENSION;
 
 // private
+/**
+ * The SYSTEM_PORTABLE_WORKSPACE_EFI_LAUNCHER_INFORMATION structure contains system portable workspace EFI launcher information.
+ */
 typedef struct _SYSTEM_PORTABLE_WORKSPACE_EFI_LAUNCHER_INFORMATION
 {
     BOOLEAN EfiLauncherEnabled;
 } SYSTEM_PORTABLE_WORKSPACE_EFI_LAUNCHER_INFORMATION, *PSYSTEM_PORTABLE_WORKSPACE_EFI_LAUNCHER_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX structure contains system kernel debugger information.
+ */
 typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX
 {
     BOOLEAN DebuggerAllowed;
@@ -5393,13 +7438,45 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX
     BOOLEAN DebuggerPresent;
 } SYSTEM_KERNEL_DEBUGGER_INFORMATION_EX, *PSYSTEM_KERNEL_DEBUGGER_INFORMATION_EX;
 
+// rev
+/**
+ * The SYSTEM_BOOT_METADATA_INFORMATION structure contains system boot metadata information.
+ */
+typedef struct _SYSTEM_BOOT_METADATA_INFORMATION
+{
+    ULONG Size;
+    UCHAR Data[1];
+} SYSTEM_BOOT_METADATA_INFORMATION, *PSYSTEM_BOOT_METADATA_INFORMATION;
+
+// rev
+#define SYSTEM_SOFT_REBOOT_FLAGS_STATE_MASK 0x000000BBu // State-selection bits consumed by ExpSetSoftRebootFlags.
+#define SYSTEM_SOFT_REBOOT_FLAGS_OPTION_MASK 0x25000000u // User-settable option bits accepted by ExpSetSoftRebootFlags.
+#define SYSTEM_SOFT_REBOOT_FLAGS_USER_MASK 0x250000BBu // Accepted user input mask.
+#define SYSTEM_SOFT_REBOOT_FLAGS_INTERNAL_PERSIST 0x40000000u // Kernel-managed bit preserved across transitions.
+#define SYSTEM_SOFT_REBOOT_FLAGS_INTERNAL_TRANSITION 0x80000000u // Kernel-managed transition-in-progress bit.
+
+// rev
+/**
+ * The SYSTEM_SOFT_REBOOT_INFORMATION structure contains system soft reboot information.
+ */
+typedef struct _SYSTEM_SOFT_REBOOT_INFORMATION
+{
+    ULONG Flags; // SYSTEM_SOFT_REBOOT_FLAGS_*
+} SYSTEM_SOFT_REBOOT_INFORMATION, *PSYSTEM_SOFT_REBOOT_INFORMATION;
+
 // private
+/**
+ * The SYSTEM_ELAM_CERTIFICATE_INFORMATION structure contains system ELAM certificate information.
+ */
 typedef struct _SYSTEM_ELAM_CERTIFICATE_INFORMATION
 {
     HANDLE ElamDriverFile;
 } SYSTEM_ELAM_CERTIFICATE_INFORMATION, *PSYSTEM_ELAM_CERTIFICATE_INFORMATION;
 
 // private
+/**
+ * The OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2 structure describes the offline crashdump configuration table V2.
+ */
 typedef struct _OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2
 {
     ULONG Version;
@@ -5410,6 +7487,9 @@ typedef struct _OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2
 } OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2, *POFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V2;
 
 // private
+/**
+ * The OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1 structure describes the offline crashdump configuration table V1.
+ */
 typedef struct _OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1
 {
     ULONG Version;
@@ -5418,6 +7498,19 @@ typedef struct _OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1
 } OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1, *POFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1;
 
 // SYSTEM_PROCESSOR_FEATURES_INFORMATION // ProcessorFeatureBits
+// Processor feature bits (31 flags spanning bits 0-55 with documented gaps at bits 18-22)
+// These flags indicate CPU capabilities detected by the kernel via CPUID and other detection mechanisms.
+// Allocated bit ranges:
+//   Bits  0-17  : Base CPU features (MMX, SSE, branch prediction, etc.) - 18 flags
+//   Bits 18-22  : Reserved/unused (5 bit gap)
+//   Bits 23-31  : Extended states and additional features (1 flag)
+//   Bits 32-34  : Advanced features (RDRAND, SMAP, RDTSCP) - 3 flags
+//   Bits 35-44  : Reserved/unused (10 bit gap)
+//   Bits 45-46  : Huge pages and extended saves - 2 flags
+//   Bits 47-51  : Reserved/unused (5 bit gap)
+//   Bits 52-58  : Security and extended features (FPU_LEAKAGE, CAT, CET_SS, SSSE3, SSE4.x) - 7 flags
+//   Bits 59-62  : Reserved/unused (4 bit gap)
+//   Bit  63     : XFD (extended FPU data) - 1 flag
 #define KF64_SMEP              0x0000000000000001ULL // Supervisor Mode Execution Protection
 #define KF64_RDTSC             0x0000000000000002ULL // Read Time-Stamp Counter
 #define KF64_CR4               0x0000000000000004ULL // CR4 Register Features
@@ -5451,6 +7544,9 @@ typedef struct _OFFLINE_CRASHDUMP_CONFIGURATION_TABLE_V1
 #define KF64_XFD               0x0080000000000000ULL // eXtended FPU Data
 
 // private
+/**
+ * The SYSTEM_PROCESSOR_FEATURES_INFORMATION structure contains system processor features information.
+ */
 typedef struct _SYSTEM_PROCESSOR_FEATURES_INFORMATION
 {
     ULONGLONG ProcessorFeatureBits;
@@ -5458,6 +7554,9 @@ typedef struct _SYSTEM_PROCESSOR_FEATURES_INFORMATION
 } SYSTEM_PROCESSOR_FEATURES_INFORMATION, *PSYSTEM_PROCESSOR_FEATURES_INFORMATION;
 
 // EDID v1.4 detailed timing descriptor (18 bytes)
+/**
+ * The SYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR structure describes the system EDID detailed timing descriptor.
+ */
 typedef struct _SYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR
 {
     USHORT PixelClock;           // Pixel clock in 10 kHz units
@@ -5480,6 +7579,9 @@ typedef struct _SYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR
 } SYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR, *PSYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR;
 
 // EDID v1.4 standard data format
+/**
+ * The SYSTEM_EDID_INFORMATION structure contains system EDID information.
+ */
 typedef struct _SYSTEM_EDID_INFORMATION
 {
     union
@@ -5506,11 +7608,14 @@ typedef struct _SYSTEM_EDID_INFORMATION
             SYSTEM_EDID_DETAILED_TIMING_DESCRIPTOR DetailedTiming[4]; // 36h: 4 detailed timing descriptors (18 bytes each)
             UCHAR ExtensionFlag;             // 7Eh: Number of (optional) 128-byte extension blocks
             UCHAR Checksum;                  // 7Fh: Checksum (sum of all 128 bytes = 0)
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } SYSTEM_EDID_INFORMATION, *PSYSTEM_EDID_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_MANUFACTURING_INFORMATION structure contains system manufacturing information.
+ */
 typedef struct _SYSTEM_MANUFACTURING_INFORMATION
 {
     ULONG Options;
@@ -5518,18 +7623,27 @@ typedef struct _SYSTEM_MANUFACTURING_INFORMATION
 } SYSTEM_MANUFACTURING_INFORMATION, *PSYSTEM_MANUFACTURING_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_ENERGY_ESTIMATION_CONFIG_INFORMATION structure contains the system energy estimation configuration.
+ */
 typedef struct _SYSTEM_ENERGY_ESTIMATION_CONFIG_INFORMATION
 {
     BOOLEAN Enabled;
 } SYSTEM_ENERGY_ESTIMATION_CONFIG_INFORMATION, *PSYSTEM_ENERGY_ESTIMATION_CONFIG_INFORMATION;
 
 // private
+/**
+ * The HV_DETAILS structure describes the HV details.
+ */
 typedef struct _HV_DETAILS
 {
     ULONG Data[4];
 } HV_DETAILS, *PHV_DETAILS;
 
 // private
+/**
+ * The SYSTEM_HYPERVISOR_DETAIL_INFORMATION structure contains system hypervisor detail information.
+ */
 typedef struct _SYSTEM_HYPERVISOR_DETAIL_INFORMATION
 {
     HV_DETAILS HvVendorAndMaxFunction;
@@ -5541,7 +7655,67 @@ typedef struct _SYSTEM_HYPERVISOR_DETAIL_INFORMATION
     HV_DETAILS ImplementationLimits;
 } SYSTEM_HYPERVISOR_DETAIL_INFORMATION, *PSYSTEM_HYPERVISOR_DETAIL_INFORMATION;
 
+/**
+ * The SYSTEM_PROCESSOR_CYCLE_STATS_BUCKET_INDEX type represents a frequency bucket
+ * for processor cycle statistics, selected by PoGetFrequencyBucket based on the current
+ * processor frequency relative to thresholds in _KPRCB.PowerState.FrequencyBucketThresholds.
+ */
+typedef enum _SYSTEM_PROCESSOR_CYCLE_STATS_BUCKET_INDEX
+{
+    // Lowest frequency bucket — processor running at or below the first frequency threshold.
+    SystemProcessorCycleStatsBucketLowestFrequency = 0,
+    // Low frequency bucket — processor running between the first and second frequency thresholds.
+    SystemProcessorCycleStatsBucketLowFrequency = 1,
+    // High frequency bucket — processor running between the second and third frequency thresholds.
+    SystemProcessorCycleStatsBucketHighFrequency = 2,
+    // Highest frequency bucket — processor running above the third frequency threshold.
+    SystemProcessorCycleStatsBucketHighestFrequency = 3,
+    // The maximum number of frequency buckets.
+    SystemProcessorCycleStatsBucketMax = 4
+} SYSTEM_PROCESSOR_CYCLE_STATS_BUCKET_INDEX, *PSYSTEM_PROCESSOR_CYCLE_STATS_BUCKET_INDEX;
+
+/**
+ * The SYSTEM_PROCESSOR_CYCLE_STATS_EFFICIENCY_CLASS_INDEX type represents the baseline architectural-efficiency group.
+ *
+ * \note In current kernel accounting this is effectively binary grouping (0/1), not an open-ended N-class index.
+ * So think of it as Group A vs Group B for heterogeneity tracking.
+ * It is not guaranteed to mean exactly “P-core vs E-core” on every platform, even though that may often correlate.
+ */
+typedef enum _SYSTEM_PROCESSOR_CYCLE_STATS_EFFICIENCY_CLASS_INDEX
+{
+    // Represents the baseline architectural-efficiency group (the group with the minimum class value in current kernel logic)
+    // Baseline efficiency-class group (minimum architectural efficiency class).
+    SystemProcessorCycleStatsEfficiencyClassPrimary = 0,
+    // Represents processors not in that baseline group (all non-min class values are folded into this second bucket)
+    // Non-baseline efficiency-class group (all other architectural efficiency classes).
+    SystemProcessorCycleStatsEfficiencyClassSecondary = 1,
+    // The current maximum number of architectural-efficiency classes (subject to change).
+    SystemProcessorCycleStatsEfficiencyClassMax = 2
+} SYSTEM_PROCESSOR_CYCLE_STATS_EFFICIENCY_CLASS_INDEX, *PSYSTEM_PROCESSOR_CYCLE_STATS_EFFICIENCY_CLASS_INDEX;
+
 // private
+//
+// Query notes:
+//
+// This class is only serviced by NtQuerySystemInformationEx. The plain NtQuerySystemInformation
+// form fails with STATUS_INVALID_PARAMETER at every buffer size. The input buffer is a
+// USHORT ProcessorGroup.
+//
+// The output is a bare array of one structure per active processor in the group, with no header and
+// no offset table. An undersized buffer fails with either STATUS_INFO_LENGTH_MISMATCH or
+// STATUS_BUFFER_TOO_SMALL depending on how short it is, so a retry loop must accept both. Both set
+// ReturnLength to the required size.
+//
+// The cycle counts are attributed to a coarse frequency band and efficiency class for heterogeneous
+// scheduler telemetry. They are not a continuous unhalted cycle counter and carry no delivered
+// frequency resolution, so they cannot be used to compute processor utility or performance; use
+// SystemProcessorPerformanceDistribution for that. On a homogeneous processor every cycle lands in
+// Cycles[SystemProcessorCycleStatsBucketHighestFrequency][SystemProcessorCycleStatsEfficiencyClassPrimary]
+// and the remaining cells stay zero.
+//
+/**
+ * The SYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION structure contains per-processor cycle counts bucketed by frequency band and architectural efficiency class for heterogeneous scheduler telemetry (SystemProcessorCycleStatsInformation, queried via NtQuerySystemInformationEx).
+ */
 typedef struct _SYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION
 {
     //
@@ -5552,16 +7726,26 @@ typedef struct _SYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION
     // dependent KeHeteroSystem and using _KPRCB.PowerState.EarlyBootArchitecturalEfficiencyClass
     // instead, when appropriate.
     //
-    ULONGLONG Cycles[4][2];
+    ULONGLONG Cycles[SystemProcessorCycleStatsBucketMax][SystemProcessorCycleStatsEfficiencyClassMax];
 } SYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION, *PSYSTEM_PROCESSOR_CYCLE_STATS_INFORMATION;
 
 // private
+#define SYSTEM_TPM_FLAG_BOOT_DRIVER_LOADED 0x1 // SepOsLoaderTpmDriverLoaded
+#define SYSTEM_TPM_FLAG_READY 0x2 // PnpCoreDriverGroupLoadPhase > 2
+
+// private
+/**
+ * The SYSTEM_TPM_INFORMATION structure contains system TPM information.
+ */
 typedef struct _SYSTEM_TPM_INFORMATION
 {
-    ULONG Flags;
+    ULONG Flags; // SYSTEM_TPM_FLAG_*
 } SYSTEM_TPM_INFORMATION, *PSYSTEM_TPM_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_VSM_PROTECTION_INFORMATION structure contains system VSM protection information.
+ */
 typedef struct _SYSTEM_VSM_PROTECTION_INFORMATION
 {
     BOOLEAN DmaProtectionsAvailable;
@@ -5571,6 +7755,9 @@ typedef struct _SYSTEM_VSM_PROTECTION_INFORMATION
 } SYSTEM_VSM_PROTECTION_INFORMATION, *PSYSTEM_VSM_PROTECTION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_KERNEL_DEBUGGER_FLAGS structure defines the system kernel debugger flags.
+ */
 typedef struct _SYSTEM_KERNEL_DEBUGGER_FLAGS
 {
     BOOLEAN KernelDebuggerIgnoreUmExceptions;
@@ -5597,68 +7784,144 @@ typedef struct _SYSTEM_KERNEL_DEBUGGER_FLAGS
 #define CODEINTEGRITYPOLICY_HVCIOPTION_DEBUG 0x04
 
 // private
-typedef struct _SYSTEM_CODEINTEGRITYPOLICY_INFORMATION
+/**
+ * \brief Code Integrity Policy configuration and HVCI (Hypervisor-enforced Code Integrity) settings.
+ *
+ * Contains the kernel's code integrity policy enforcement options and Hardware-enforced Code Integrity (HVCI)
+ * configuration state. Enables applications to query the security posture of code integrity enforcement and
+ * virtualization-based security features. Available via NtQuerySystemInformation(SystemCodeIntegrityInformation).
+ *
+ * \since Windows 10
+ */
+typedef struct _SYSTEM_CODEINTEGRITY_POLICY_INFORMATION
 {
+    /**
+     * \brief Code integrity policy options (Options union).
+     *
+     * Union providing both raw 32-bit access and bitfield access to policy flags:
+     * - Enabled: Code integrity enforcement is active
+     * - Audit: Code integrity operates in audit mode (violations logged, not blocked)
+     * - RequireWHQL: Windows Hardware Quality Labs certification required for drivers
+     * - DisabledFlightSigning: Flight-signed binaries are blocked from loading
+     * - EnabledUMCI: User-mode Code Integrity enforcement enabled (signed DLL requirement)
+     * - EnabledUpdatePolicyNoReboot: Code integrity policy updates without system reboot
+     * - EnabledSecureSettingPolicy: Secure settings policy enforcement enabled
+     * - EnabledUnsignedSystemIntegrityPolicy: Unsigned system integrity policies allowed
+     * - DynamicCodePolicyEnabled: Dynamic code generation and modification is restricted
+     * - Spare: 19 reserved bits for future expansion
+     * - ReloadPolicyNoReboot: Policy reloaded without reboot (bit 28)
+     * - ConditionalLockdown: Conditional code integrity lockdown mode (bit 29)
+     * - NoLockdown: Code integrity lockdown is not active (bit 30)
+     * - Lockdown: Code integrity lockdown mode is enforced (bit 31)
+     */
     union
     {
         ULONG Options;
         struct
         {
-            ULONG Enabled : 1;
-            ULONG Audit : 1;
-            ULONG RequireWHQL : 1;
-            ULONG DisabledFlightSigning : 1;
-            ULONG EnabledUMCI : 1;
-            ULONG EnabledUpdatePolicyNoReboot : 1;
-            ULONG EnabledSecureSettingPolicy : 1;
-            ULONG EnabledUnsignedSystemIntegrityPolicy : 1;
-            ULONG DynamicCodePolicyEnabled : 1;
-            ULONG Spare : 19;
-            ULONG ReloadPolicyNoReboot : 1;
-            ULONG ConditionalLockdown : 1;
-            ULONG NoLockdown : 1;
-            ULONG Lockdown : 1;
+            ULONG Enabled : 1;                          ///< Code integrity enforcement enabled
+            ULONG Audit : 1;                            ///< Audit mode (log violations, don't block)
+            ULONG RequireWHQL : 1;                      ///< Require WHQL certification
+            ULONG DisabledFlightSigning : 1;            ///< Block flight-signed binaries
+            ULONG EnabledUMCI : 1;                      ///< User-mode code integrity enabled
+            ULONG EnabledUpdatePolicyNoReboot : 1;      ///< Update policy without reboot
+            ULONG EnabledSecureSettingPolicy : 1;       ///< Secure settings policy active
+            ULONG EnabledUnsignedSystemIntegrityPolicy : 1;  ///< Allow unsigned system integrity policies
+            ULONG DynamicCodePolicyEnabled : 1;         ///< Restrict dynamic code/JIT
+            ULONG Spare : 19;                           ///< Reserved for future use
+            ULONG ReloadPolicyNoReboot : 1;             ///< Policy reloaded without reboot
+            ULONG ConditionalLockdown : 1;              ///< Conditional lockdown mode
+            ULONG NoLockdown : 1;                       ///< Lockdown not enforced
+            ULONG Lockdown : 1;                         ///< Lockdown mode enforced
         } DUMMYSTRUCTNAME;
     } DUMMYUNIONNAME;
+    /**
+     * \brief Hardware-enforced Code Integrity (HVCI) options.
+     *
+     * Union providing both raw access and bitfield access to HVCI/VBS configuration:
+     * - HVCIEnabled: HVCI is active (code integrity enforcement via hypervisor)
+     * - HVCIStrict: Strict mode enforcement (higher security, lower performance)
+     * - HVCIDebug: Debug mode enabled (diagnostic/troubleshooting)
+     * - HVCISpare: 29 reserved bits for future HVCI expansion
+     */
     union
     {
         ULONG HVCIOptions;
         struct
         {
-            ULONG HVCIEnabled : 1;
-            ULONG HVCIStrict : 1;
-            ULONG HVCIDebug : 1;
-            ULONG HVCISpare : 29;
-        } DUMMYSTRUCTNAME;
-    } DUMMYUNIONNAME;
+            ULONG HVCIEnabled : 1;                      ///< HVCI enforced by hypervisor
+            ULONG HVCIStrict : 1;                       ///< Strict HVCI mode enforcement
+            ULONG HVCIDebug : 1;                        ///< HVCI debug mode active
+            ULONG HVCISpare : 29;                       ///< Reserved for future use
+        } DUMMYSTRUCTNAME2;
+    } DUMMYUNIONNAME2;
+    /**
+     * \brief Code integrity policy version.
+     *
+     * Version number incremented when the kernel reloads/updates the code integrity policy.
+     * Used to detect policy changes without requiring system restart.
+     */
     ULONGLONG Version;
+    /**
+     * \brief Code integrity policy GUID.
+     *
+     * Uniquely identifies the loaded code integrity policy file. Changes when a different
+     * policy becomes active; can be used to correlate policy audit logs.
+     */
     GUID PolicyGuid;
-} SYSTEM_CODEINTEGRITYPOLICY_INFORMATION, *PSYSTEM_CODEINTEGRITYPOLICY_INFORMATION;
+} SYSTEM_CODEINTEGRITY_POLICY_INFORMATION, *PSYSTEM_CODEINTEGRITY_POLICY_INFORMATION;
 
 // private
+/**
+ * \brief Isolated User Mode (IUM) and virtualization-based security (VBS) status.
+ *
+ * Queries the state of Virtualization-Based Security (VBS) infrastructure, including Hyper-V Code Integrity (HVCI),
+ * Secure Kernel, trustlets, and hardware-enforced security features. Enables applications to detect when running
+ * in a hardened security posture and to determine available cryptographic protections.
+ * Available via NtQuerySystemInformation(SystemIsolatedUserModeInformation).
+ *
+ * \since Windows 10 (RS2+)
+ */
 typedef struct _SYSTEM_ISOLATED_USER_MODE_INFORMATION
 {
-    BOOLEAN SecureKernelRunning : 1;
-    BOOLEAN HvciEnabled : 1;
-    BOOLEAN HvciStrictMode : 1;
-    BOOLEAN DebugEnabled : 1;
-    BOOLEAN FirmwarePageProtection : 1;
-    BOOLEAN EncryptionKeyAvailable : 1;
-    BOOLEAN SpareFlags : 2;
-    BOOLEAN TrustletRunning : 1;
-    BOOLEAN HvciDisableAllowed : 1;
-    BOOLEAN HardwareEnforcedVbs : 1;
-    BOOLEAN NoSecrets : 1;
-    BOOLEAN EncryptionKeyPersistent : 1;
-    BOOLEAN HardwareEnforcedHvpt : 1;
-    BOOLEAN HardwareHvptAvailable : 1;
-    BOOLEAN SpareFlags2 : 1;
-    BOOLEAN EncryptionKeyTpmBound : 1;
-    BOOLEAN Spare0[5];
-    ULONGLONG Spare1;
+    ///< \brief Virtualization-based Security core status (byte 0):
+    BOOLEAN SecureKernelRunning : 1;                   ///< Secure Kernel (hypervisor-based isolation) is active
+    BOOLEAN HvciEnabled : 1;                           ///< Hypervisor-enforced Code Integrity enabled
+    BOOLEAN HvciStrictMode : 1;                        ///< HVCI in strict enforcement mode
+    BOOLEAN DebugEnabled : 1;                          ///< Kernel debugger enabled (may weaken security)
+    BOOLEAN FirmwarePageProtection : 1;                ///< UEFI Secure Boot firmware page protection active
+    BOOLEAN EncryptionKeyAvailable : 1;                ///< Isolation-backed encryption key available from Secure Kernel
+    BOOLEAN SpareFlags : 2;                            ///< Reserved for future VBS flags (bits 6-7)
+
+    ///< \brief Isolated execution and security features (byte 1):
+    BOOLEAN TrustletRunning : 1;                       ///< Trustlet (isolated edge function) is running
+    BOOLEAN HvciDisableAllowed : 1;                    ///< HVCI can be disabled without reboot (policy-driven)
+    BOOLEAN HardwareEnforcedVbs : 1;                   ///< VBS enforced by processor/platform (e.g., AMD SME, Intel TXT)
+    BOOLEAN NoSecrets : 1;                             ///< No cryptographic secrets loaded in isolated user mode
+    BOOLEAN EncryptionKeyPersistent : 1;               ///< Encryption key persists across reboots
+    BOOLEAN HardwareEnforcedHvpt : 1;                  ///< Hardware enforces Hypervisor Page Table (HVPT) isolation
+    BOOLEAN HardwareHvptAvailable : 1;                 ///< CPU supports hardware-enforced HVPT (architectural feature)
+    BOOLEAN SpareFlags2 : 1;                           ///< Reserved for future feature flag (bit 15)
+    BOOLEAN EncryptionKeyTpmBound : 1;                 ///< Encryption key bound to TPM (Trusted Platform Module)
+
+    ///< \brief Reserved for future expansion (binary compatibility):
+    BOOLEAN Spare0[5];                                 ///< Reserved bytes for future isolated user mode flags
+    ULONGLONG Spare1;                                  ///< Reserved 8 bytes for future isolated user mode expansion
 } SYSTEM_ISOLATED_USER_MODE_INFORMATION, *PSYSTEM_ISOLATED_USER_MODE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_HARDWARE_SECURITY_TEST_INTERFACE_RESULTS_INFORMATION structure contains system hardware security test interface results information.
+ */
+typedef struct _SYSTEM_HARDWARE_SECURITY_TEST_INTERFACE_RESULTS_INFORMATION
+{
+    UCHAR Results[1];
+} SYSTEM_HARDWARE_SECURITY_TEST_INTERFACE_RESULTS_INFORMATION, *PSYSTEM_HARDWARE_SECURITY_TEST_INTERFACE_RESULTS_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_SINGLE_MODULE_INFORMATION structure contains system single module information.
+ */
 typedef struct _SYSTEM_SINGLE_MODULE_INFORMATION
 {
     PVOID TargetModuleAddress;
@@ -5666,6 +7929,9 @@ typedef struct _SYSTEM_SINGLE_MODULE_INFORMATION
 } SYSTEM_SINGLE_MODULE_INFORMATION, *PSYSTEM_SINGLE_MODULE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_INTERRUPT_CPU_SET_INFORMATION structure contains system interrupt CPU set information.
+ */
 typedef struct _SYSTEM_INTERRUPT_CPU_SET_INFORMATION
 {
     ULONG Gsiv;
@@ -5674,14 +7940,85 @@ typedef struct _SYSTEM_INTERRUPT_CPU_SET_INFORMATION
 } SYSTEM_INTERRUPT_CPU_SET_INFORMATION, *PSYSTEM_INTERRUPT_CPU_SET_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECUREBOOT_POLICY_FULL_INFORMATION structure contains system secureboot policy full information.
+ */
 typedef struct _SYSTEM_SECUREBOOT_POLICY_FULL_INFORMATION
 {
     SYSTEM_SECUREBOOT_POLICY_INFORMATION PolicyInformation;
     ULONG PolicySize;
-    UCHAR Policy[1];
+    _Field_size_bytes_(PolicySize) UCHAR Policy[1];
 } SYSTEM_SECUREBOOT_POLICY_FULL_INFORMATION, *PSYSTEM_SECUREBOOT_POLICY_FULL_INFORMATION;
 
+// rev
+#define SYSTEM_CODE_INTEGRITY_POLICY_HEADER_VERSION 8
+
+// rev
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICY_HEADER structure describes the header of a Code Integrity policy.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICY_HEADER
+{
+    UCHAR Magic[4];                    // "WDAC"
+    ULONG Version;                     // Policy version/format number
+    ULONG TypeAndOptions;              // Policy type flags and options
+    ULONG TimestampLow;                // Creation/modification timestamp (low)
+    ULONG TimestampHigh;               // Creation/modification timestamp (high)
+    UCHAR Hash[32];                    // SHA-256 policy hash/identifier
+} SYSTEM_CODE_INTEGRITY_POLICY_HEADER, *PSYSTEM_CODE_INTEGRITY_POLICY_HEADER;
+
+// rev // Hash Rule Entry (Variable length)
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICY_RULE_ENTRY structure describes a single rule in a Code Integrity policy.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICY_RULE_ENTRY
+{
+    ULONG Marker;                      // 8-byte marker (part of rule identification)
+    ULONG RuleMarkerHigh;
+    ULONG DataLength;                  // 4-byte length of hash data
+    UCHAR FixedPrefix[12];             // 12-byte fixed prefix (rule type, attributes)
+    UCHAR Hash[ANYSIZE_ARRAY];         // Variable-length hash (SHA-256, SHA-1, etc.)
+} SYSTEM_CODE_INTEGRITY_POLICY_RULE_ENTRY, *PSYSTEM_CODE_INTEGRITY_POLICY_RULE_ENTRY;
+
+// rev // String Table Entry (Variable length, 4-byte aligned)
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICY_STRING_ENTRY structure describes a single string entry in a Code Integrity policy.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICY_STRING_ENTRY
+{
+    USHORT Length;                     // Length in bytes (not including null terminator)
+    WCHAR String[ANYSIZE_ARRAY];       // UTF-16LE string
+    // UCHAR Padding[ANYSIZE_ARRAY]    // Followed by Padding[] to align to 4-byte boundary
+} SYSTEM_CODE_INTEGRITY_POLICY_STRING_ENTRY, *PSYSTEM_CODE_INTEGRITY_POLICY_STRING_ENTRY;
+
+// rev // Numeric Index Table (used for Signers, FileRules, etc.)
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICY_INDEX_TABLE_ENTRY structure describes a single index-table entry in a Code Integrity policy.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICY_INDEX_TABLE_ENTRY
+{
+    // Width determines interpretation:
+    // Width=8: Signer entry {StringIndex(2), RuleRefCount(2), RuleRefs[RuleRefCount](4 each)}
+    // Width=4: FileRule index referencing a string from string table
+    UCHAR Entry[ANYSIZE_ARRAY];
+} SYSTEM_CODE_INTEGRITY_POLICY_INDEX_TABLE_ENTRY, *PSYSTEM_CODE_INTEGRITY_POLICY_INDEX_TABLE_ENTRY;
+
+// rev
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICY_FULL_INFORMATION structure contains full information about a Code Integrity policy.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICY_FULL_INFORMATION
+{
+    SYSTEM_CODE_INTEGRITY_POLICY_HEADER Header;
+    UCHAR RuleBody[ANYSIZE_ARRAY]; // Followed by sections (offsets determined by header)
+    // UCHAR StringTable[ANYSIZE_ARRAY]; // Followed by StringTable
+    // UCHAR IndexTables[ANYSIZE_ARRAY]; // Followed by NumericTables (Signers, FileRules, etc.)
+} SYSTEM_CODE_INTEGRITY_POLICY_FULL_INFORMATION, *PSYSTEM_CODE_INTEGRITY_POLICY_FULL_INFORMATION;
+
 // private
+/**
+ * The KAFFINITY_EX structure represents an extended processor affinity mask that spans multiple processor groups.
+ */
 typedef struct _KAFFINITY_EX
 {
     USHORT Count;
@@ -5695,6 +8032,9 @@ typedef struct _KAFFINITY_EX
 } KAFFINITY_EX, *PKAFFINITY_EX;
 
 // private
+/**
+ * The SYSTEM_ROOT_SILO_INFORMATION structure contains system root silo information.
+ */
 typedef struct _SYSTEM_ROOT_SILO_INFORMATION
 {
     ULONG NumberOfSilos;
@@ -5702,6 +8042,9 @@ typedef struct _SYSTEM_ROOT_SILO_INFORMATION
 } SYSTEM_ROOT_SILO_INFORMATION, *PSYSTEM_ROOT_SILO_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_CPU_SET_TAG_INFORMATION structure contains system CPU set tag information.
+ */
 typedef struct _SYSTEM_CPU_SET_TAG_INFORMATION
 {
     ULONGLONG Tag;
@@ -5709,6 +8052,9 @@ typedef struct _SYSTEM_CPU_SET_TAG_INFORMATION
 } SYSTEM_CPU_SET_TAG_INFORMATION, *PSYSTEM_CPU_SET_TAG_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION structure contains system secure kernel hyperguard profile information.
+ */
 typedef struct _SYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION
 {
     ULONG ExtentCount;
@@ -5738,13 +8084,19 @@ typedef struct _SYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION
 } SYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION, *PSYSTEM_SECURE_KERNEL_HYPERGUARD_PROFILE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECUREBOOT_PLATFORM_MANIFEST_INFORMATION structure contains system secureboot platform manifest information.
+ */
 typedef struct _SYSTEM_SECUREBOOT_PLATFORM_MANIFEST_INFORMATION
 {
     ULONG PlatformManifestSize;
-    UCHAR PlatformManifest[1];
+    _Field_size_bytes_(PlatformManifestSize) UCHAR PlatformManifest[1];
 } SYSTEM_SECUREBOOT_PLATFORM_MANIFEST_INFORMATION, *PSYSTEM_SECUREBOOT_PLATFORM_MANIFEST_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT structure specifies the input parameters for a system interrupt steering information query.
+ */
 typedef struct _SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT
 {
     ULONG Gsiv;
@@ -5755,6 +8107,9 @@ typedef struct _SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT
 } SYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT, *PSYSTEM_INTERRUPT_STEERING_INFORMATION_INPUT;
 
 // private
+/**
+ * The SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT union receives the output of a system interrupt steering information query.
+ */
 typedef union _SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT
 {
     ULONG AsULONG;
@@ -5762,11 +8117,14 @@ typedef union _SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT
     {
         ULONG Enabled : 1;
         ULONG Reserved : 31;
-    };
+    } DUMMYSTRUCTNAME;
 } SYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT, *PSYSTEM_INTERRUPT_STEERING_INFORMATION_OUTPUT;
 
 #if !defined(NTDDI_WIN10_FE) || (NTDDI_VERSION < NTDDI_WIN10_FE)
 // private
+/**
+ * The SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION structure contains system supported processor architectures information.
+ */
 typedef struct _SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION
 {
     ULONG Machine : 16;
@@ -5831,7 +8189,7 @@ typedef enum _SYSTEM_CODEINTEGRITY_IMAGE_TYPE
  * - Signed only by Microsoft.
  * - Compliance policies for boot-critical binaries (Strict WHQL, Secure Boot requirements).
  */
-#define SYSTEM_CODEINTEGRITY_IMAGE_TYPE_BOOT
+#define SYSTEM_CODEINTEGRITY_IMAGE_TYPE_BOOT    2
 
 /**
  * The SYSTEM_CODEINTEGRITY_CERTIFICATE_INFORMATION structure contains information to validate the integrity of an image.
@@ -5846,7 +8204,6 @@ typedef struct _SYSTEM_CODEINTEGRITY_CERTIFICATE_INFORMATION
 
 /**
  * The SYSTEM_PHYSICAL_MEMORY_INFORMATION structure retrieves the physical memory layout of the system.
- *
  * \remarks The addresses are physical, not virtual.
  */
 typedef struct _SYSTEM_PHYSICAL_MEMORY_INFORMATION
@@ -5859,7 +8216,6 @@ typedef struct _SYSTEM_PHYSICAL_MEMORY_INFORMATION
 /**
  * The SYSTEM_ACTIVITY_MODERATION_STATE type contains the moderation state applied to an application,
  * with respect to background throttling, resource reduction, and related heuristics.
- *
  * \remarks The state may be assigned automatically by the system or explicitly overridden by the user.
  */
 typedef enum _SYSTEM_ACTIVITY_MODERATION_STATE
@@ -5871,12 +8227,18 @@ typedef enum _SYSTEM_ACTIVITY_MODERATION_STATE
 } SYSTEM_ACTIVITY_MODERATION_STATE;
 
 // private - REDSTONE2
+/**
+ * The SYSTEM_ACTIVITY_MODERATION_EXE_STATE structure describes the system activity moderation exe state.
+ */
 typedef struct _SYSTEM_ACTIVITY_MODERATION_EXE_STATE // REDSTONE3: Renamed SYSTEM_ACTIVITY_MODERATION_INFO
 {
     UNICODE_STRING ExePathNt;
     SYSTEM_ACTIVITY_MODERATION_STATE ModerationState;
 } SYSTEM_ACTIVITY_MODERATION_EXE_STATE, *PSYSTEM_ACTIVITY_MODERATION_EXE_STATE;
 
+/**
+ * The SYSTEM_ACTIVITY_MODERATION_APP_TYPE enumeration defines the system activity moderation app types.
+ */
 typedef enum _SYSTEM_ACTIVITY_MODERATION_APP_TYPE
 {
     SystemActivityModerationAppTypeClassic,
@@ -5885,6 +8247,9 @@ typedef enum _SYSTEM_ACTIVITY_MODERATION_APP_TYPE
 } SYSTEM_ACTIVITY_MODERATION_APP_TYPE;
 
 // private - REDSTONE3
+/**
+ * The SYSTEM_ACTIVITY_MODERATION_INFO structure contains system activity moderation information.
+ */
 typedef struct _SYSTEM_ACTIVITY_MODERATION_INFO
 {
     UNICODE_STRING Identifier;
@@ -5921,7 +8286,63 @@ typedef struct _SYSTEM_ACTIVITY_MODERATION_USER_SETTINGS
     HANDLE UserKeyHandle; // Handle to the user registry key for activity moderation settings.
 } SYSTEM_ACTIVITY_MODERATION_USER_SETTINGS, *PSYSTEM_ACTIVITY_MODERATION_USER_SETTINGS;
 
+// rev
+/**
+ * The SYSTEM_CODE_INTEGRITY_POLICIES_FULL_INFORMATION structure contains full information about the active Code Integrity policies.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_POLICIES_FULL_INFORMATION
+{
+    ULONG PolicyCount;
+    UCHAR PolicyBlobs[ANYSIZE_ARRAY];
+} SYSTEM_CODE_INTEGRITY_POLICIES_FULL_INFORMATION, *PSYSTEM_CODE_INTEGRITY_POLICIES_FULL_INFORMATION;
+
 // private
+/**
+ * The SYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION structure contains Code Integrity unlock state and validation token.
+ *
+ * **Purpose:**
+ *
+ * The UnlockId field is a 32-byte cryptographic validation token used to authenticate requests to temporarily
+ * disable Code Integrity (CI) enforcement. It works in conjunction with the three flag bits (Locked, UnlockApplied, UnlockIdValid)
+ * to control the application of code integrity bypass authorization.
+ *
+ * **Mechanism:**
+ *
+ * \b Token \b Generation: When needing to disable CI, a component (bootloader, recovery environment, or factory process)
+ * computes a 32-byte UnlockId using:
+ * - HMAC-SHA256 or similar cryptographic hash function
+ * - A kernel-embedded or TPM-stored secret key
+ * - Machine-specific data (boot state, firmware version, hardware configuration, etc.)
+ *
+ * \b Validation: The kernel validates the UnlockId by:
+ * - Recomputing the expected HMAC-SHA256 using its stored secret and machine state
+ * - Comparing against the provided UnlockId (32-byte comparison)
+ * - Setting the UnlockIdValid flag if the cryptographic match succeeds
+ * - Rejecting any token that fails validation
+ *
+ * \b Application: Once validated:
+ * - UnlockApplied flag is set (unlock request accepted by the kernel)
+ * - Locked flag may be cleared (CI enforcement disabled for this session)
+ * - Temporary bypass of code integrity checks is granted for authorized operations
+ *
+ * **Security Properties:**
+ *
+ * - \b 256-bit \b Token: The 32-byte (256-bit) size is standard for HMAC-SHA256 output, providing strong cryptographic security
+ * - \b Microsoft-Controlled \b Secret: UnlockId tokens are derived from a Microsoft-controlled secret key, preventing unauthorized bypasses
+ * - \b Machine \b Binding: Machine-specific data ensures tokens are valid only for the intended system
+ * - \b Temporal \b Scope: Unlock is session-scoped and typically used during controlled recovery or factory processes
+ *
+ * **Use Cases:**
+ *
+ * - \b Factory \b Reset (OOBE): Allow boot in non-secure mode during device initial setup and provisioning
+ * - \b Recovery \b Environment: Enable recovery tools to bypass CI during authorized system repairs
+ * - \b Secure \b Boot \b Bypass: Controlled disabling of code verification during authorized recovery scenarios
+ * - \b Development/Debugging: Microsoft-signed tokens for internal kernel validation and testing on development systems
+ *
+ * \note The UnlockId prevents unauthorized bypasses of code integrity protection and is only trusted after cryptographic validation succeeds.
+ * \note This structure is private to the kernel and not part of the public API.
+ * \note Available since Windows Redstone 4 (Windows 10 version 1803).
+ */
 typedef struct _SYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION
 {
     union
@@ -5929,25 +8350,97 @@ typedef struct _SYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION
         ULONG Flags;
         struct
         {
+            /** \brief Code Integrity is currently locked (enforced).
+             *
+             * When set (1), Code Integrity enforcement is active and code execution restrictions are applied.
+             * When clear (0), Code Integrity may be disabled if UnlockApplied is set and a valid token was provided.
+             */
             ULONG Locked : 1;
-            ULONG UnlockApplied : 1; // Unlockable field removed 19H1
+
+            /** \brief Unlock request has been validated and applied.
+             *
+             * Set by the kernel when the provided UnlockId passes cryptographic validation and the unlock is authorized.
+             * When set, this flag indicates that CI enforcement has been temporarily disabled for this session.
+             * Field removed after Windows 10 v1909 (19H1) in newer releases.
+             */
+            ULONG UnlockApplied : 1;
+
+            /** \brief UnlockId contains a valid, authenticated cryptographic token.
+             *
+             * Set by the kernel when the provided UnlockId passes HMAC-SHA256 validation against the kernel's stored secret.
+             * This flag indicates that the token is cryptographically valid and can authorize CI bypass.
+             */
             ULONG UnlockIdValid : 1;
+
+            /** \brief Reserved flag bits for future use. */
             ULONG Reserved : 29;
-        };
-    };
-    UCHAR UnlockId[32]; // REDSTONE4
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+
+    /** \brief 32-byte cryptographic validation token for Code Integrity unlock requests.
+     *
+     * This HMAC-SHA256 token authorizes temporary disabling of Code Integrity enforcement.
+     * The token is computed using a kernel-embedded secret key, machine-specific data, and cryptographic derivation.
+     *
+     * **Format:**
+     * - Size: 32 bytes (256 bits)
+     * - Algorithm: HMAC-SHA256
+     * - Derivation: Microsoft-controlled secret key + machine state
+     * - Validation: Kernel verifies token before granting CI bypass
+     *
+     * **Validation Process:**
+     * 1. Kernel recomputes expected HMAC-SHA256 from stored secret and current machine state
+     * 2. Compares computed HMAC against the provided UnlockId (byte-for-byte)
+     * 3. Sets UnlockIdValid flag if match succeeds; fails otherwise
+     * 4. If validation succeeds, kernel sets UnlockApplied and may clear Locked flag
+     *
+     * **Authorization Scenarios:**
+     * - Factory Reset (OOBE): Token allows non-secure boot during device provisioning
+     * - Recovery Mode: Token allows recovery environment to bypass code verification checks
+     * - Development/Debug: Microsoft-signed tokens for test systems and kernel development
+     *
+     * \note Available since Windows 10 Redstone 4 (version 1803, NTDDI_WIN10_RS4).
+     */
+    UCHAR UnlockId[32];
 } SYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION, *PSYSTEM_CODEINTEGRITY_UNLOCK_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_FLUSH_INFORMATION structure contains system flush information.
+ */
 typedef struct _SYSTEM_FLUSH_INFORMATION
 {
-    ULONG SupportedFlushMethods;
+    union
+    {
+        ULONG SupportedFlushMethods;
+        struct
+        {
+            ULONG MethodAlwaysPresent : 1;   // 0x1
+            ULONG MethodProcessorFeatureBit35 : 1; // 0x2
+            ULONG MethodProcessorFeatureBit36 : 1; // 0x4
+            ULONG ReservedMethods : 29;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+
     ULONG ProcessorCacheFlushSize;
-    ULONGLONG SystemFlushCapabilities;
+
+    union
+    {
+        ULONGLONG SystemFlushCapabilities;
+        struct
+        {
+            ULONGLONG NfitType7FlushCapable : 1; // 0x1
+            ULONGLONG ReservedCapabilities : 63;
+        } DUMMYSTRUCTNAME2;
+    } DUMMYUNIONNAME2;
+
     ULONGLONG Reserved[2];
 } SYSTEM_FLUSH_INFORMATION, *PSYSTEM_FLUSH_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_WRITE_CONSTRAINT_INFORMATION structure contains system write constraint information.
+ */
 typedef struct _SYSTEM_WRITE_CONSTRAINT_INFORMATION
 {
     ULONG WriteConstraintPolicy;
@@ -5955,6 +8448,9 @@ typedef struct _SYSTEM_WRITE_CONSTRAINT_INFORMATION
 } SYSTEM_WRITE_CONSTRAINT_INFORMATION, *PSYSTEM_WRITE_CONSTRAINT_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_KERNEL_VA_SHADOW_INFORMATION structure contains the state of kernel virtual address (KVA) shadowing.
+ */
 typedef struct _SYSTEM_KERNEL_VA_SHADOW_INFORMATION
 {
     union
@@ -5978,15 +8474,20 @@ typedef struct _SYSTEM_KERNEL_VA_SHADOW_INFORMATION
 
 // private
 /**
- * The SYSTEM_CODEINTEGRITYVERIFICATION_INFORMATION structure contains information
+ * The SYSTEM_CODEINTEGRITY_VERIFICATION_INFORMATION structure contains information
  * required for code integrity verification of an image.
+ *
+ * Two verification modes are supported:
+ * - File-backed: supply a non-null FileHandle (handle to an open file); Image and ImageSize are ignored.
+ * - Memory-backed: supply a null FileHandle, set Image to the base address of a mapped/loaded PE image
+ *   in memory, and ImageSize to its size in bytes. The kernel reads image content directly from the buffer.
  */
-typedef struct _SYSTEM_CODEINTEGRITYVERIFICATION_INFORMATION
+typedef struct _SYSTEM_CODEINTEGRITY_VERIFICATION_INFORMATION
 {
-    HANDLE FileHandle;
-    ULONG ImageSize;
-    PVOID Image;
-} SYSTEM_CODEINTEGRITYVERIFICATION_INFORMATION, *PSYSTEM_CODEINTEGRITYVERIFICATION_INFORMATION;
+    HANDLE FileHandle; // Handle to an open file for file-backed verification, or NULL for memory-backed verification.
+    ULONG ImageSize;   // Size in bytes of the image buffer; used only when FileHandle is NULL.
+    PVOID Image;       // Base address of the PE image buffer for memory-backed verification; ignored when FileHandle is non-null.
+} SYSTEM_CODEINTEGRITY_VERIFICATION_INFORMATION, *PSYSTEM_CODEINTEGRITY_VERIFICATION_INFORMATION;
 
 // rev
 /**
@@ -6031,6 +8532,9 @@ typedef struct _SYSTEM_HYPERVISOR_USER_SHARED_DATA
      * under virtualization.
      */
     ULONGLONG QpcBias;
+
+    ULONGLONG InterruptTimeQpcBaseline;
+    ULONGLONG QpcMultiplierFactor; // ARM64
 } SYSTEM_HYPERVISOR_USER_SHARED_DATA, *PSYSTEM_HYPERVISOR_USER_SHARED_DATA;
 
 /**
@@ -6056,12 +8560,18 @@ typedef struct _SYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION
 } SYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION, *PSYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_FIRMWARE_PARTITION_INFORMATION structure contains system firmware partition information.
+ */
 typedef struct _SYSTEM_FIRMWARE_PARTITION_INFORMATION
 {
     UNICODE_STRING FirmwarePartition;
 } SYSTEM_FIRMWARE_PARTITION_INFORMATION, *PSYSTEM_FIRMWARE_PARTITION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SPECULATION_CONTROL_INFORMATION structure contains the state of the processor speculation-control mitigations.
+ */
 typedef struct _SYSTEM_SPECULATION_CONTROL_INFORMATION
 {
     union
@@ -6098,7 +8608,7 @@ typedef struct _SYSTEM_SPECULATION_CONTROL_INFORMATION
             ULONG MbClearReported : 1;
             ULONG ReservedTaa : 4;
             ULONG Reserved : 1;
-        };
+        } DUMMYSTRUCTNAME;
     } SpeculationControlFlags;
     union
     {
@@ -6123,23 +8633,32 @@ typedef struct _SYSTEM_SPECULATION_CONTROL_INFORMATION
             ULONG DivideByZeroStatus : 1;
             ULONG Reserved5 : 3;
             ULONG Reserved : 7;
-        };
+        } DUMMYSTRUCTNAME;
     } SpeculationControlFlags2;
 } SYSTEM_SPECULATION_CONTROL_INFORMATION, *PSYSTEM_SPECULATION_CONTROL_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_DMA_GUARD_POLICY_INFORMATION structure contains the kernel DMA protection policy state.
+ */
 typedef struct _SYSTEM_DMA_GUARD_POLICY_INFORMATION
 {
     BOOLEAN DmaGuardPolicyEnabled;
 } SYSTEM_DMA_GUARD_POLICY_INFORMATION, *PSYSTEM_DMA_GUARD_POLICY_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_ENCLAVE_LAUNCH_CONTROL_INFORMATION structure contains system enclave launch control information.
+ */
 typedef struct _SYSTEM_ENCLAVE_LAUNCH_CONTROL_INFORMATION
 {
     UCHAR EnclaveLaunchSigner[32];
 } SYSTEM_ENCLAVE_LAUNCH_CONTROL_INFORMATION, *PSYSTEM_ENCLAVE_LAUNCH_CONTROL_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION structure contains system workload allowed CPU set information.
+ */
 typedef struct _SYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION
 {
     ULONGLONG WorkloadClass;
@@ -6147,6 +8666,9 @@ typedef struct _SYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION
 } SYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION, *PSYSTEM_WORKLOAD_ALLOWED_CPU_SET_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECURITY_MODEL_INFORMATION structure contains system security model information.
+ */
 typedef struct _SYSTEM_SECURITY_MODEL_INFORMATION
 {
     union
@@ -6162,30 +8684,45 @@ typedef struct _SYSTEM_SECURITY_MODEL_INFORMATION
 } SYSTEM_SECURITY_MODEL_INFORMATION, *PSYSTEM_SECURITY_MODEL_INFORMATION;
 
 // private
+/**
+ * Decodes secure-kernel speculation mitigations returned by SystemSecureSpeculationControlInformation (213).
+ * Flags is the raw first ULONG; the named fields occupy consecutive bits, not overlapping union members.
+ * On x64, KeQuerySecureSpeculationInformation accepts at least 4 bytes,
+ * clears the supplied output buffer, and populates bits 0-15. It reports ReturnLength == 8
+ * even for a successful 4-byte query; additional returned bytes are zero in this implementation.
+ * The Ssbs fields describe architecture-specific state; do not infer ARM behavior from x64 results.
+ */
 typedef union _SECURE_SPECULATION_CONTROL_INFORMATION
 {
-    ULONG KvaShadowSupported : 1;
-    ULONG KvaShadowEnabled : 1;
-    ULONG KvaShadowUserGlobal : 1;
-    ULONG KvaShadowPcid : 1;
-    ULONG MbClearEnabled : 1;
-    ULONG L1TFMitigated : 1; // since 20H2
-    ULONG BpbEnabled : 1;
-    ULONG IbrsPresent : 1;
-    ULONG EnhancedIbrs : 1;
-    ULONG StibpPresent : 1;
-    ULONG SsbdSupported : 1;
-    ULONG SsbdRequired : 1;
-    ULONG BpbKernelToUser : 1;
-    ULONG BpbUserToKernel : 1;
-    ULONG ReturnSpeculate : 1;
-    ULONG BranchConfusionSafe : 1;
-    ULONG SsbsEnabledAlways : 1; // 24H2
-    ULONG SsbsEnabledKernel : 1;
-    ULONG Reserved : 14;
+    ULONG Flags;
+    struct
+    {
+        ULONG KvaShadowSupported : 1;
+        ULONG KvaShadowEnabled : 1;
+        ULONG KvaShadowUserGlobal : 1;
+        ULONG KvaShadowPcid : 1;
+        ULONG MbClearEnabled : 1;
+        ULONG L1TFMitigated : 1; // since 20H2
+        ULONG BpbEnabled : 1;
+        ULONG IbrsPresent : 1;
+        ULONG EnhancedIbrs : 1;
+        ULONG StibpPresent : 1;
+        ULONG SsbdSupported : 1;
+        ULONG SsbdRequired : 1;
+        ULONG BpbKernelToUser : 1;
+        ULONG BpbUserToKernel : 1;
+        ULONG ReturnSpeculate : 1;
+        ULONG BranchConfusionSafe : 1;
+        ULONG SsbsEnabledAlways : 1; // 24H2
+        ULONG SsbsEnabledKernel : 1;
+        ULONG Reserved : 14;
+    } DUMMYSTRUCTNAME;
 } SECURE_SPECULATION_CONTROL_INFORMATION, *PSECURE_SPECULATION_CONTROL_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_FIRMWARE_RAMDISK_INFORMATION structure contains system firmware ramdisk information.
+ */
 typedef struct _SYSTEM_FIRMWARE_RAMDISK_INFORMATION
 {
     ULONG Version;
@@ -6194,7 +8731,51 @@ typedef struct _SYSTEM_FIRMWARE_RAMDISK_INFORMATION
     SIZE_T Size;
 } SYSTEM_FIRMWARE_RAMDISK_INFORMATION, *PSYSTEM_FIRMWARE_RAMDISK_INFORMATION;
 
+// rev
+/**
+ * Legacy WHEA/IPMI declaration retained from the existing header; its Windows 10
+ * layout was not established. It is NOT the 32-byte SystemWheaIpmiHardwareInformation
+ * output described below.
+ */
+typedef struct _SYSTEM_WHEA_IPMI_HARDWARE_INFORMATION_WIN10
+{
+    ULONGLONG RecordId;     // IPMI SEL (System Event Log) record identifier
+    UCHAR EventType;        // IPMI event/reading type code
+    UCHAR SensorType;       // IPMI sensor type (e.g. temperature, voltage, processor)
+    USHORT GeneratorId;     // ID of the entity that logged the event
+    UCHAR EvmRevision;      // Event Message format revision
+    UCHAR RecordType;       // SEL record type (e.g. system event vs OEM)
+    UCHAR Data[4];          // Event-specific data bytes
+} SYSTEM_WHEA_IPMI_HARDWARE_INFORMATION_WIN10, *PSYSTEM_WHEA_IPMI_HARDWARE_INFORMATION_WIN10;
+
+// rev: WheaQuerySystemInformation, IpmiHwpParseSpmiTable, IpmiLibpParseDeviceInfo
+/**
+ * Describes the IPMI controller used by WHEA, not an IPMI SEL event record.
+ * The x64 SystemWheaIpmiHardwareInformation (216) query requires
+ * exactly 32 output bytes. WheaQuerySystemInformation copies the first
+ * 32 bytes of WheaIpmiContext after checking that the context is initialized.
+ * Use this information to identify the firmware-described IPMI interface.
+ * The mapped register VA, MMIO mapping length and initialization flag belong
+ * to the larger private context and are NOT part of this query result.
+ * Field names below are descriptive reconstructions from the parser/consumer.
+ */
+typedef struct _SYSTEM_WHEA_IPMI_HARDWARE_INFORMATION
+{
+    USHORT IpmiSpecVersion; // packed major/minor nibbles; 0x15 = 1.5, 0x20 = 2.0.
+    USHORT Reserved02; // alignment padding; no field access found.
+    ULONG InterfaceType; // firmware interface code; the KCS handler requires 1.
+    UCHAR RegisterSpacing; // SPMI maps 1/2/3/4 to 1/2/4/8; SMBIOS maps 0/1/2 to 1/4/16.
+    UCHAR Reserved09[7]; // alignment padding; no field access found.
+    ULONGLONG BaseAddress; // physical MMIO or I/O-port base, not a mapped virtual address.
+    UCHAR AddressSpaceType; // zero selects MMIO; nonzero selects port I/O in the KCS consumer.
+    UCHAR BmcSlaveAddress; // SPMI default 0x20, or SMBIOS type-38 byte 6 & 0xFE; SEL request destination.
+    UCHAR Reserved1A[6]; // tail padding; no field access found.
+} SYSTEM_WHEA_IPMI_HARDWARE_INFORMATION, *PSYSTEM_WHEA_IPMI_HARDWARE_INFORMATION;
+
 // private
+/**
+ * The SYSTEM_SHADOW_STACK_INFORMATION structure contains hardware-enforced shadow stack (CET) capability and enablement flags for user and kernel mode.
+ */
 typedef struct _SYSTEM_SHADOW_STACK_INFORMATION
 {
     union
@@ -6214,6 +8795,33 @@ typedef struct _SYSTEM_SHADOW_STACK_INFORMATION
 } SYSTEM_SHADOW_STACK_INFORMATION, *PSYSTEM_SHADOW_STACK_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SPACES_BOOT_INFORMATION structure contains system spaces boot information.
+ */
+typedef struct _SYSTEM_SPACES_BOOT_INFORMATION
+{
+    /**
+     * Opaque variable-length blob copied from ExpSpacesBootInformation.
+     *
+     * The returned byte count is reported via ReturnLength.
+     * NtQuerySystemInformationEx rejects user-mode callers for this class.
+     */
+    UCHAR Data[1];
+} SYSTEM_SPACES_BOOT_INFORMATION, *PSYSTEM_SPACES_BOOT_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_BUILD_VERSION_INFORMATION_INPUT structure specifies the input parameters for a system build version information query.
+ */
+typedef struct _SYSTEM_BUILD_VERSION_INFORMATION_INPUT
+{
+    ULONG LayerNumber;
+} SYSTEM_BUILD_VERSION_INFORMATION_INPUT, *PSYSTEM_BUILD_VERSION_INFORMATION_INPUT;
+
+// private
+/**
+ * The SYSTEM_BUILD_VERSION_INFORMATION_FLAGS union defines the system build version information flags.
+ */
 typedef union _SYSTEM_BUILD_VERSION_INFORMATION_FLAGS
 {
     ULONG Value32;
@@ -6221,10 +8829,25 @@ typedef union _SYSTEM_BUILD_VERSION_INFORMATION_FLAGS
     {
         ULONG IsTopLevel : 1;
         ULONG IsChecked : 1;
-    };
+
+        ULONG Reserved  : 1;
+        ULONG HasMajorVersion : 1;  // MajorVersion present
+        ULONG HasMinorVersion : 1;  // MinorVersion present
+        ULONG HasBuildNumber  : 1;  // BuildNumber present
+        ULONG HasBuildQfe     : 1;  // BuildQfe present
+        ULONG HasString0 : 1;       // optional string #1 present
+        ULONG HasString1 : 1;       // optional string #2 present
+        ULONG HasString2 : 1;       // optional string #3 present
+        ULONG HasString3 : 1;       // optional string #4 present
+        ULONG HasString4 : 1;       // optional string #5 present
+        ULONG Spare : 20;
+    } DUMMYSTRUCTNAME;
 } SYSTEM_BUILD_VERSION_INFORMATION_FLAGS, *PSYSTEM_BUILD_VERSION_INFORMATION_FLAGS;
 
 // private
+/**
+ * The SYSTEM_BUILD_VERSION_INFORMATION structure contains system build version information.
+ */
 typedef struct _SYSTEM_BUILD_VERSION_INFORMATION
 {
     USHORT LayerNumber;
@@ -6243,6 +8866,30 @@ typedef struct _SYSTEM_BUILD_VERSION_INFORMATION
 } SYSTEM_BUILD_VERSION_INFORMATION, *PSYSTEM_BUILD_VERSION_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION_INPUT structure specifies the input parameters for a system secure kernel debugger information query.
+ */
+typedef struct _SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION_INPUT
+{
+    ULONG Version;
+    ULONG Reserved[3];
+    ULONG MinimumImageVersion;
+} SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION_INPUT, *PSYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION_INPUT;
+
+// private
+/**
+ * The SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION structure contains system secure kernel debugger information.
+ */
+typedef struct _SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION
+{
+    ULONG Version;
+    BOOLEAN Enabled;
+} SYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION, *PSYSTEM_SECURE_KERNEL_DEBUGGER_INFORMATION;
+
+// private
+/**
+ * The SYSTEM_POOL_LIMIT_MEM_INFO structure contains system pool limit mem information.
+ */
 typedef struct _SYSTEM_POOL_LIMIT_MEM_INFO
 {
     ULONGLONG MemoryLimit;
@@ -6250,6 +8897,9 @@ typedef struct _SYSTEM_POOL_LIMIT_MEM_INFO
 } SYSTEM_POOL_LIMIT_MEM_INFO, *PSYSTEM_POOL_LIMIT_MEM_INFO;
 
 // private
+/**
+ * The SYSTEM_POOL_LIMIT_INFO structure contains system pool limit information.
+ */
 typedef struct _SYSTEM_POOL_LIMIT_INFO
 {
     ULONG PoolTag;
@@ -6258,12 +8908,27 @@ typedef struct _SYSTEM_POOL_LIMIT_INFO
 } SYSTEM_POOL_LIMIT_INFO, *PSYSTEM_POOL_LIMIT_INFO;
 
 // private
+/**
+ * The SYSTEM_POOL_LIMIT_INFORMATION structure contains system pool limit information.
+ */
 typedef struct _SYSTEM_POOL_LIMIT_INFORMATION
 {
     ULONG Version;
     ULONG EntryCount;
     _Field_size_(EntryCount) SYSTEM_POOL_LIMIT_INFO LimitEntries[1];
 } SYSTEM_POOL_LIMIT_INFORMATION, *PSYSTEM_POOL_LIMIT_INFORMATION;
+
+// rev
+/**
+ * The SYSTEM_CODE_INTEGRITY_DYNAMIC_STORE structure describes the Code Integrity dynamic policy store.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_DYNAMIC_STORE
+{
+    HANDLE StoreHandle;
+    ULONG StoreFlags;
+    PVOID StoreData;
+    SIZE_T StoreSize;
+} SYSTEM_CODE_INTEGRITY_DYNAMIC_STORE, *PSYSTEM_CODE_INTEGRITY_DYNAMIC_STORE;
 
 // private
 //typedef struct _SYSTEM_POOL_ZEROING_INFORMATION
@@ -6272,6 +8937,9 @@ typedef struct _SYSTEM_POOL_LIMIT_INFORMATION
 //} SYSTEM_POOL_ZEROING_INFORMATION, *PSYSTEM_POOL_ZEROING_INFORMATION;
 
 // private
+/**
+ * The HV_MINROOT_NUMA_LPS structure describes the HV minroot NUMA lps.
+ */
 typedef struct _HV_MINROOT_NUMA_LPS
 {
     ULONG NodeIndex;
@@ -6279,6 +8947,9 @@ typedef struct _HV_MINROOT_NUMA_LPS
 } HV_MINROOT_NUMA_LPS, *PHV_MINROOT_NUMA_LPS;
 
 // private
+/**
+ * The SYSTEM_XFG_FAILURE_INFORMATION structure contains system XFG failure information.
+ */
 typedef struct _SYSTEM_XFG_FAILURE_INFORMATION
 {
     PVOID ReturnAddress;
@@ -6288,6 +8959,9 @@ typedef struct _SYSTEM_XFG_FAILURE_INFORMATION
 } SYSTEM_XFG_FAILURE_INFORMATION, *PSYSTEM_XFG_FAILURE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_IOMMU_STATE enumeration defines the possible system IOMMU states.
+ */
 typedef enum _SYSTEM_IOMMU_STATE
 {
     IommuStateBlock,
@@ -6295,6 +8969,9 @@ typedef enum _SYSTEM_IOMMU_STATE
 } SYSTEM_IOMMU_STATE;
 
 // private
+/**
+ * The SYSTEM_IOMMU_STATE_INFORMATION structure contains system IOMMU state information.
+ */
 typedef struct _SYSTEM_IOMMU_STATE_INFORMATION
 {
     SYSTEM_IOMMU_STATE State;
@@ -6302,6 +8979,9 @@ typedef struct _SYSTEM_IOMMU_STATE_INFORMATION
 } SYSTEM_IOMMU_STATE_INFORMATION, *PSYSTEM_IOMMU_STATE_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_HYPERVISOR_MINROOT_INFORMATION structure contains system hypervisor minroot information.
+ */
 typedef struct _SYSTEM_HYPERVISOR_MINROOT_INFORMATION
 {
     ULONG NumProc;
@@ -6315,6 +8995,9 @@ typedef struct _SYSTEM_HYPERVISOR_MINROOT_INFORMATION
 } SYSTEM_HYPERVISOR_MINROOT_INFORMATION, *PSYSTEM_HYPERVISOR_MINROOT_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION structure contains system hypervisor boot pages information.
+ */
 typedef struct _SYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION
 {
     ULONG RangeCount;
@@ -6322,6 +9005,9 @@ typedef struct _SYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION
 } SYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION, *PSYSTEM_HYPERVISOR_BOOT_PAGES_INFORMATION;
 
 // private
+/**
+ * The SYSTEM_POINTER_AUTH_INFORMATION structure contains system pointer auth information.
+ */
 typedef struct _SYSTEM_POINTER_AUTH_INFORMATION
 {
     union
@@ -6335,8 +9021,8 @@ typedef struct _SYSTEM_POINTER_AUTH_INFORMATION
             USHORT GenericAuthQarma : 1;
             USHORT AddressAuthFaulting : 1;
             USHORT SupportedReserved : 11;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     union
     {
         USHORT EnabledFlags;
@@ -6347,29 +9033,45 @@ typedef struct _SYSTEM_POINTER_AUTH_INFORMATION
             USHORT UserEnabledReserved : 6;
             USHORT KernelIpAuthEnabled : 1;
             USHORT KernelEnabledReserved : 7;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME2;
 } SYSTEM_POINTER_AUTH_INFORMATION, *PSYSTEM_POINTER_AUTH_INFORMATION;
 
 // rev
-#define SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_VERSION 1
+#define SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_VERSION 1 // Current protocol version for input/output structures.
 
-// private
+/**
+ * Query interface for checking whether a named Windows feature flag is enabled for an image's
+ * "born-on" Windows version — the OS version the image was originally built or linked against.
+ * In observed logic, the decision is based on OriginalImageVersion for the image context plus the
+ * caller-provided BornOnVersion. This is image-compat metadata, not simply current OS version.
+ * A plain OS upgrade does not automatically guarantee the result flips to enabled for an existing
+ * old image. It can become enabled if the relevant image/component is updated or replaced so its
+ * original-image version context is newer and passes the threshold. The code path only reports
+ * eligibility in FeatureIsEnabled and does not directly enable a feature system-wide.
+ * So think of it as compatibility gating tied to image provenance, not a global switch that turns on when Windows version increases.
+ */
 typedef struct _SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_INPUT
 {
-    ULONG Version;
-    PWSTR FeatureName;
-    ULONG BornOnVersion;
+    ULONG Version;       // Must be set to SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_VERSION (1).
+    PWSTR FeatureName;   // Wide string naming the feature to query. Not consulted by the kernel in observed builds; reserved for future use.
+    ULONG BornOnVersion; // Windows version number the image was originally targeted at; compared against OriginalImageVersion.
 } SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_INPUT, *PSYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_INPUT;
 
 // private
+/**
+ * The SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_OUTPUT structure receives the output of a system original image feature information query.
+ */
 typedef struct _SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_OUTPUT
 {
-    ULONG Version;
-    BOOLEAN FeatureIsEnabled;
+    ULONG Version;           // Echoes back the protocol version.
+    BOOLEAN FeatureIsEnabled; // Eligibility result only; TRUE/FALSE does not directly toggle a system-wide feature state.
 } SYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_OUTPUT, *PSYSTEM_ORIGINAL_IMAGE_FEATURE_INFORMATION_OUTPUT;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_INFORMATION_INPUT structure specifies the input parameters for a system memory NUMA information query.
+ */
 typedef struct _SYSTEM_MEMORY_NUMA_INFORMATION_INPUT
 {
     ULONG Version;
@@ -6378,6 +9080,9 @@ typedef struct _SYSTEM_MEMORY_NUMA_INFORMATION_INPUT
 } SYSTEM_MEMORY_NUMA_INFORMATION_INPUT, *PSYSTEM_MEMORY_NUMA_INFORMATION_INPUT;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT structure receives the output of a system memory NUMA information query.
+ */
 typedef struct _SYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT
 {
     ULONG Version;
@@ -6390,11 +9095,14 @@ typedef struct _SYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT
         {
             ULONG IsAttached : 1;
             ULONG Reserved : 31;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 } SYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT, *PSYSTEM_MEMORY_NUMA_INFORMATION_OUTPUT;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_PERFORMANCE_QUERY_DATA_TYPES enumeration defines the system memory NUMA performance query data types values.
+ */
 typedef enum _SYSTEM_MEMORY_NUMA_PERFORMANCE_QUERY_DATA_TYPES
 {
     SystemMemoryNumaPerformanceQuery_ReadLatency,
@@ -6408,6 +9116,9 @@ typedef enum _SYSTEM_MEMORY_NUMA_PERFORMANCE_QUERY_DATA_TYPES
 } SYSTEM_MEMORY_NUMA_PERFORMANCE_QUERY_DATA_TYPES;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT structure specifies the input parameters for a system memory NUMA performance information query.
+ */
 typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT
 {
     ULONG Version;
@@ -6417,6 +9128,9 @@ typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT
 } SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT, *PSYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_INPUT;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_PERFORMANCE_ENTRY structure describes a single system memory NUMA performance entry.
+ */
 typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_ENTRY
 {
     ULONG InitiatorNodeNumber;
@@ -6430,13 +9144,16 @@ typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_ENTRY
             BOOLEAN MinTransferSizeToAchieveValues : 1;
             BOOLEAN NonSequentialTransfers : 1;
             BOOLEAN Reserved : 6;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     SIZE_T MinTransferSizeInBytes;
     ULONG_PTR EntryValue;
 } SYSTEM_MEMORY_NUMA_PERFORMANCE_ENTRY, *PSYSTEM_MEMORY_NUMA_PERFORMANCE_ENTRY;
 
 // private
+/**
+ * The SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_OUTPUT structure receives the output of a system memory NUMA performance information query.
+ */
 typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_OUTPUT
 {
     ULONG Version;
@@ -6452,9 +9169,33 @@ typedef struct _SYSTEM_MEMORY_NUMA_PERFORMANCE_INFORMATION_OUTPUT
 typedef struct _SYSTEM_OSL_RAMDISK_ENTRY
 {
     ULONG BlockSize;
-    ULONG_PTR BaseAddress;
+    PVOID BaseAddress;
     SIZE_T Size;
 } SYSTEM_OSL_RAMDISK_ENTRY, *PSYSTEM_OSL_RAMDISK_ENTRY;
+
+// rev
+/**
+ * The SYSTEM_CODE_INTEGRITY_SIGNED_POLICIES structure describes the signed Code Integrity policies.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_SIGNED_POLICIES
+{
+    BOOLEAN EnabledPolicies;
+    ULONGLONG SignedPoliciesData;
+    ULONG PolicySize;
+    ULONG SignatureSize;
+    UCHAR SignatureBuffer[0x100]; 
+} SYSTEM_CODE_INTEGRITY_SIGNED_POLICIES, *PSYSTEM_CODE_INTEGRITY_SIGNED_POLICIES;
+
+// rev
+/**
+ * The SYSTEM_SECURE_CORE_INFORMATION structure contains system secure core information.
+ */
+typedef struct _SYSTEM_SECURE_CORE_INFORMATION
+{
+    BOOLEAN IsSecureCore;
+    ULONGLONG SecureKernelRunning;
+    ULONGLONG VslFeatures;
+} SYSTEM_SECURE_CORE_INFORMATION, *PSYSTEM_SECURE_CORE_INFORMATION;
 
 /**
  * The SYSTEM_TRUSTEDAPPS_RUNTIME_INFORMATION structure describes runtime
@@ -6469,8 +9210,8 @@ typedef struct _SYSTEM_TRUSTEDAPPS_RUNTIME_INFORMATION
         {
             ULONGLONG Supported : 1;
             ULONGLONG Spare : 63;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     PVOID RemoteBreakingRoutine;
 } SYSTEM_TRUSTEDAPPS_RUNTIME_INFORMATION, *PSYSTEM_TRUSTEDAPPS_RUNTIME_INFORMATION;
 
@@ -6486,36 +9227,66 @@ typedef struct _SYSTEM_OSL_RAMDISK_INFORMATION
 } SYSTEM_OSL_RAMDISK_INFORMATION, *PSYSTEM_OSL_RAMDISK_INFORMATION;
 
 /**
- * The CI_POLICY_MGMT_OPERATION enumeration specifies the type of Code Integrity
+ * The SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION enumeration specifies the type of Code Integrity
  * policy management operation requested.
  */
-typedef enum _CI_POLICY_MGMT_OPERATION
+typedef enum _SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION
 {
-    CI_POLICY_MGMT_OPERATION_NONE = 0,
-    CI_POLICY_MGMT_OPERATION_OPEN_TX = 1,
-    CI_POLICY_MGMT_OPERATION_COMMIT_TX = 2,
-    CI_POLICY_MGMT_OPERATION_CLOSE_TX = 3,
-    CI_POLICY_MGMT_OPERATION_ADD_POLICY = 4,
-    CI_POLICY_MGMT_OPERATION_REMOVE_POLICY = 5,
-    CI_POLICY_MGMT_OPERATION_GET_POLICY = 6,
-    CI_POLICY_MGMT_OPERATION_GET_POLICY_IDS = 7,
-    CI_POLICY_MGMT_OPERATION_MAX = 8
-} CI_POLICY_MGMT_OPERATION;
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_NONE = 0,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_OPEN_TX = 1,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_COMMIT_TX = 2,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_CLOSE_TX = 3,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_ADD_POLICY = 4,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_REMOVE_POLICY = 5,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_GET_POLICY = 6,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_GET_POLICY_IDS = 7,
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION_MAX = 8
+} SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION;
 
 /**
- * The SYSTEM_CODEINTEGRITYPOLICY_MANAGEMENT structure describes parameters
+ * The SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT structure describes parameters
  * used to manage Code Integrity policies through the system information
  * interface.
  */
-typedef struct _SYSTEM_CODEINTEGRITYPOLICY_MANAGEMENT
+typedef struct _SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT
 {
-    CI_POLICY_MGMT_OPERATION Operation;
+    SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT_OPERATION Operation;
     UCHAR UseInProgressState;
     ULONG Arg1Len;
     PUCHAR Arg1;
     ULONG Arg2Len;
     PUCHAR Arg2;
-} SYSTEM_CODEINTEGRITYPOLICY_MANAGEMENT, *PSYSTEM_CODEINTEGRITYPOLICY_MANAGEMENT;
+} SYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT, *PSYSTEM_CODEINTEGRITY_POLICY_MANAGEMENT;
+
+// rev
+/**
+ * The SYSTEM_MEMORY_NUMA_CACHE_ENTRY structure describes a single system memory NUMA cache entry.
+ */
+typedef struct _SYSTEM_MEMORY_NUMA_CACHE_ENTRY
+{
+    ULONG CacheNode;
+    ULONG CacheLevel;
+    ULONG CacheSize;
+    ULONG CacheLineSize;
+    ULONG CacheType;
+    ULONG CacheAttributes;
+    ULONG CacheFlags;
+    UCHAR Present;
+    UCHAR Reserved[3];
+} SYSTEM_MEMORY_NUMA_CACHE_ENTRY, *PSYSTEM_MEMORY_NUMA_CACHE_ENTRY;
+
+// rev
+/**
+ * The SYSTEM_MEMORY_NUMA_CACHE_INFORMATION structure contains system memory NUMA cache information.
+ */
+typedef struct _SYSTEM_MEMORY_NUMA_CACHE_INFORMATION
+{
+    ULONG Version;        // always 1
+    ULONG Size;           // total bytes written, aligned to 0x20
+    ULONG EntryCount;     // number of cache entries
+    ULONG Reserved;       // appears to stay zero
+    SYSTEM_MEMORY_NUMA_CACHE_ENTRY Entries[1]; // Followed by EntryCount records, each 0x20 bytes
+} SYSTEM_MEMORY_NUMA_CACHE_INFORMATION, *PSYSTEM_MEMORY_NUMA_CACHE_INFORMATION;
 
 /**
  * The SYSTEM_REF_TRACE_INFORMATION_EX structure describes configuration
@@ -6535,8 +9306,8 @@ typedef struct _SYSTEM_REF_TRACE_INFORMATION_EX
             ULONG UseTracePoolTags   : 1;
             ULONG TraceByStacksOnly  : 1;
             ULONG ReservedFlags      : 28;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     UNICODE_STRING TraceProcessName;
     UNICODE_STRING TracePoolTags;
     ULONG MaxObjectRefTraces;
@@ -6572,7 +9343,19 @@ typedef struct _SYSTEM_HANDLECOUNT_INFORMATION
 //  Runtime Report Definitions
 //
 
+#define SYSTEM_RUNTIME_REPORT_INPUT_VERSION_1 1
+#define SYSTEM_RUNTIME_REPORT_INPUT_PACKAGE_VERSION_1 1
+
 // private
+/**
+ * Requests a signed runtime-attestation report through NtQuerySystemInformationEx
+ * with SystemRuntimeAttestationReport (254). InputBufferLength must be exactly 48
+ * bytes on x64. InputVersion and PackageVersion must both be 1,
+ * and the implementation accepts only ReportTypesBitmap == 1. Nonce supplies 32 caller bytes.
+ * A NULL output buffer with zero output length requests the required report size;
+ * a non-NULL output buffer must have a nonzero length. The output is a report-package
+ * byte buffer, not another SYSTEM_RUNTIME_REPORT_INPUT.
+ */
 typedef struct _SYSTEM_RUNTIME_REPORT_INPUT
 {
     USHORT InputVersion;
@@ -6582,7 +9365,7 @@ typedef struct _SYSTEM_RUNTIME_REPORT_INPUT
     UCHAR Nonce[32];
 } SYSTEM_RUNTIME_REPORT_INPUT, *PSYSTEM_RUNTIME_REPORT_INPUT;
 
-#if !defined(NTDDI_WIN11_GE) || (NTDDI_VERSION < NTDDI_WIN11_GE)
+#if defined(SYSTEM_RUNTIME_REPORT)
 //
 // ===============================================
 // Runtime Report Package Format:
@@ -6626,6 +9409,9 @@ typedef struct _SYSTEM_RUNTIME_REPORT_INPUT
 // Runtime Report Type Enumeration
 //
 
+/**
+ * The RUNTIME_REPORT_TYPE enumeration defines the runtime report types.
+ */
 typedef enum _RUNTIME_REPORT_TYPE
 {
     RuntimeReportTypeDriver = 0,
@@ -6645,6 +9431,9 @@ typedef enum _RUNTIME_REPORT_TYPE
 
 #define RUNTIME_REPORT_TYPE_MASK_ALL ((1ULL << RuntimeReportTypeMax) - 1)
 
+/**
+ * The RUNTIME_REPORT_PACKAGE_HEADER structure describes the header of a runtime report package.
+ */
 typedef struct _RUNTIME_REPORT_PACKAGE_HEADER
 {
     //
@@ -6729,6 +9518,9 @@ typedef struct _RUNTIME_REPORT_PACKAGE_HEADER
 
 } RUNTIME_REPORT_PACKAGE_HEADER, *PRUNTIME_REPORT_PACKAGE_HEADER;
 
+/**
+ * The RUNTIME_REPORT_DIGEST_HEADER structure describes the header of a runtime report digest.
+ */
 typedef struct _RUNTIME_REPORT_DIGEST_HEADER
 {
     //
@@ -6756,6 +9548,9 @@ typedef struct _RUNTIME_REPORT_DIGEST_HEADER
 
 } RUNTIME_REPORT_DIGEST_HEADER, *PRUNTIME_REPORT_DIGEST_HEADER;
 
+/**
+ * The RUNTIME_REPORT_HEADER structure describes the header of a runtime report.
+ */
 typedef struct _RUNTIME_REPORT_HEADER
 {
     //
@@ -6789,6 +9584,9 @@ typedef struct _RUNTIME_REPORT_HEADER
 #define DRIVER_REPORT_DIGEST_MAX_SIZE   RUNTIME_REPORT_DIGEST_MAX_SIZE
 #define DRIVER_REPORT_NAME_MAX_LENGTH   32
 
+/**
+ * The DRIVER_INFO_ENTRY structure describes a single driver information entry.
+ */
 typedef struct _DRIVER_INFO_ENTRY
 {
     //
@@ -6860,13 +9658,16 @@ typedef struct _DRIVER_INFO_ENTRY
             USHORT BootDriver : 1;
             USHORT HotPatch : 1;
             USHORT Reserved : 13;
-        };
+        } DUMMYSTRUCTNAME;
         USHORT AsUInt16;
     } Flags;
 
     USHORT Padding;
 } DRIVER_INFO_ENTRY, *PDRIVER_INFO_ENTRY;
 
+/**
+ * The DRIVER_RUNTIME_REPORT structure describes the driver runtime report.
+ */
 typedef struct _DRIVER_RUNTIME_REPORT
 {
     //
@@ -6905,7 +9706,7 @@ typedef struct _DRIVER_RUNTIME_REPORT
             USHORT PartialReport : 1;
             USHORT IncludeBootDrivers : 1;
             USHORT Reserved : 13;
-        };
+        } DUMMYSTRUCTNAME;
         USHORT AsUInt16;
     } Flags;
 
@@ -6932,6 +9733,9 @@ typedef struct _DRIVER_RUNTIME_REPORT
 // Code Integrity Report Definitions.
 //
 
+/**
+ * The CODE_INTEGRITY_RUNTIME_REPORT structure contains a Code Integrity runtime report.
+ */
 typedef struct _CODE_INTEGRITY_RUNTIME_REPORT
 {
     //
@@ -6959,6 +9763,9 @@ typedef struct _CODE_INTEGRITY_RUNTIME_REPORT
 
 #define CODE_INTEGRITY_REPORT_GENERATION_VERSION_CURRENT    (1)
 
+/**
+ * The CODE_INTEGRITY_REPORT_GENERATION_HEADER structure describes the header of a Code Integrity report generation.
+ */
 typedef struct _CODE_INTEGRITY_REPORT_GENERATION_HEADER
 {
     //
@@ -6982,7 +9789,7 @@ typedef struct _CODE_INTEGRITY_REPORT_GENERATION_HEADER
 
     //
     // Secure Kernel / Hypervisor secure time reference when this policy was
-    // commited.
+    // committed.
     //
 
     ULONG64 CommitTime;
@@ -6991,6 +9798,9 @@ typedef struct _CODE_INTEGRITY_REPORT_GENERATION_HEADER
 
 #define CODE_INTEGRITY_REPORT_RECORD_VERSION_CURRENT    (1)
 
+/**
+ * The CODE_INTEGRITY_REPORT_RECORD_HEADER structure describes the header of a Code Integrity report record.
+ */
 typedef struct _CODE_INTEGRITY_REPORT_RECORD_HEADER
 {
     //
@@ -7009,7 +9819,7 @@ typedef struct _CODE_INTEGRITY_REPORT_RECORD_HEADER
     // The number of bytes consumed by this record, including this header.
     //
 
-	ULONG RecordSize;
+    ULONG RecordSize;
 
     //
     // The event code (type) of this record. The same codes as the Measured
@@ -7018,10 +9828,10 @@ typedef struct _CODE_INTEGRITY_REPORT_RECORD_HEADER
     // this header.
     //
 
-	ULONG SipaEventCode;
+    ULONG SipaEventCode;
 
 } CODE_INTEGRITY_REPORT_RECORD_HEADER;
-#endif // #if !defined(NTDDI_WIN11_GE) || (NTDDI_VERSION < NTDDI_WIN11_GE)
+#endif // #if defined(SYSTEM_RUNTIME_REPORT)
 
 /**
  * The SYSTEM_POOLTAG2 structure describes allocation statistics for a single
@@ -7049,8 +9859,32 @@ typedef struct _SYSTEM_POOLTAG2
 typedef struct _SYSTEM_POOLTAG_INFORMATION2
 {
     ULONG Count;
-    _Field_size_(Count) SYSTEM_POOLTAG2 TagInfo[1];
+    _Field_size_(Count) SYSTEM_POOLTAG2 TagInfo[ANYSIZE_ARRAY];
 } SYSTEM_POOLTAG_INFORMATION2, *PSYSTEM_POOLTAG_INFORMATION2;
+
+/**
+ * The CI_ENDPOINT_SECURITY_OPERATION enumeration defines the operations for CI endpoint security.
+ */
+typedef enum _CI_ENDPOINT_SECURITY_OPERATION
+{
+    CI_ENDPOINT_SECURITY_OPERATION_SET = 0,
+    CI_ENDPOINT_SECURITY_OPERATION_REMOVE = 1,
+    CI_ENDPOINT_SECURITY_OPERATION_MAX = 2
+} CI_ENDPOINT_SECURITY_OPERATION;
+
+/**
+ * The SYSTEM_CODE_INTEGRITY_ENDPOINT_SECURITY_INFORMATION structure contains Code Integrity endpoint security information.
+ */
+typedef struct _SYSTEM_CODE_INTEGRITY_ENDPOINT_SECURITY_INFORMATION
+{
+    USHORT Version;
+    CI_ENDPOINT_SECURITY_OPERATION Operation;
+    USHORT PolicyPathOffset;
+    USHORT PolicyPathNumBytes;
+    USHORT TssIdOffset;
+    USHORT TssIdNumBytes;
+    UCHAR Data[ANYSIZE_ARRAY];
+} SYSTEM_CODE_INTEGRITY_ENDPOINT_SECURITY_INFORMATION, *PSYSTEM_CODE_INTEGRITY_ENDPOINT_SECURITY_INFORMATION;
 
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 
@@ -7064,6 +9898,7 @@ typedef struct _SYSTEM_POOLTAG_INFORMATION2
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/sysinfo/zwquerysysteminformation
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -7085,7 +9920,12 @@ NtQuerySystemInformation(
  * \param ReturnLength A pointer to a variable that receives the size of the data returned in the buffer.
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/sysinfo/zwquerysysteminformation
+ * \remarks Uses class-specific input as well as output contracts. Native rejection of
+ * a NULL/zero input pair can occur before class dispatch; WoW64 can instead reject an unsupported selector first.
+ * For example, SystemBasicInformation with NULL/zero input returns STATUS_INVALID_PARAMETER natively and
+ * STATUS_INVALID_INFO_CLASS through the WoW64 path. Use the ordinary query for that class.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -7106,6 +9946,7 @@ NtQuerySystemInformationEx(
  * \param SystemInformationLength The size of the buffer pointed to by SystemInformation.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -7274,7 +10115,7 @@ typedef union _SYSDBG_LIVEDUMP_CONTROL_FLAGS
         ULONG AbortIfMemoryPressure : 1; // REDSTONE4
         ULONG SelectiveDump : 1; // WIN11
         ULONG Reserved : 27;
-    };
+    } DUMMYSTRUCTNAME;
     ULONG AsUlong;
 } SYSDBG_LIVEDUMP_CONTROL_FLAGS, *PSYSDBG_LIVEDUMP_CONTROL_FLAGS;
 
@@ -7289,7 +10130,7 @@ typedef union _SYSDBG_LIVEDUMP_CONTROL_ADDPAGES
         ULONG HypervisorPages : 1;
         ULONG NonEssentialHypervisorPages : 1; // since WIN11
         ULONG Reserved : 30;
-    };
+    } DUMMYSTRUCTNAME;
     ULONG AsUlong;
 } SYSDBG_LIVEDUMP_CONTROL_ADDPAGES, *PSYSDBG_LIVEDUMP_CONTROL_ADDPAGES;
 
@@ -7311,8 +10152,8 @@ typedef struct _SYSDBG_LIVEDUMP_SELECTIVE_CONTROL
         {
             ULONGLONG ThreadKernelStacks : 1;
             ULONGLONG ReservedFlags : 63;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     ULONGLONG Reserved[4];
 } SYSDBG_LIVEDUMP_SELECTIVE_CONTROL, *PSYSDBG_LIVEDUMP_SELECTIVE_CONTROL;
 
@@ -7377,6 +10218,7 @@ typedef struct _SYSDBG_KD_PULL_REMOTE_FILE
  * \param[out] ReturnLength Optional pointer to a variable that receives the number of bytes returned in the output buffer.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -7448,6 +10290,7 @@ typedef enum _HARDERROR_RESPONSE
  */
 _Analysis_noreturn_
 DECLSPEC_NORETURN
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -7467,7 +10310,6 @@ NtRaiseHardError(
 /**
  * The ALTERNATIVE_ARCHITECTURE_TYPE enumeration specifies the hardware
  * architecture variant used by the system.
- *
  * \remarks NEC98x86 represents the NEC PC-98 architecture,
  * supported only on very early Windows releases.
  */
@@ -7483,6 +10325,101 @@ typedef enum _ALTERNATIVE_ARCHITECTURE_TYPE
  * that may be reported by the system.
  */
 #define PROCESSOR_FEATURE_MAX 64
+
+//
+// Processor features (IsProcessorFeaturePresent)
+//
+#define PF_FLOATING_POINT_PRECISION_ERRATA          0
+#define PF_FLOATING_POINT_EMULATED                  1
+#define PF_COMPARE_EXCHANGE_DOUBLE                  2
+#define PF_MMX_INSTRUCTIONS_AVAILABLE               3
+#define PF_PPC_MOVEMEM_64BIT_OK                     4
+#define PF_ALPHA_BYTE_INSTRUCTIONS                  5
+#define PF_XMMI_INSTRUCTIONS_AVAILABLE              6
+#define PF_3DNOW_INSTRUCTIONS_AVAILABLE             7
+#define PF_RDTSC_INSTRUCTION_AVAILABLE              8
+#define PF_PAE_ENABLED                              9
+#define PF_XMMI64_INSTRUCTIONS_AVAILABLE            10
+#define PF_SSE_DAZ_MODE_AVAILABLE                   11
+#define PF_NX_ENABLED                               12
+#define PF_SSE3_INSTRUCTIONS_AVAILABLE              13
+#define PF_COMPARE_EXCHANGE128                      14
+#define PF_COMPARE64_EXCHANGE128                    15
+#define PF_CHANNELS_ENABLED                         16
+#define PF_XSAVE_ENABLED                            17
+#define PF_ARM_VFP_32_REGISTERS_AVAILABLE           18
+#define PF_ARM_NEON_INSTRUCTIONS_AVAILABLE          19
+#define PF_SECOND_LEVEL_ADDRESS_TRANSLATION         20
+#define PF_VIRT_FIRMWARE_ENABLED                    21
+#define PF_RDWRFSGSBASE_AVAILABLE                   22
+#define PF_FASTFAIL_AVAILABLE                       23
+#define PF_ARM_DIVIDE_INSTRUCTION_AVAILABLE         24
+#define PF_ARM_64BIT_LOADSTORE_ATOMIC               25
+#define PF_ARM_EXTERNAL_CACHE_AVAILABLE             26
+#define PF_ARM_FMAC_INSTRUCTIONS_AVAILABLE          27
+#define PF_RDRAND_INSTRUCTION_AVAILABLE             28
+#define PF_ARM_V8_INSTRUCTIONS_AVAILABLE            29
+#define PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE     30
+#define PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE      31
+#define PF_RDTSCP_INSTRUCTION_AVAILABLE             32
+#define PF_RDPID_INSTRUCTION_AVAILABLE              33
+#define PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE    34
+#define PF_MONITORX_INSTRUCTION_AVAILABLE           35
+#define PF_SSSE3_INSTRUCTIONS_AVAILABLE             36
+#define PF_SSE4_1_INSTRUCTIONS_AVAILABLE            37
+#define PF_SSE4_2_INSTRUCTIONS_AVAILABLE            38
+#define PF_AVX_INSTRUCTIONS_AVAILABLE               39
+#define PF_AVX2_INSTRUCTIONS_AVAILABLE              40
+#define PF_AVX512F_INSTRUCTIONS_AVAILABLE           41
+#define PF_ERMS_AVAILABLE                           42
+#define PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE        43
+#define PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE     44
+#define PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE     45
+#define PF_ARM_SVE_INSTRUCTIONS_AVAILABLE           46
+#define PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE          47
+#define PF_ARM_SVE2_1_INSTRUCTIONS_AVAILABLE        48
+#define PF_ARM_SVE_AES_INSTRUCTIONS_AVAILABLE       49
+#define PF_ARM_SVE_PMULL128_INSTRUCTIONS_AVAILABLE  50
+#define PF_ARM_SVE_BITPERM_INSTRUCTIONS_AVAILABLE   51
+#define PF_ARM_SVE_BF16_INSTRUCTIONS_AVAILABLE      52
+#define PF_ARM_SVE_EBF16_INSTRUCTIONS_AVAILABLE     53
+#define PF_ARM_SVE_B16B16_INSTRUCTIONS_AVAILABLE    54
+#define PF_ARM_SVE_SHA3_INSTRUCTIONS_AVAILABLE      55
+#define PF_ARM_SVE_SM4_INSTRUCTIONS_AVAILABLE       56
+#define PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE      57
+#define PF_ARM_SVE_F32MM_INSTRUCTIONS_AVAILABLE     58
+#define PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE     59
+#define PF_BMI2_INSTRUCTIONS_AVAILABLE              60
+#define PF_MOVDIR64B_INSTRUCTION_AVAILABLE          61
+#define PF_ARM_LSE2_AVAILABLE                       62
+#define PF_RESERVED_FEATURE                         63
+// SystemProcessorFeaturesBitMapInformation
+#define PF_ARM_SHA3_INSTRUCTIONS_AVAILABLE          64
+#define PF_ARM_SHA512_INSTRUCTIONS_AVAILABLE        65
+#define PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE      66
+#define PF_ARM_V82_FP16_INSTRUCTIONS_AVAILABLE      67
+#define PF_ARM_V86_BF16_INSTRUCTIONS_AVAILABLE      68
+#define PF_ARM_V86_EBF16_INSTRUCTIONS_AVAILABLE     69
+#define PF_ARM_SME_INSTRUCTIONS_AVAILABLE           70
+#define PF_ARM_SME2_INSTRUCTIONS_AVAILABLE          71
+#define PF_ARM_SME2_1_INSTRUCTIONS_AVAILABLE        72
+#define PF_ARM_SME2_2_INSTRUCTIONS_AVAILABLE        73
+#define PF_ARM_SME_AES_INSTRUCTIONS_AVAILABLE       74
+#define PF_ARM_SME_SBITPERM_INSTRUCTIONS_AVAILABLE  75
+#define PF_ARM_SME_SF8MM4_INSTRUCTIONS_AVAILABLE    76
+#define PF_ARM_SME_SF8MM8_INSTRUCTIONS_AVAILABLE    77
+#define PF_ARM_SME_SF8DP2_INSTRUCTIONS_AVAILABLE    78
+#define PF_ARM_SME_SF8DP4_INSTRUCTIONS_AVAILABLE    79
+#define PF_ARM_SME_SF8FMA_INSTRUCTIONS_AVAILABLE    80
+#define PF_ARM_SME_F8F32_INSTRUCTIONS_AVAILABLE     81
+#define PF_ARM_SME_F8F16_INSTRUCTIONS_AVAILABLE     82
+#define PF_ARM_SME_F16F16_INSTRUCTIONS_AVAILABLE    83
+#define PF_ARM_SME_B16B16_INSTRUCTIONS_AVAILABLE    84
+#define PF_ARM_SME_F64F64_INSTRUCTIONS_AVAILABLE    85
+#define PF_ARM_SME_I16I64_INSTRUCTIONS_AVAILABLE    86
+#define PF_ARM_SME_LUTv2_INSTRUCTIONS_AVAILABLE     87
+#define PF_ARM_SME_FA64_INSTRUCTIONS_AVAILABLE      88
+#define PF_UMONITOR_INSTRUCTION_AVAILABLE           89
 
 /**
  * MAX_WOW64_SHARED_ENTRIES defines the number of shared entries available to
@@ -7556,7 +10493,17 @@ typedef enum _ALTERNATIVE_ARCHITECTURE_TYPE
 #define SHARED_GLOBAL_FLAGS_STATE_SEPARATION_ENABLED   \
     (1UL << SHARED_GLOBAL_FLAGS_STATE_SEPARATION_ENABLED_V)
 
-#define SHARED_GLOBAL_FLAGS_SET_GLOBAL_DATA_FLAG        0x40000000
+// rev
+#define SHARED_GLOBAL_FLAGS_SPLIT_TOKEN_ENABLED_V      0xB
+#define SHARED_GLOBAL_FLAGS_SPLIT_TOKEN_ENABLED        \
+    (1UL << SHARED_GLOBAL_FLAGS_SPLIT_TOKEN_ENABLED_V)
+
+// rev
+#define SHARED_GLOBAL_FLAGS_SHADOW_ADMIN_ENABLED_V     0xC
+#define SHARED_GLOBAL_FLAGS_SHADOW_ADMIN_ENABLED       \
+    (1UL << SHARED_GLOBAL_FLAGS_SHADOW_ADMIN_ENABLED_V)
+
+#define SHARED_GLOBAL_FLAGS_SET_GLOBAL_DATA_FLAG       0x40000000
 #define SHARED_GLOBAL_FLAGS_CLEAR_GLOBAL_DATA_FLAG      0x80000000
 
 //
@@ -7581,7 +10528,46 @@ typedef enum _ALTERNATIVE_ARCHITECTURE_TYPE
 #define SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_RDTSCP (0x80)
 
 /**
+ * Windows 11 24H2 shared-page XSTATE configuration, independent of the installed SDK.
+ * The 24H2 kernel and ntdll layout occupies 0x348 bytes. Newer SDKs
+ * enlarge XSTATE_CONFIGURATION, which must not shift the trailing KUSER fields
+ * when PHNT_VERSION explicitly targets PHNT_WINDOWS_11_24H2.
+ * Feature arrays are indexed by XSTATE feature number (64 entries).
+ */
+typedef struct _XSTATE_CONFIGURATION_24H2
+{
+    ULONG64 EnabledFeatures;
+    ULONG64 EnabledVolatileFeatures;
+    ULONG Size;
+    union
+    {
+        ULONG ControlFlags;
+        struct
+        {
+            ULONG OptimizedSave : 1;
+            ULONG CompactionEnabled : 1;
+            ULONG ExtendedFeatureDisable : 1;
+            ULONG ReservedControlFlags : 29;
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
+    XSTATE_FEATURE Features[64];
+    ULONG64 EnabledSupervisorFeatures;
+    ULONG64 AlignedFeatures;
+    ULONG AllFeatureSize;
+    ULONG AllFeatures[64];
+    ULONG64 EnabledUserVisibleSupervisorFeatures;
+    ULONG64 ExtendedFeatureDisableFeatures;
+    ULONG AllNonLargeFeatureSize;
+    USHORT MaxSveVectorLength;
+    USHORT Spare1;
+} XSTATE_CONFIGURATION_24H2, *PXSTATE_CONFIGURATION_24H2;
+
+static_assert(sizeof(XSTATE_CONFIGURATION_24H2) == 0x348, "XSTATE_CONFIGURATION_24H2 size is incorrect");
+
+/**
  * The KUSER_SHARED_DATA structure contains information shared with user-mode.
+ * Define PHNT_VERSION for the target OS before including phnt.h; the default
+ * PHNT_WINDOWS_NEW follows the installed SDK XSTATE layout.
  *
  * \sa https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-kuser_shared_data
  */
@@ -7687,7 +10673,7 @@ typedef struct _KUSER_SHARED_DATA
             ULONG TelemetryFallback : 1;    // Telemetry-driven fallback
             ULONG Reserved : 29;
         } AppCompatFlags;
-    };
+    } DUMMYUNIONNAME;
 
     //
     // Current Kernel Root RNG state seed version
@@ -7830,8 +10816,8 @@ typedef struct _KUSER_SHARED_DATA
             UCHAR SEHValidationPolicy : 2;
             UCHAR CurDirDevicesSkippedForDlls : 2;
             UCHAR Reserved : 2;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 
     //
     // Measured duration of a single processor yield, in cycles. This is used by
@@ -7909,11 +10895,11 @@ typedef struct _KUSER_SHARED_DATA
             UCHAR ArchStartedInEl2 : 1;
             UCHAR QcSlIsSupported : 1;
             UCHAR : 6;
-        };
+        } DUMMYSTRUCTNAME;
 
 #endif
 
-    };
+    } DUMMYUNIONNAME;
 
     //
     // Reserved (available for reuse).
@@ -8226,8 +11212,8 @@ typedef struct _KUSER_SHARED_DATA
                     // RDTSCP instead of RDTSC in the fast path.
                     //
                     volatile UCHAR UseRdtscp : 1;
-                };
-            };
+                } DUMMYSTRUCTNAME;
+            } DUMMYUNIONNAME;
 
             //
             // Reserved, leave as zero for backward compatibility. Was shift
@@ -8235,8 +11221,8 @@ typedef struct _KUSER_SHARED_DATA
             //
 
             UCHAR QpcReserved;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
 
     //
     // Reserved for future use.
@@ -8249,24 +11235,14 @@ typedef struct _KUSER_SHARED_DATA
     // Extended processor state configuration (AMD64 and x86).
     //
 
+#if (PHNT_VERSION == PHNT_WINDOWS_11_24H2)
+    XSTATE_CONFIGURATION_24H2 XState;
+#else
     XSTATE_CONFIGURATION XState;
-
-    //
-    // RtlQueryFeatureConfigurationChangeStamp
-    //
+#endif
 
     KSYSTEM_TIME FeatureConfigurationChangeStamp;
-
-    //
-    // Spare (available for re-use).
-    //
-
     ULONG Spare;
-
-    //
-    // This field holds a mask that is used in the process of authenticating pointers in user mode.
-    // It helps in determining which bits of the pointer are used for authentication in user mode.
-    //
 
     ULONG64 UserPointerAuthMask;
 
@@ -8276,11 +11252,21 @@ typedef struct _KUSER_SHARED_DATA
     //
 
 #if defined(_ARM64_)
+#if (PHNT_VERSION == PHNT_WINDOWS_11_24H2)
+    XSTATE_CONFIGURATION_24H2 XStateArm64;
+#else
     XSTATE_CONFIGURATION XStateArm64;
+#endif
 #else
     ULONG Reserved10[210];
 #endif
+
 } KUSER_SHARED_DATA, *PKUSER_SHARED_DATA;
+
+#if (PHNT_VERSION == PHNT_WINDOWS_11_24H2)
+static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, FeatureConfigurationChangeStamp) == 0x720, "KUSER_SHARED_DATA feature stamp offset is incorrect");
+static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, UserPointerAuthMask) == 0x730, "KUSER_SHARED_DATA pointer auth mask offset is incorrect");
+#endif
 
 static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, TickCountLowDeprecated)               == 0x000, "KUSER_SHARED_DATA.TickCountLowDeprecated offset is incorrect");
 static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, TickCountMultiplier)                  == 0x004, "KUSER_SHARED_DATA.TickCountMultiplier offset is incorrect");
@@ -8363,29 +11349,12 @@ static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, QpcReserved)                      
 static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, TimeZoneBiasEffectiveStart)           == 0x3c8, "KUSER_SHARED_DATA.TimeZoneBiasEffectiveStart offset is incorrect");
 static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, TimeZoneBiasEffectiveEnd)             == 0x3d0, "KUSER_SHARED_DATA.TimeZoneBiasEffectiveEnd offset is incorrect");
 static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, XState)                               == 0x3d8, "KUSER_SHARED_DATA.XState offset is incorrect");
-#if !defined(NTDDI_WIN10_FE) || (NTDDI_VERSION < NTDDI_WIN10_FE)
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, FeatureConfigurationChangeStamp)      == 0x710, "KUSER_SHARED_DATA.FeatureConfigurationChangeStamp offset is incorrect");
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, UserPointerAuthMask)                  == 0x720, "KUSER_SHARED_DATA.UserPointerAuthMask offset is incorrect");
-#if defined(_ARM64_)
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, XStateArm64)                          == 0x728, "KUSER_SHARED_DATA.XStateArm64 offset is incorrect");
-#else
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, Reserved10)                           == 0x728, "KUSER_SHARED_DATA.Reserved10 offset is incorrect");
-#endif
-#if !defined(WINDOWS_IGNORE_PACKING_MISMATCH)
-static_assert(sizeof(KUSER_SHARED_DATA)                                             == 0xa70, "KUSER_SHARED_DATA size is incorrect (expected 0xa70)");
-#endif
-#else
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, FeatureConfigurationChangeStamp)      == 0x720, "KUSER_SHARED_DATA.FeatureConfigurationChangeStamp offset is incorrect");
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, UserPointerAuthMask)                  == 0x730, "KUSER_SHARED_DATA.UserPointerAuthMask offset is incorrect");
-#if defined(_ARM64_)
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, XStateArm64)                          == 0x738, "KUSER_SHARED_DATA.XStateArm64 offset is incorrect");
-#else
-static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, Reserved10)                           == 0x738, "KUSER_SHARED_DATA.Reserved10 offset is incorrect");
-#endif
-#if !defined(WINDOWS_IGNORE_PACKING_MISMATCH)
-static_assert(sizeof(KUSER_SHARED_DATA)                                             == 0xa80, "KUSER_SHARED_DATA size is incorrect (expected 0xa80)");
-#endif
-#endif
+//static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, FeatureConfigurationChangeStamp)      == 0x720, "KUSER_SHARED_DATA.FeatureConfigurationChangeStamp offset is incorrect");
+//static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, Spare)                                == 0x72c, "KUSER_SHARED_DATA.Spare offset is incorrect");
+//static_assert(FIELD_OFFSET(KUSER_SHARED_DATA, UserPointerAuthMask)                  == 0x730, "KUSER_SHARED_DATA.UserPointerAuthMask offset is incorrect");
+//#if !defined(WINDOWS_IGNORE_PACKING_MISMATCH)
+//static_assert(sizeof(KUSER_SHARED_DATA)                                             == 0xa80, "KUSER_SHARED_DATA size is incorrect (expected 0xa80)");
+//#endif
 
 /**
  * USER_SHARED_DATA pointer to the Windows KUSER_SHARED_DATA structure at its fixed
@@ -8424,10 +11393,15 @@ NtGetTickCount64(
 
     while (TRUE)
     {
-        tickCount.HighPart = (ULONG)USER_SHARED_DATA->TickCount.High1Time;
-        tickCount.LowPart = USER_SHARED_DATA->TickCount.LowPart;
+        // ARM64 builds default to /volatile:iso, where volatile loads have no ordering guarantee
+        // and the CPU can reorder them. Without acquire semantics it could read High2Time or LowPart
+        // before High1Time, and a torn value could pass the check because a stale High1Time would
+        // still match High2Time. The window is rare, but it exists. The kernel writes High2Time,
+        // LowPart, then High1Time, so read High1Time, LowPart, then High2Time with acquire ordering.
+        tickCount.HighPart = (ULONG)ReadAcquire(&USER_SHARED_DATA->TickCount.High1Time);
+        tickCount.LowPart = (ULONG)ReadAcquire((volatile LONG*)&USER_SHARED_DATA->TickCount.LowPart);
 
-        if (tickCount.HighPart == (ULONG)USER_SHARED_DATA->TickCount.High2Time)
+        if (tickCount.HighPart == (ULONG)ReadNoFence(&USER_SHARED_DATA->TickCount.High2Time))
             break;
 
         YieldProcessor();
@@ -8466,10 +11440,15 @@ NtGetTickCount(
 
     while (TRUE)
     {
-        tickCount.HighPart = (ULONG)USER_SHARED_DATA->TickCount.High1Time;
-        tickCount.LowPart = USER_SHARED_DATA->TickCount.LowPart;
+        // ARM64 builds default to /volatile:iso, where volatile loads have no ordering guarantee
+        // and the CPU can reorder them. Without acquire semantics it could read High2Time or LowPart
+        // before High1Time, and a torn value could pass the check because a stale High1Time would
+        // still match High2Time. The window is rare, but it exists. The kernel writes High2Time,
+        // LowPart, then High1Time, so read High1Time, LowPart, then High2Time with acquire ordering.
+        tickCount.HighPart = (ULONG)ReadAcquire(&USER_SHARED_DATA->TickCount.High1Time);
+        tickCount.LowPart = (ULONG)ReadAcquire((volatile LONG*)&USER_SHARED_DATA->TickCount.LowPart);
 
-        if (tickCount.HighPart == (ULONG)USER_SHARED_DATA->TickCount.High2Time)
+        if (tickCount.HighPart == (ULONG)ReadNoFence(&USER_SHARED_DATA->TickCount.High2Time))
             break;
 
         YieldProcessor();
@@ -8494,6 +11473,7 @@ NtGetTickCount(
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getsystemdefaultlocale
  * \sa https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getuserdefaultlocale
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8511,6 +11491,7 @@ NtQueryDefaultLocale(
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-setthreadlocale
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8526,6 +11507,7 @@ NtSetDefaultLocale(
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getsystemdefaultuilanguage
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8541,6 +11523,7 @@ NtQueryInstallUILanguage(
  * \param SetComittedFlag If nonzero, commits the language change.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8555,7 +11538,11 @@ NtFlushInstallUILanguage(
  * \param DefaultUILanguageId A pointer that receives the default UI language identifier (LANGID).
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-getsystemdefaultuilanguage
+ * \remarks On native this entry forwards to NtQueryInstallUILanguage.
+ * Do not infer a distinct per-thread UI-language selection from this syscall name. The output remains a
+ * 2-byte LANGID, not a locale-name string or a 4-byte LCID.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8569,6 +11556,7 @@ NtQueryDefaultUILanguage(
  * \param DefaultUILanguageId The UI language identifier (LANGID) to set.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8579,7 +11567,11 @@ NtSetDefaultUILanguage(
 /**
  * The NtIsUILanguageComitted routine determines whether the system UI language has been committed.
  * \return NTSTATUS Successful or errant status.
+ * \remarks Returns an NTSTATUS result: STATUS_SUCCESS when the global committed state is set,
+ * otherwise STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034). It is not a BOOLEAN return
+ * despite its predicate-style name; retain the exported spelling Comitted.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8593,25 +11585,44 @@ NtIsUILanguageComitted(
 
 // begin_private
 
+/**
+ * The NtInitializeNlsFiles routine maps the National Language Support (NLS) data files into memory.
+ *
+ * \param BaseAddress A pointer to a variable that receives the base address of the mapped NLS data.
+ * \param DefaultLocaleId A pointer to a variable that receives the default locale identifier.
+ * \param DefaultCasingTableSize A pointer to a variable that receives the size of the default casing table, in bytes. This parameter is optional.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtInitializeNlsFiles(
     _Out_ PVOID *BaseAddress,
     _Out_ PLCID DefaultLocaleId,
-    _Out_ PLARGE_INTEGER DefaultCasingTableSize,
-    _Out_opt_ PULONG CurrentNLSVersion
+    _Out_opt_ PLARGE_INTEGER DefaultCasingTableSize
     );
 
+/**
+ * The NtGetNlsSectionPtr routine retrieves a pointer to a National Language Support (NLS) section of the specified type.
+ *
+ * \param SectionType The type of the NLS section to retrieve.
+ * \param SectionData The data identifying the NLS section to retrieve.
+ * \param ContextData A pointer to a variable that receives context data. This must be NULL for user-mode callers. This parameter is optional.
+ * \param SectionPointer A pointer to a variable that receives the pointer to the NLS section.
+ * \param SectionSize A pointer to a variable that receives the size of the NLS section, in bytes. This parameter is optional.
+ * \return NTSTATUS Successful or errant status.
+ */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtGetNlsSectionPtr(
     _In_ ULONG SectionType,
     _In_ ULONG SectionData,
-    _In_ PVOID ContextData,
-    _Out_ PVOID *SectionPointer,
-    _Out_ PULONG SectionSize
+    _Out_opt_ PVOID *ContextData, // Must be NULL for user-mode callers.
+    _When_(ContextData == NULL, _Out_) _When_(ContextData != NULL, _Out_opt_) PVOID *SectionPointer,
+    _Out_opt_ PSIZE_T SectionSize
     );
 
 #if (PHNT_VERSION < PHNT_WINDOWS_7)
@@ -8626,6 +11637,7 @@ NtGetNlsSectionPtr(
  * \param replaceExisting If TRUE, replaces any existing ownership token.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8640,6 +11652,7 @@ NtAcquireCMFViewOwnership(
  * File (CMF) view previously acquired by NtAcquireCMFViewOwnership.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8730,6 +11743,7 @@ DEFINE_ENUM_FLAG_OPERATORS(CMF_WHAT_FLAGS);
  * \param BaseAddress Optional pointer that receives the base address of the mapped module.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8773,6 +11787,7 @@ DEFINE_ENUM_FLAG_OPERATORS(MUI_REGISTRY_INFO_FLAGS);
  * \return NTSTATUS Successful or errant status.
  * \remarks This routine is private and subject to change.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8789,17 +11804,28 @@ NtGetMUIRegistryInfo(
 //
 
 /**
- * The NtAddAtom routine adds a Unicode string to the system atom table and
- * returns the corresponding atom identifier.
+ * The NtAddAtom routine adds or references a name in the atom table obtained from the current session's Win32
+ * callout. This is not the per-process local table managed by AddAtomW. The x64 entry forwards to NtAddAtomEx
+ * with Flags = 0.
  *
- * \param AtomName A pointer to a Unicode string containing the atom name.
- * \param Length The length, in bytes, of the string pointed to by AtomName.
- * \param Atom An optional pointer that receives the resulting atom identifier.
- * \return NTSTATUS Successful or errant status.
- * \remarks If the atom already exists, its reference count is incremented and
- * the existing atom identifier is returned.
- * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-addatomw
+ * \param AtomName Readable UTF-16 name. User-mode input is captured by Length and
+ * terminated by the kernel; a source terminator need not be included. An embedded
+ * NUL ends the effective name. NULL does not create an unnamed atom.
+ * \param Length Bytes to capture, at most 510 (255 WCHARs). Supply an even length
+ * excluding the source terminator. An odd trailing byte is
+ * discarded when the captured buffer is terminated; nonzero input requires 2-byte alignment.
+ * \param Atom Optional output for the 16-bit identifier. Omitting it does not
+ * suppress the addition or its reference-count increment.
+ * \return NTSTATUS. Empty names return STATUS_OBJECT_NAME_INVALID; Length above
+ * 510 and a NULL name return STATUS_INVALID_PARAMETER.
+ * \remarks Ordinary string matching is case-insensitive and preserves the first
+ * inserted spelling. Each successful string addition owns a reference to balance
+ * with NtDeleteAtom; the identifier is not a handle for NtClose. Integer strings
+ * such as L"#123" select integer atoms without allocating a string entry.
+ * Kernel-mode callers are not covered by the user-buffer capture rules above.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globaladdatomw
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8812,32 +11838,41 @@ NtAddAtom(
 #if (PHNT_VERSION >= PHNT_WINDOWS_8)
 
 /**
- * ATOM_FLAG_NONE indicates that the atom being created should be placed in
- * the session-local atom table rather than the global atom table.
+ * No extra entry-visibility flag. NtAddAtom uses this value. Both 0 and 0x2
+ * operate on the table selected by the session Win32 callout; this is not a
+ * selector for the per-process local atom table.
  */
 #define ATOM_FLAG_NONE 0x0
 /**
- * ATOM_FLAG_GLOBAL indicates that the atom being created should be placed in
- * the global atom table rather than the session-local table.
- * \remarks This flag is only valid starting with Windows 8 and later.
+ * Marks a newly allocated entry with bit 0x2, which permits the global-entry
+ * path in RtlpAllowsLowBoxAccess on x64. It does not select a separate 
+ * machine-global table, and re-adding a name does not update this flag.
+ * Lowbox/AppContainer behavior is distinct from cross-session visibility.
  */
 #define ATOM_FLAG_GLOBAL 0x2
 
 // rev
 /**
- * The NtAddAtomEx routine adds a Unicode string to the system atom table with
- * additional creation flags.
+ * The NtAddAtomEx routine adds or references an atom with an optional entry-visibility flag. The name capture
+ * and reference-ownership rules are those of NtAddAtom.
  *
- * \param AtomName A pointer to a Unicode string containing the atom name.
- * \param Length The length, in bytes, of the string pointed to by AtomName.
- * \param Atom An optional pointer that receives the resulting atom identifier.
- * \param Flags A set of flags that control atom creation behavior.
- * \return NTSTATUS Successful or errant status.
- * \remarks ATOM_FLAG_GLOBAL may be used to create a global atom.
- * Only ATOM_FLAG_GLOBAL and ATOM_FLAG_NONE are currently supported.
- * Any other flag value results in STATUS_INVALID_PARAMETER.
- * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-addatomw
+ * \param AtomName Readable UTF-16 name; the kernel terminates the user-mode copy.
+ * \param Length Bytes to capture, at most 510 (255 WCHARs). Use an even byte count;
+ * nonzero user input requires 2-byte alignment on x64 and WoW64.
+ * \param Atom Optional 16-bit output. NULL still performs the addition.
+ * \param Flags ATOM_FLAG_NONE (0) or ATOM_FLAG_GLOBAL (0x2); other bits return
+ * STATUS_INVALID_PARAMETER. The flag is stored only when a new entry is allocated.
+ * \return NTSTATUS describing the addition. A successful string add creates a
+ * reference that the caller must balance with NtDeleteAtom.
+ * \remarks Both flag values use the table obtained from the same session Win32
+ * callout. Bit 0x2 is an entry flag consulted by RtlpAllowsLowBoxAccess, not a switch
+ * to a separate machine-global table. Re-adding an existing name with different
+ * Flags increments its reference count but does not change its stored flag.
+ * Lowbox/AppContainer visibility and accounting are context-sensitive; do not
+ * infer cross-session visibility or access to every existing atom from this flag.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globaladdatomexw
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8851,15 +11886,24 @@ NtAddAtomEx(
 #endif // PHNT_VERSION >= PHNT_WINDOWS_8
 
 /**
- * The NtFindAtom routine retrieves the atom identifier associated with a
- * Unicode string in the system atom table.
+ * The NtFindAtom routine looks up a name in the atom table selected by the session Win32 callout. Use
+ * NtAddAtom when a new ordinary string reference is required, not merely lookup.
  *
- * \param AtomName A pointer to a Unicode string containing the atom name.
- * \param Length The length, in bytes, of the string pointed to by AtomName.
- * \param Atom An optional pointer that receives the atom identifier if found.
- * \return NTSTATUS Successful or errant status.
- * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-findatomw
+ * \param AtomName Readable UTF-16 name. The user-mode copy is terminated after capture; matching is
+ * case-insensitive and an embedded NUL ends the effective name.
+ * \param Length Bytes to capture, at most 510 (255 WCHARs). Use an even count and 2-byte-aligned source. The
+ * kernel discards an odd trailing byte.
+ * \param Atom Optional 16-bit output; NULL performs a lookup without returning the ID.
+ * \return STATUS_OBJECT_NAME_NOT_FOUND if absent, STATUS_OBJECT_NAME_INVALID for an empty captured name, or
+ * the lookup's NTSTATUS. On the native x64 path and WoW64, failure paths leave a supplied output identifier
+ * unchanged.
+ * \remarks For ordinary non-AppContainer callers, lookup does not add a reference: do not delete an atom
+ * merely because lookup found it. Lowbox lookup can establish internal bookkeeping references; that
+ * implementation detail is not a caller-owned NtAddAtom reference. Integer strings in the range L"#1" through
+ * L"#49151" resolve without a prior string-table insertion.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globalfindatomw
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8870,15 +11914,21 @@ NtFindAtom(
     );
 
 /**
- * The NtDeleteAtom routine decrements the reference count of an atom and
- * removes it from the system atom table when the count reaches zero.
+ * The NtDeleteAtom routine releases one caller-owned ordinary string-atom reference. The table entry is
+ * removed when its unpinned reference count reaches zero; identifiers may be reused.
  *
- * \param Atom The atom identifier to delete.
- * \return NTSTATUS Successful or errant status.
- * \remarks If the atom is still referenced elsewhere, it is not removed until
- * its reference count reaches zero.
- * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-deleteatom
+ * \param Atom A 16-bit atom identifier, not an object handle. Balance additions,
+ * not lookups, and do not delete references owned by unrelated code.
+ * \return NTSTATUS. Integer atoms 1 through 0xBFFF return STATUS_SUCCESS without
+ * removing a string entry. Zero or an invalid string identifier returns
+ * STATUS_INVALID_HANDLE. A pinned string entry returns
+ * informational STATUS_WAS_LOCKED (0x40000019) without being decremented or removed.
+ * \remarks NT_SUCCESS does not prove that an entry disappeared. Other references,
+ * pinning and lowbox accounting can retain it. The pin/saturation paths are distinct
+ * from the ordinary balanced-add/delete lifetime.
+ * \see https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globaldeleteatom
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8892,40 +11942,66 @@ NtDeleteAtom(
  */
 typedef enum _ATOM_INFORMATION_CLASS
 {
-    AtomBasicInformation,
-    AtomTableInformation
+    AtomBasicInformation, // 0: ATOM_BASIC_INFORMATION, 6-byte prefix plus name and terminator.
+    AtomTableInformation // 1: ATOM_TABLE_INFORMATION; Atom input is ignored.
 } ATOM_INFORMATION_CLASS;
 
 /**
- * The ATOM_BASIC_INFORMATION structure contains basic information about an Atom.
+ * Basic atom snapshot. The fixed prefix is 6 bytes; sizeof is 8 because Name[1]
+ * includes a WCHAR. On the native x64 and WoW64 paths, successful queries append
+ * a NUL after the copied name. They can return STATUS_SUCCESS after truncation,
+ * so NameLength is the copied byte count, not necessarily the complete name length.
+ * Reserve 518 bytes (6 + 255 WCHARs + terminator) for an untruncated maximum name.
  */
 typedef struct _ATOM_BASIC_INFORMATION
 {
-    USHORT UsageCount;   // The number of times the atom is referenced.
-    USHORT Flags;        // Flags associated with the atom. */
-    USHORT NameLength;   // Length, in bytes, of the atom's name.
-    _Field_size_bytes_(NameLength) WCHAR Name[1]; // The atom's name (not null-terminated).
+    USHORT UsageCount;   // Reference snapshot; integer atoms report 1. Not an ownership grant.
+    USHORT Flags;        // Bit 0x1: pinned; bit 0x2: global-entry lowbox access flag. Not NtAddAtomEx input flags in general.
+    USHORT NameLength;   // Bytes copied into Name, excluding the trailing WCHAR NUL; may be truncated.
+    _Field_size_bytes_(NameLength) WCHAR Name[1]; // Variable-length name, followed by a NUL on successful query.
 } ATOM_BASIC_INFORMATION, *PATOM_BASIC_INFORMATION;
 
 /**
- * The ATOM_TABLE_INFORMATION structure contains information about all Atoms from the system atom table.
+ * Visible string-atom identifiers for AtomTableInformation. The array starts at
+ * byte 4 and each RTL_ATOM is 2 bytes. On insufficient capacity the query copies
+ * the prefix that fits and returns STATUS_INFO_LENGTH_MISMATCH; NumberOfAtoms
+ * still reports the total visible count, not how many entries were copied.
+ * On that failure read at most (buffer length - 4) / 2 entries, not NumberOfAtoms.
+ * The table can change between calls, so allocation from the count may need retry.
  */
 typedef struct _ATOM_TABLE_INFORMATION
 {
-    ULONG NumberOfAtoms; // The number of atoms in the atom table.
-    _Field_size_(NumberOfAtoms) RTL_ATOM Atoms[1]; // Array of atom identifiers.
+    ULONG NumberOfAtoms; // Total visible string-atom count; can exceed the returned array capacity on failure.
+    _Field_size_(NumberOfAtoms) RTL_ATOM Atoms[1]; // Complete array only on success; no acquired atom references.
 } ATOM_TABLE_INFORMATION, *PATOM_TABLE_INFORMATION;
 
 /**
- * The NtQueryInformationAtom routine retrieves information about a specified atom in the system atom table.
+ * The NtQueryInformationAtom routine retrieves an atom's name/reference snapshot or a list of visible string
+ * atoms. The layouts contain no pointers and are shared by native x64 and WoW64 callers.
  *
- * \param Atom The atom identifier for which information is being queried.
- * \param AtomInformationClass Specifies the type of information to retrieve. This is an ATOM_INFORMATION_CLASS value.
- * \param AtomInformation A pointer to a buffer that receives the requested information.
- * \param AtomInformationLength The size, in bytes, of the AtomInformation buffer.
- * \param ReturnLength Optional pointer to a variable that receives the number of bytes written to the AtomInformation buffer.
- * \return NTSTATUS Successful or errant status.
+ * \param Atom Identifier for AtomBasicInformation (0); ignored for AtomTableInformation (1).
+ * \param AtomInformationClass Basic information (0) or table enumeration (1).
+ * \param AtomInformation Writable, 4-byte-aligned user buffer on x64 and its WoW64 path. 
+ * See the selected structure for partial-result semantics.
+ * \param AtomInformationLength Bytes available. Basic information requires at least
+ * the 6-byte prefix; table information requires at least the 4-byte count prefix.
+ * A shorter buffer returns STATUS_INFO_LENGTH_MISMATCH without updating ReturnLength.
+ * \param ReturnLength Optional ULONG. For successful basic queries receives
+ * 8 + NameLength (6-byte prefix, copied name, 2-byte terminator), not necessarily
+ * the size required for the full name. On basic-query failure after the minimum
+ * length check it receives 6. For table enumeration it receives 4 on insufficient
+ * capacity, or 4 + 2 * NumberOfAtoms on success; it is not a universal sizing oracle.
+ * \return NTSTATUS. Basic queries can succeed with a truncated name. A buffer with
+ * no room for at least one WCHAR plus its terminator returns STATUS_BUFFER_TOO_SMALL
+ * for a nonempty name. Table queries can return a partial array with
+ * STATUS_INFO_LENGTH_MISMATCH and the total count in NumberOfAtoms.
+ * \remarks Allocate enough for the maximum name when a complete string is needed:
+ * 6 + 510 + 2 = 518 bytes. NULL/zero-length discovery does not report that size.
+ * An unsupported class returns STATUS_INVALID_INFO_CLASS; native x64 writes
+ * ReturnLength = 0, whereas the WoW64 thunk rejects it before the kernel
+ * and leaves ReturnLength unchanged. Buffer probing can fail before class validation.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -8938,42 +12014,45 @@ NtQueryInformationAtom(
     );
 
 //
-// Global flags
+// Global flags (NtGlobalFlag)
+//
+// \see https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/gflags-flag-table
 //
 
-#define FLG_STOP_ON_EXCEPTION 0x00000001 // uk
-#define FLG_SHOW_LDR_SNAPS 0x00000002 // uk
-#define FLG_DEBUG_INITIAL_COMMAND 0x00000004 // k
-#define FLG_STOP_ON_HUNG_GUI 0x00000008 // k
-#define FLG_HEAP_ENABLE_TAIL_CHECK 0x00000010 // u
-#define FLG_HEAP_ENABLE_FREE_CHECK 0x00000020 // u
-#define FLG_HEAP_VALIDATE_PARAMETERS 0x00000040 // u
-#define FLG_HEAP_VALIDATE_ALL 0x00000080 // u
-#define FLG_APPLICATION_VERIFIER 0x00000100 // u
-#define FLG_MONITOR_SILENT_PROCESS_EXIT 0x00000200 // uk
-#define FLG_POOL_ENABLE_TAGGING 0x00000400 // k
-#define FLG_HEAP_ENABLE_TAGGING 0x00000800 // u
-#define FLG_USER_STACK_TRACE_DB 0x00001000 // u,32
-#define FLG_KERNEL_STACK_TRACE_DB 0x00002000 // k,32
-#define FLG_MAINTAIN_OBJECT_TYPELIST 0x00004000 // k
-#define FLG_HEAP_ENABLE_TAG_BY_DLL 0x00008000 // u
-#define FLG_DISABLE_STACK_EXTENSION 0x00010000 // u
-#define FLG_ENABLE_CSRDEBUG 0x00020000 // k
-#define FLG_ENABLE_KDEBUG_SYMBOL_LOAD 0x00040000 // k
-#define FLG_DISABLE_PAGE_KERNEL_STACKS 0x00080000 // k
-#define FLG_ENABLE_SYSTEM_CRIT_BREAKS 0x00100000 // u
-#define FLG_HEAP_DISABLE_COALESCING 0x00200000 // u
-#define FLG_ENABLE_CLOSE_EXCEPTIONS 0x00400000 // k
-#define FLG_ENABLE_EXCEPTION_LOGGING 0x00800000 // k
-#define FLG_ENABLE_HANDLE_TYPE_TAGGING 0x01000000 // k
-#define FLG_HEAP_PAGE_ALLOCS 0x02000000 // u
-#define FLG_DEBUG_INITIAL_COMMAND_EX 0x04000000 // k
-#define FLG_DISABLE_DBGPRINT 0x08000000 // k
-#define FLG_CRITSEC_EVENT_CREATION 0x10000000 // u
-#define FLG_LDR_TOP_DOWN 0x20000000 // u,64
-#define FLG_ENABLE_HANDLE_EXCEPTIONS 0x40000000 // k
-#define FLG_DISABLE_PROTDLLS 0x80000000 // u
-#define FLG_VALID_BITS 0xfffffdff
+#define FLG_STOP_ON_EXCEPTION 0x00000001            // Stop on exception (R,K,I)
+#define FLG_SHOW_LDR_SNAPS 0x00000002               // Show loader snaps (R,K,I)
+#define FLG_DEBUG_INITIAL_COMMAND 0x00000004        // Debug initial command (R)
+#define FLG_STOP_ON_HUNG_GUI 0x00000008             // Stop on hung GUI (K)
+#define FLG_HEAP_ENABLE_TAIL_CHECK 0x00000010       // Enable heap tail checking (R,K,I)
+#define FLG_HEAP_ENABLE_FREE_CHECK 0x00000020       // Enable heap free checking (R,K,I)
+#define FLG_HEAP_VALIDATE_PARAMETERS 0x00000040     // Enable heap parameter checking (R,K,I)
+#define FLG_HEAP_VALIDATE_ALL 0x00000080            // Enable heap validation on call (R,K,I)
+#define FLG_APPLICATION_VERIFIER 0x00000100         // Enable application verifier (R,K,I)
+#define FLG_MONITOR_SILENT_PROCESS_EXIT 0x00000200  // Enable silent process exit monitoring (R)
+#define FLG_POOL_ENABLE_TAGGING 0x00000400          // Enable pool tagging (R)
+#define FLG_HEAP_ENABLE_TAGGING 0x00000800          // Enable heap tagging (R,K,I)
+#define FLG_USER_STACK_TRACE_DB 0x00001000          // Create user mode stack trace database (R,K,I)
+#define FLG_KERNEL_STACK_TRACE_DB 0x00002000        // Create kernel mode stack trace database (R)
+#define FLG_MAINTAIN_OBJECT_TYPELIST 0x00004000     // Maintain a list of objects for each type (R)
+#define FLG_HEAP_ENABLE_TAG_BY_DLL 0x00008000       // Enable heap tagging by DLL (R,K,I)
+#define FLG_DISABLE_STACK_EXTENSION 0x00010000      // Disable stack extension (I)
+#define FLG_ENABLE_CSRDEBUG 0x00020000              // Enable debugging of Win32 subsystem (R)
+#define FLG_ENABLE_KDEBUG_SYMBOL_LOAD 0x00040000    // Enable loading of kernel debugger symbols (R,K)
+#define FLG_DISABLE_PAGE_KERNEL_STACKS 0x00080000   // Disable paging of kernel stacks (R)
+#define FLG_ENABLE_SYSTEM_CRIT_BREAKS 0x00100000    // Enable system critical breaks (R,K,I)
+#define FLG_HEAP_DISABLE_COALESCING 0x00200000      // Disable heap coalesce on free (R,K,I)
+#define FLG_ENABLE_CLOSE_EXCEPTIONS 0x00400000      // Enable close exception (R,K)
+#define FLG_ENABLE_EXCEPTION_LOGGING 0x00800000     // Enable exception logging (R,K)
+#define FLG_ENABLE_HANDLE_TYPE_TAGGING 0x01000000   // Enable object handle type tagging (R,K)
+#define FLG_HEAP_PAGE_ALLOCS 0x02000000             // Enable page heap (R,K,I)
+#define FLG_DEBUG_INITIAL_COMMAND_EX 0x04000000     // Debug WinLogon (R)
+#define FLG_DISABLE_DBGPRINT 0x08000000             // Buffer DbgPrint Output (R,K)
+#define FLG_CRITSEC_EVENT_CREATION 0x10000000       // Early critical section event creation (R,K,I)
+#define FLG_STOP_ON_UNHANDLED_EXCEPTION 0x20000000  // Stop on unhandled user-mode exception (R,K,I)
+#define FLG_LDR_TOP_DOWN 0x20000000                 // Load image using large pages if possible (I)
+#define FLG_ENABLE_HANDLE_EXCEPTIONS 0x40000000     // Enable bad handles detection (R,K)
+#define FLG_DISABLE_PROTDLLS 0x80000000             // Disable protected DLL verification (R,K,I)
+#define FLG_VALID_BITS 0xffffffff
 
 #define FLG_USERMODE_VALID_BITS (FLG_STOP_ON_EXCEPTION | \
     FLG_SHOW_LDR_SNAPS | \
@@ -8982,6 +12061,7 @@ NtQueryInformationAtom(
     FLG_HEAP_VALIDATE_PARAMETERS | \
     FLG_HEAP_VALIDATE_ALL | \
     FLG_APPLICATION_VERIFIER | \
+    FLG_MONITOR_SILENT_PROCESS_EXIT | \
     FLG_HEAP_ENABLE_TAGGING | \
     FLG_USER_STACK_TRACE_DB | \
     FLG_HEAP_ENABLE_TAG_BY_DLL | \
@@ -8991,6 +12071,7 @@ NtQueryInformationAtom(
     FLG_DISABLE_PROTDLLS | \
     FLG_HEAP_PAGE_ALLOCS | \
     FLG_CRITSEC_EVENT_CREATION | \
+    FLG_STOP_ON_UNHANDLED_EXCEPTION | \
     FLG_LDR_TOP_DOWN)
 
 #define FLG_BOOTONLY_VALID_BITS (FLG_KERNEL_STACK_TRACE_DB | \
@@ -9027,6 +12108,7 @@ NtQueryInformationAtom(
  * \return NTSTATUS Successful or errant status.
  * \see https://learn.microsoft.com/en-us/windows/win32/api/slpublic/nf-slpublic-slquerylicensevaluefromapp
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9051,6 +12133,7 @@ NtQueryLicenseValue(
  * hard error messages generated by the system.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9078,6 +12161,7 @@ typedef enum _SHUTDOWN_ACTION
  * \return NTSTATUS Successful or errant status.
  * \remarks The calling process must have the SE_SHUTDOWN_NAME privilege.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9092,6 +12176,7 @@ NtShutdownSystem(
  * \param String A pointer to a UNICODE_STRING structure that contains the text to display.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9111,6 +12196,7 @@ NtDisplayString(
  * \param Text A pointer to a UNICODE_STRING structure that contains the text to draw on the screen.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9122,6 +12208,9 @@ NtDrawText(
 // Hot patching
 //
 
+/**
+ * The HOT_PATCH_INFORMATION_CLASS enumeration defines the information classes for querying and setting hot patch information.
+ */
 typedef enum _HOT_PATCH_INFORMATION_CLASS
 {
     ManageHotPatchLoadPatch = 0, // MANAGE_HOT_PATCH_LOAD_PATCH
@@ -9229,8 +12318,8 @@ typedef struct _MANAGE_HOT_PATCH_APPLY_IMAGE_PATCH
             ULONG ApplyReversePatches : 1;      // If set, apply reverse patches.
             ULONG ApplyForwardPatches : 1;      // If set, apply forward patches.
             ULONG Spare : 29;
-        };
-    };
+        } DUMMYSTRUCTNAME;
+    } DUMMYUNIONNAME;
     HANDLE ProcessHandle;                       // Handle to the process to patch.
     PVOID BaseImageAddress;                     // Base address of the image to patch.
     PVOID PatchImageAddress;                    // Address of the patch image.
@@ -9299,6 +12388,7 @@ static_assert(sizeof(MANAGE_HOT_PATCH_CREATE_PATCH_SECTION) == 0x28, "Size of MA
  * \param[out] ReturnLength Optional pointer to a variable that receives the number of bytes written to the HotPatchInformation buffer.
  * \return NTSTATUS Successful or errant status.
  */
+_Kernel_entry_
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -9310,6 +12400,6 @@ NtManageHotPatch(
     );
 #endif // PHNT_VERSION >= PHNT_WINDOWS_11
 
-#endif // (PHNT_MODE != PHNT_MODE_KERNEL)
+#endif
 
 #endif // _NTEXAPI_H

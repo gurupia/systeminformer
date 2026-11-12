@@ -42,6 +42,9 @@
     <ClCompile Include="chdlg.c">
       <Filter>System Informer</Filter>
     </ClCompile>
+    <ClCompile Include="envdlg.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
     <ClCompile Include="chproc.c">
       <Filter>System Informer</Filter>
     </ClCompile>
@@ -72,9 +75,6 @@
     <ClCompile Include="itemtips.c">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="jobprp.c">
-      <Filter>System Informer</Filter>
-    </ClCompile>
     <ClCompile Include="log.c">
       <Filter>System Informer</Filter>
     </ClCompile>
@@ -88,6 +88,9 @@
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="mdump.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="memcfg.c">
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="memedit.c">
@@ -162,10 +165,10 @@
     <ClCompile Include="thrdprv.c">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="thrdstk.c">
+    <ClCompile Include="thrdctx.c">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="tokprp.c">
+    <ClCompile Include="thrdstk.c">
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="srvctl.c">
@@ -267,10 +270,10 @@
     <ClCompile Include="prpgenv.c">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="prpghndl.c">
+    <ClCompile Include="envdlg.c">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="prpgjob.c">
+    <ClCompile Include="prpghndl.c">
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="prpgsrv.c">
@@ -333,9 +336,6 @@
     <ClCompile Include="notiftoast.cpp">
       <Filter>System Informer</Filter>
     </ClCompile>
-    <ClCompile Include="ksidbg.c">
-      <Filter>System Informer</Filter>
-    </ClCompile>
     <ClCompile Include="thrdstks.c">
       <Filter>System Informer</Filter>
     </ClCompile>
@@ -349,6 +349,21 @@
       <Filter>System Informer</Filter>
     </ClCompile>
     <ClCompile Include="netsup.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="informerwnd.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="runaspkg.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="prpgjob.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="tokprp.c">
+      <Filter>System Informer</Filter>
+    </ClCompile>
+    <ClCompile Include="jobprp.c">
       <Filter>System Informer</Filter>
     </ClCompile>
   </ItemGroup>
@@ -435,6 +450,9 @@
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="include\netprv.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="include\netsup.h">
       <Filter>Headers</Filter>
     </ClInclude>
     <ClInclude Include="include\modprv.h">
@@ -555,7 +573,7 @@
     <ResourceCompile Include="version.rc">
       <Filter>Resources</Filter>
     </ResourceCompile>
-    <ResourceCompile Include="..\kphlib\include\sistatus.rc">
+    <ResourceCompile Include="$(SystemInformerRoot)kphlib\bin\$(Configuration)$(PlatformArchitecture)\sistatus.rc">
       <Filter>Resources</Filter>
     </ResourceCompile>
   </ItemGroup>

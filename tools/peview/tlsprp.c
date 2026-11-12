@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2019-2022
+ *     dmex    2019-2026
  *
  */
 
@@ -148,7 +148,7 @@ INT_PTR CALLBACK PvpPeTlsDlgProc(
             }
         }
         break;
-    case WM_DPICHANGED:
+    case WM_DPICHANGED_AFTERPARENT:
         {
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
         }
@@ -176,7 +176,7 @@ INT_PTR CALLBACK PvpPeTlsDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

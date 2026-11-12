@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2010-2016
- *     dmex    2018-2024
+ *     dmex    2018-2026
  *
  */
 
@@ -16,100 +16,6 @@
 // This file contains inlined native API wrapper functions. These functions were previously
 // exported, but are now inlined because they are extremely simple wrappers around equivalent native
 // API functions.
-
-/**
- * Gets basic information for a event.
- *
- * \param EventHandle A handle to a event. The handle must have EVENT_QUERY_STATE access.
- * \param BasicInformation A variable which receives the information.
- */
-FORCEINLINE
-NTSTATUS
-PhGetEventBasicInformation(
-    _In_ HANDLE EventHandle,
-    _Out_ PEVENT_BASIC_INFORMATION BasicInformation
-    )
-{
-    return NtQueryEvent(
-        EventHandle,
-        EventBasicInformation,
-        BasicInformation,
-        sizeof(EVENT_BASIC_INFORMATION),
-        NULL
-        );
-}
-
-FORCEINLINE
-NTSTATUS
-PhOpenMutant(
-    _Out_ PHANDLE MutantHandle,
-    _In_ ACCESS_MASK DesiredAccess,
-    _In_opt_ HANDLE RootDirectory,
-    _In_opt_ PCPH_STRINGREF ObjectName
-    )
-{
-    NTSTATUS status;
-    UNICODE_STRING objectName;
-    OBJECT_ATTRIBUTES objectAttributes;
-
-    if (ObjectName)
-    {
-        if (!PhStringRefToUnicodeString(ObjectName, &objectName))
-            return STATUS_NAME_TOO_LONG;
-    }
-    else
-    {
-        RtlInitEmptyUnicodeString(&objectName, NULL, 0);
-    }
-
-    InitializeObjectAttributes(
-        &objectAttributes,
-        &objectName,
-        OBJ_CASE_INSENSITIVE,
-        RootDirectory,
-        NULL
-        );
-
-    status = NtOpenMutant(
-        MutantHandle,
-        DesiredAccess,
-        &objectAttributes
-        );
-
-    return status;
-}
-
-FORCEINLINE
-NTSTATUS
-PhGetMutantBasicInformation(
-    _In_ HANDLE MutantHandle,
-    _Out_ PMUTANT_BASIC_INFORMATION BasicInformation
-    )
-{
-    return NtQueryMutant(
-        MutantHandle,
-        MutantBasicInformation,
-        BasicInformation,
-        sizeof(MUTANT_BASIC_INFORMATION),
-        NULL
-        );
-}
-
-FORCEINLINE
-NTSTATUS
-PhGetMutantOwnerInformation(
-    _In_ HANDLE MutantHandle,
-    _Out_ PMUTANT_OWNER_INFORMATION OwnerInformation
-    )
-{
-    return NtQueryMutant(
-        MutantHandle,
-        MutantOwnerInformation,
-        OwnerInformation,
-        sizeof(MUTANT_OWNER_INFORMATION),
-        NULL
-        );
-}
 
 FORCEINLINE
 NTSTATUS
@@ -217,31 +123,6 @@ PhGetProcessIsCetEnabled(
         *IsCetEnabled = !!policyInfo.UserShadowStackPolicy.EnableUserShadowStack;
         *IsCetStrictModeEnabled = !!policyInfo.UserShadowStackPolicy.EnableUserShadowStackStrictMode;
 #endif
-    }
-
-    return status;
-}
-
-FORCEINLINE
-NTSTATUS
-NTAPI
-PhGetSystemHypervisorSharedPageInformation(
-    _Out_ PSYSTEM_HYPERVISOR_USER_SHARED_DATA* HypervisorSharedUserVa
-    )
-{
-    NTSTATUS status;
-    SYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION HypervisorSharedPageInfo;
-
-    status = NtQuerySystemInformation(
-        SystemHypervisorSharedPageInformation,
-        &HypervisorSharedPageInfo,
-        sizeof(SYSTEM_HYPERVISOR_SHARED_PAGE_INFORMATION),
-        NULL
-        );
-
-    if (NT_SUCCESS(status))
-    {
-        *HypervisorSharedUserVa = HypervisorSharedPageInfo.HypervisorSharedUserVa;
     }
 
     return status;

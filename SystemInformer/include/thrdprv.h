@@ -6,7 +6,7 @@
  * Authors:
  *
  *     wj32    2009-2016
- *     dmex    2017-2023
+ *     dmex    2017-2026
  *
  */
 
@@ -55,6 +55,7 @@ typedef struct _PH_THREAD_ITEM
     KWAIT_REASON WaitReason;
 
     HANDLE ThreadHandle;
+    HANDLE FreezeHandle;
 
     PPH_STRING ServiceName;
 
@@ -144,7 +145,7 @@ VOID PhLoadSymbolsThreadProvider(
     );
 
 PPH_THREAD_ITEM PhCreateThreadItem(
-    _In_ CLIENT_ID ClientId
+    _In_ PCLIENT_ID ClientId
     );
 
 PPH_THREAD_ITEM PhReferenceThreadItem(

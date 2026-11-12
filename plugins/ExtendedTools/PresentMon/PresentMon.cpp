@@ -4,10 +4,15 @@
 #include "../exttools.h"
 #include "../framemon.h"
 #include "PresentMon.hpp"
+#include <atomic>
 
-static bool OutputThreadCreated = false;
-static bool ConsumeThreadCreated = false;
-static LONG QuitOutputThread = 0;
+// Process terminations still presenting are considered stale after this long.
+#define ET_FPS_STALE_PROCESS_TIMEOUT (10 * 1000)
+
+static HANDLE OutputThreadHandle = nullptr;
+static HANDLE ConsumerThreadHandle = nullptr;
+static HANDLE OutputWakeEvent = nullptr;
+static std::atomic<bool> QuitOutputThread{ false };
 static std::unordered_map<ULONG, ProcessInfo> ProcessesHashTable;
 
 static ProcessInfo* GetProcessInfo(
@@ -16,42 +21,60 @@ static ProcessInfo* GetProcessInfo(
 {
     auto result = ProcessesHashTable.emplace(ProcessId, ProcessInfo());
     ProcessInfo* processInfo = &result.first->second;
-    bool newProcess = result.second;
 
-    if (newProcess)
+    // Deferred resolution: a process can start presenting before System Informer's
+    // process provider discovers it (~1s), in which case PhReferenceProcessItem
+    // fails. Keep aggregating regardless and retry the reference each pass; once we
+    // hold it we also get PID-reuse protection and termination detection.
+    if (!processInfo->ProcessItem)
     {
-        PhMoveReference(
-            &processInfo->ProcessItem,
-            PhReferenceProcessItem(UlongToHandle(ProcessId))
-            );
+        processInfo->ProcessItem = PhReferenceProcessItem(UlongToHandle(ProcessId));
     }
+
+    processInfo->LastPresentTickCount = NtGetTickCount64();
 
     return processInfo;
 }
 
 // Check if any realtime processes terminated and add them to the terminated list.
-// We assume that the process terminated now, which is wrong but conservative
-// and functionally ok because no other process should start with the same PID
-// as long as we're still holding a handle to it.
+// For processes we hold a reference to, termination is detected via the removed
+// state; deferring the actual removal (below, in ProcessEvents) is required
+// because a present can complete after its process terminates. Processes we never
+// managed to reference are evicted directly once they stop presenting (stale), so
+// the table does not grow without bound.
 static void CheckForTerminatedRealtimeProcesses(
     std::vector<std::pair<ULONG, uint64_t>>* terminatedProcesses
     ) noexcept
 {
-    for (auto& pair : ProcessesHashTable)
+    ULONG64 tickCount = NtGetTickCount64();
+
+    for (auto it = ProcessesHashTable.begin(); it != ProcessesHashTable.end(); )
     {
-        ULONG processId = pair.first;
-        ProcessInfo* processInfo = &pair.second;
+        ULONG processId = it->first;
+        ProcessInfo* processInfo = &it->second;
 
-        if (
-            processInfo->ProcessItem &&
-            processInfo->ProcessItem->State & PH_PROCESS_ITEM_REMOVED
-            )
+        if (processInfo->ProcessItem)
         {
-            LARGE_INTEGER performanceCounter;
-            PhQueryPerformanceCounter(&performanceCounter);
-            terminatedProcesses->emplace_back(processId, performanceCounter.QuadPart);
+            if (processInfo->ProcessItem->State & PH_PROCESS_ITEM_REMOVED)
+            {
+                LARGE_INTEGER performanceCounter;
+                PhQueryPerformanceCounter(&performanceCounter);
+                terminatedProcesses->emplace_back(processId, performanceCounter.QuadPart);
 
-            PhClearReference(&processInfo->ProcessItem);
+                PhClearReference(&processInfo->ProcessItem);
+            }
+
+            ++it;
+        }
+        else if (tickCount - processInfo->LastPresentTickCount >= ET_FPS_STALE_PROCESS_TIMEOUT)
+        {
+            // Never resolved a process item and it has stopped presenting; drop it
+            // directly (the deferred-termination path relies on a held reference).
+            it = ProcessesHashTable.erase(it);
+        }
+        else
+        {
+            ++it;
         }
     }
 }
@@ -89,10 +112,10 @@ static void AddPresents(
             break;
         }
 
-        // Look up the swapchain this present belongs to.
+        // Look up the swapchain this present belongs to. Note we aggregate even
+        // when the process item is not yet resolved (see GetProcessInfo); metrics
+        // are published by PID and do not require holding the reference.
         auto processInfo = GetProcessInfo(presentEvent->ProcessId);
-        if (!processInfo->ProcessItem)
-            continue;
 
         auto result = processInfo->mSwapChain.emplace(presentEvent->SwapChainAddress, SwapChainData());
         auto chain = &result.first->second;
@@ -244,41 +267,55 @@ VOID PresentMonUpdateProcessStats(
     if (ProcessInfo.mSwapChain.empty())
         return;
 
+    // A process can present on multiple swapchains. Merging them by per-field
+    // maximum (as this did previously) is internally inconsistent -- it can pair
+    // the max FPS of one chain with the max frame-time of another. Instead pick
+    // the single most-active swapchain (most presents in the history window) and
+    // report that chain's coherent set of metrics.
+    SwapChainData const* bestChain = nullptr;
+
     for (auto const& pair : ProcessInfo.mSwapChain)
     {
-        //auto address = pair.first;
-        auto const& chain = pair.second;
+        auto const& candidate = pair.second;
 
-        // Only show swapchain data if there at least two presents in the history.
-        if (chain.mPresentHistoryCount < 2)
+        if (candidate.mPresentHistoryCount < 2)
             continue;
 
+        if (!bestChain || candidate.mPresentHistoryCount > bestChain->mPresentHistoryCount)
+            bestChain = &candidate;
+    }
+
+    if (!bestChain)
+        return;
+
+    {
+        auto const& chain = *bestChain;
         PresentEvent* displayN = nullptr;
         auto const& present0 = *chain.mPresentHistory[(chain.mNextPresentIndex - chain.mPresentHistoryCount) % SwapChainData::PRESENT_HISTORY_MAX_COUNT];
         auto const& presentN = *chain.mPresentHistory[(chain.mNextPresentIndex - 1) % SwapChainData::PRESENT_HISTORY_MAX_COUNT];
         auto const& lastPresented = *chain.mPresentHistory[(chain.mNextPresentIndex - 2) % SwapChainData::PRESENT_HISTORY_MAX_COUNT];
         USHORT runtime = static_cast<USHORT>(presentN.Runtime);
         USHORT presentMode = static_cast<USHORT>(presentN.PresentMode);
-        FLOAT cpuAvg;
-        FLOAT dspAvg = 0.0;
-        FLOAT latAvg = 0.0;
-        FLOAT frameLatency = 0;
-        FLOAT framesPerSecond = 0;
-        FLOAT displayLatency = 0;
-        FLOAT displayFramesPerSecond = 0;
-        FLOAT msBetweenPresents;
-        FLOAT msInPresentApi;
-        FLOAT msUntilRenderComplete = 0.0;
-        FLOAT msUntilDisplayed = 0.0;
+        DOUBLE cpuAvg;
+        DOUBLE dspAvg = 0.0;
+        DOUBLE latAvg = 0.0;
+        DOUBLE frameLatency = 0.0;
+        DOUBLE framesPerSecond = 0.0;
+        DOUBLE displayLatency = 0.0;
+        DOUBLE displayFramesPerSecond = 0.0;
+        DOUBLE msBetweenPresents;
+        DOUBLE msInPresentApi;
+        DOUBLE msUntilRenderComplete = 0.0;
+        DOUBLE msUntilDisplayed = 0.0;
 
         cpuAvg = QpcDeltaToSeconds(presentN.PresentStartTime - present0.PresentStartTime) / (chain.mPresentHistoryCount - 1);
-        msBetweenPresents = 1000.f * QpcDeltaToSeconds(presentN.PresentStartTime - lastPresented.PresentStartTime);
-        msInPresentApi = 1000.f * QpcDeltaToSeconds(presentN.PresentStopTime);
+        msBetweenPresents = 1000.0 * QpcDeltaToSeconds(presentN.PresentStartTime - lastPresented.PresentStartTime);
+        msInPresentApi = 1000.0 * QpcDeltaToSeconds(presentN.PresentStopTime);
 
         if (cpuAvg)
         {
-            frameLatency = 1000.f * cpuAvg;
-            framesPerSecond = 1.f / cpuAvg;
+            frameLatency = 1000.0 * cpuAvg;
+            framesPerSecond = 1.0 / cpuAvg;
         }
 
         //if (args.mTrackDisplay)
@@ -317,22 +354,22 @@ VOID PresentMonUpdateProcessStats(
 
         if (latAvg)
         {
-            displayLatency = 1000.f * latAvg;
+            displayLatency = 1000.0 * latAvg;
         }
 
         if (dspAvg)
         {
-            displayFramesPerSecond = 1.f / dspAvg;
+            displayFramesPerSecond = 1.0 / dspAvg;
         }
 
         if (presentN.ReadyTime > 0)
         {
-            msUntilRenderComplete = 1000.f * QpcDeltaToSeconds(presentN.ReadyTime - presentN.PresentStartTime);
+            msUntilRenderComplete = 1000.0 * QpcDeltaToSeconds(presentN.ReadyTime - presentN.PresentStartTime);
         }
 
         if (presentN.FinalState == PresentResult::Presented)
         {
-            msUntilDisplayed = 1000.f * QpcDeltaToSeconds(presentN.ScreenTime - presentN.PresentStartTime);
+            msUntilDisplayed = 1000.0 * QpcDeltaToSeconds(presentN.ScreenTime - presentN.PresentStartTime);
 
             //if (chain.mLastDisplayedPresentIndex != UINT32_MAX)
             //{
@@ -354,6 +391,28 @@ VOID PresentMonUpdateProcessStats(
             runtime,
             presentMode
             );
+
+        // Additional metrics are computed but not yet surfaced in the UI; emit
+        // them to the debug console (DEBUG builds only -- dprintf compiles away
+        // in release). presentedFPS counts every present; displayedFPS counts
+        // only presents that reached the screen (so presentedFPS - displayedFPS
+        // reflects dropped frames).
+        //dprintf(
+        //    "[FPS] pid=%lu presentedFPS=%.1f displayedFPS=%.1f frameMs=%.2f "
+        //    "msBetweenPresents=%.2f msInPresentApi=%.2f renderCompleteMs=%.2f "
+        //    "displayedMs=%.2f displayLatencyMs=%.2f runtime=%S mode=%S\n",
+        //    ProcessId,
+        //    framesPerSecond,
+        //    displayFramesPerSecond,
+        //    frameLatency,
+        //    msBetweenPresents,
+        //    msInPresentApi,
+        //    msUntilRenderComplete,
+        //    msUntilDisplayed,
+        //    displayLatency,
+        //    EtRuntimeToString(runtime),
+        //    EtPresentModeToString(presentMode)
+        //    );
     }
 }
 
@@ -371,11 +430,8 @@ NTSTATUS PresentMonOutputThread(
     presentEvents.reserve(4096);
     terminatedProcesses.reserve(16);
 
-    for (;;)
+    while (!QuitOutputThread.load(std::memory_order_seq_cst))
     {
-        if (QuitOutputThread)
-            break;
-
         // Copy and process all the collected events, and update the various tracking and statistics data structures.
         ProcessEvents(&presentEvents, &terminatedProcesses); // lostPresentEvents
 
@@ -383,27 +439,40 @@ NTSTATUS PresentMonOutputThread(
         EtClearGpuFrameHashTable();
         for (auto const& pair : ProcessesHashTable)
         {
-            if (QuitOutputThread)
+            if (QuitOutputThread.load(std::memory_order_seq_cst))
                 break;
 
             PresentMonUpdateProcessStats(pair.first, pair.second);
         }
         EtUnlockGpuFrameHashTable();
 
-        if (QuitOutputThread)
+        if (QuitOutputThread.load(std::memory_order_seq_cst))
             break;
 
         // Update tracking information.
         CheckForTerminatedRealtimeProcesses(&terminatedProcesses);
 
-        if (QuitOutputThread)
+        // Report ETW event loss (DEBUG builds only).
+        EtFramesQueryEtwStatus();
+
+        if (QuitOutputThread.load(std::memory_order_seq_cst))
             break;
 
-        // Sleep to reduce overhead.
-        PhDelayExecution(1000);
+        // Wait until the next process-provider update signals us (see
+        // EtFramesSignalUpdate), or at most one second, so that we recompute
+        // stats just before the UI reads them rather than churning ~10x/second.
+        if (OutputWakeEvent)
+        {
+            LARGE_INTEGER timeout;
+            NtWaitForSingleObject(OutputWakeEvent, FALSE, PhTimeoutFromMilliseconds(&timeout, 1000));
+        }
+        else
+        {
+            PhDelayExecution(1000);
+        }
     }
 
-    // Close all handles
+    // Release any process references we still hold.
     for (auto& pair : ProcessesHashTable)
     {
        auto processInfo = &pair.second;
@@ -423,26 +492,72 @@ VOID StartOutputThread(
     VOID
     ) noexcept
 {
-    if (!OutputThreadCreated)
+    if (!OutputThreadHandle)
     {
         HANDLE threadHandle;
+
+        if (!OutputWakeEvent)
+        {
+            NtCreateEvent(&OutputWakeEvent, EVENT_ALL_ACCESS, nullptr, SynchronizationEvent, FALSE);
+        }
 
         if (NT_SUCCESS(PhCreateThreadEx(&threadHandle, PresentMonOutputThread, nullptr)))
         {
             PhSetThreadName(threadHandle, L"FpsEtwOutputThread");
-            NtClose(threadHandle);
+            OutputThreadHandle = threadHandle;
         }
-
-        OutputThreadCreated = true;
     }
 }
 
-VOID StopOutputThread(
+VOID SignalStopFpsThreads(
     VOID
     ) noexcept
 {
-    InterlockedExchange(&QuitOutputThread, 1);
-    //NtWaitForSingleObject(OutputThreadHandle, FALSE, nullptr);
+    QuitOutputThread.store(true, std::memory_order_seq_cst);
+
+    // Wake the output thread so its wait returns immediately instead of running
+    // out the one-second timeout.
+    if (OutputWakeEvent)
+    {
+        NtSetEvent(OutputWakeEvent, nullptr);
+    }
+}
+
+BOOLEAN IsFpsTraceStopping(
+    VOID
+    )
+{
+    return QuitOutputThread.load(std::memory_order_seq_cst);
+}
+
+VOID EtFramesSignalUpdate(
+    VOID
+    )
+{
+    if (OutputWakeEvent && !QuitOutputThread.load(std::memory_order_seq_cst))
+    {
+        NtSetEvent(OutputWakeEvent, nullptr);
+    }
+}
+
+VOID WaitForOutputThreadToExit(
+    VOID
+    ) noexcept
+{
+    SignalStopFpsThreads();
+
+    if (OutputThreadHandle)
+    {
+        NtWaitForSingleObject(OutputThreadHandle, FALSE, nullptr);
+        NtClose(OutputThreadHandle);
+        OutputThreadHandle = nullptr;
+    }
+
+    if (OutputWakeEvent)
+    {
+        NtClose(OutputWakeEvent);
+        OutputWakeEvent = nullptr;
+    }
 }
 
 _Function_class_(USER_THREAD_START_ROUTINE)
@@ -450,29 +565,33 @@ static NTSTATUS PresentMonTraceThread(
     _In_ PVOID ThreadParameter
     ) noexcept
 {
-    ULONG result = 0;
     TRACEHANDLE traceHandle = reinterpret_cast<TRACEHANDLE>(ThreadParameter);
 
     PhSetThreadName(NtCurrentThread(), L"FpsEtwConsumerThread");
     PhSetThreadBasePriority(NtCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 
-    while (TRUE)
+    while (!QuitOutputThread.load(std::memory_order_seq_cst))
     {
-        while (!QuitOutputThread && (result = ProcessTrace(&traceHandle, 1, nullptr, nullptr)) == ERROR_SUCCESS)
-            NOTHING;
+        // ProcessTrace blocks delivering events until the session is stopped
+        // (CloseTrace unblocks it during shutdown) or the session is lost.
+        ProcessTrace(&traceHandle, 1, nullptr, nullptr);
 
-        if (QuitOutputThread)
+        if (QuitOutputThread.load(std::memory_order_seq_cst))
             break;
 
-        if (result == ERROR_WMI_INSTANCE_NOT_FOUND)
-        {
-            StartFpsTraceSession();
-        }
+        // The session ended unexpectedly (e.g. stopped by another controller).
+        // Back off, then rebuild the session and continue -- without recursing
+        // into StartFpsTraceSession (which would spawn duplicate threads) and
+        // without leaking the old trace handle.
+        PhDelayExecution(1000);
 
-        if (!QuitOutputThread)
-        {
-            PhDelayExecution(1000);
-        }
+        if (QuitOutputThread.load(std::memory_order_seq_cst))
+            break;
+
+        traceHandle = RestartFpsTraceSession();
+
+        if (traceHandle == INVALID_PROCESSTRACE_HANDLE)
+            break;
     }
 
     return STATUS_SUCCESS;
@@ -482,16 +601,19 @@ VOID StartConsumerThread(
     _In_ TRACEHANDLE TraceHandle
     )
 {
-    if (!ConsumeThreadCreated)
+    if (!ConsumerThreadHandle)
     {
         HANDLE threadHandle;
 
+        // Reset the shutdown flag here (before either worker thread is created)
+        // so the monitor can be stopped and restarted without an app restart.
+        QuitOutputThread.store(false, std::memory_order_seq_cst);
+
         if (NT_SUCCESS(PhCreateThreadEx(&threadHandle, PresentMonTraceThread, reinterpret_cast<PVOID>(TraceHandle))))
         {
-            NtClose(threadHandle);
+            PhSetThreadName(threadHandle, L"FpsEtwConsumerThread");
+            ConsumerThreadHandle = threadHandle;
         }
-
-        ConsumeThreadCreated = TRUE;
     }
 }
 
@@ -499,6 +621,12 @@ VOID WaitForConsumerThreadToExit(
     VOID
     )
 {
-    InterlockedExchange(&QuitOutputThread, 1);
-    //NtWaitForSingleObject(ConsumerThreadHandle, FALSE, nullptr);
+    QuitOutputThread.store(true, std::memory_order_seq_cst);
+
+    if (ConsumerThreadHandle)
+    {
+        NtWaitForSingleObject(ConsumerThreadHandle, FALSE, nullptr);
+        NtClose(ConsumerThreadHandle);
+        ConsumerThreadHandle = nullptr;
+    }
 }

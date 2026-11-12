@@ -5,7 +5,7 @@
  *
  * Authors:
  *
- *     dmex    2023
+ *     dmex    2023-2026
  *
  */
 
@@ -550,7 +550,7 @@ INT_PTR CALLBACK PvpPeVersionInfoDlgProc(
             context->ListViewHandle = GetDlgItem(hwndDlg, IDC_LIST);
 
             PhSetListViewStyle(context->ListViewHandle, TRUE, TRUE);
-            PhSetControlTheme(context->ListViewHandle, L"explorer");
+            PvConfigListViewFont(hwndDlg, context->ListViewHandle);
             PhAddListViewColumn(context->ListViewHandle, 0, 0, 0, LVCFMT_LEFT, 40, L"#");
             PhAddListViewColumn(context->ListViewHandle, 1, 1, 1, LVCFMT_LEFT, 200, L"Name");
             PhAddListViewColumn(context->ListViewHandle, 2, 2, 2, LVCFMT_LEFT, 250, L"Value");
@@ -569,7 +569,15 @@ INT_PTR CALLBACK PvpPeVersionInfoDlgProc(
 
             PvEnumVersionInfo(context->ListViewHandle);
 
-            PhInitializeWindowTheme(hwndDlg, PhEnableThemeSupport);
+            // Must run before PvThemeApplyListView: phlib's initializer resets the
+            // listview colors to its own palette. (dmex)
+            PvThemeInitializePageDialog(hwndDlg, PhEnableThemeSupport);
+            PvThemeApplyListView(context->ListViewHandle);
+        }
+        break;
+    case WM_THEMECHANGED:
+        {
+            PvThemeApplyListView(context->ListViewHandle);
         }
         break;
     case WM_DESTROY:
@@ -593,7 +601,7 @@ INT_PTR CALLBACK PvpPeVersionInfoDlgProc(
             }
         }
         break;
-    case WM_DPICHANGED:
+    case WM_DPICHANGED_AFTERPARENT:
         {
             PhLayoutManagerUpdate(&context->LayoutManager, LOWORD(wParam));
         }
@@ -630,7 +638,7 @@ INT_PTR CALLBACK PvpPeVersionInfoDlgProc(
             SetBkMode((HDC)wParam, TRANSPARENT);
             SetTextColor((HDC)wParam, RGB(0, 0, 0));
             SetDCBrushColor((HDC)wParam, RGB(255, 255, 255));
-            return (INT_PTR)PhGetStockBrush(DC_BRUSH);
+            return (INT_PTR)PhStockDcBrush;
         }
         break;
     }

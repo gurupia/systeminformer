@@ -5,7 +5,8 @@
  *
  * Authors:
  *
- *     dmex    2016-2024
+ *     dmex    2016-2026
+ *     jxy-s   2026
  *
  */
 
@@ -20,8 +21,6 @@ CONST SERVICE_INFO UploadServiceInfo[] =
     { MENUITEM_HYBRIDANALYSIS_UPLOAD_SERVICE, L"hybrid-analysis.com", L"/api/v2/submit/file", L"file" },
     { MENUITEM_VIRUSTOTAL_UPLOAD, L"www.virustotal.com", L"???", L"file" },
     { MENUITEM_VIRUSTOTAL_UPLOAD_SERVICE, L"www.virustotal.com", L"???", L"file" },
-    { MENUITEM_JOTTI_UPLOAD, L"virusscan.jotti.org", L"/en-US/submit-file?isAjax=true", L"sample-file[]" },
-    { MENUITEM_JOTTI_UPLOAD_SERVICE, L"virusscan.jotti.org", L"/en-US/submit-file?isAjax=true", L"sample-file[]" },
     { MENUITEM_JOTTI_UPLOAD, L"virusscan.jotti.org", L"/en-US/submit-file?isAjax=true", L"sample-file[]" },
     { MENUITEM_JOTTI_UPLOAD_SERVICE, L"virusscan.jotti.org", L"/en-US/submit-file?isAjax=true", L"sample-file[]" },
     { MENUITEM_FILESCANIO_UPLOAD, L"www.filescan.io", L"/api/scan/file", L"file" },
@@ -189,7 +188,7 @@ NTSTATUS HashFileAndResetPosition(
         if (!NT_SUCCESS(status))
             break;
 
-        PhUpdateHash(&hashContext, buffer, (ULONG)iosb.Information);
+        PhUpdateHash(&hashContext, buffer, iosb.Information);
         bytesRemaining -= (ULONG)iosb.Information;
     }
 
@@ -330,6 +329,67 @@ CleanupExit:
     return result;
 }
 
+/**
+ * Validates that an upload destination stays within the selected service's own
+ * HTTPS origin.  The VirusTotal v3 flow takes its destination from the service
+ * response ("upload_url"), and the request carries the user's API key, so a
+ * tampered or compromised response must not be able to redirect the credential
+ * and the file to another host, scheme, or port. (dmex)
+ *
+ * \param HostName The host parsed from the upload URL.
+ * \param Port The port parsed from the upload URL.
+ * \param ServiceHostName The service's registered host name.
+ * \return TRUE if the destination is the service host or a subdomain of its
+ * parent domain, over the default HTTPS port.
+ */
+static BOOLEAN UploadValidateDestination(
+    _In_opt_ PPH_STRING HostName,
+    _In_ USHORT Port,
+    _In_ PCWSTR ServiceHostName
+    )
+{
+    PH_STRINGREF serviceHost;
+    PH_STRINGREF firstPart;
+    PH_STRINGREF parentDomain;
+
+    if (PhIsNullOrEmptyString(HostName))
+        return FALSE;
+
+    if (Port != PH_HTTP_DEFAULT_HTTPS_PORT)
+        return FALSE;
+
+    PhInitializeStringRefLongHint(&serviceHost, (PWSTR)ServiceHostName);
+
+    if (PhEqualStringRef(&HostName->sr, &serviceHost, TRUE))
+        return TRUE;
+
+    // Accept subdomains of the service's parent domain (e.g. www.example.com
+    // permits upload.example.com) but nothing outside it.
+    if (!PhSplitStringRefAtChar(&serviceHost, L'.', &firstPart, &parentDomain))
+        return FALSE;
+
+    if (parentDomain.Length == 0)
+        return FALSE;
+
+    if (HostName->sr.Length <= parentDomain.Length + sizeof(WCHAR))
+        return FALSE;
+
+    {
+        PH_STRINGREF suffix;
+
+        suffix.Length = parentDomain.Length + sizeof(WCHAR);
+        suffix.Buffer = PTR_ADD_OFFSET(HostName->sr.Buffer, HostName->sr.Length - suffix.Length);
+
+        if (suffix.Buffer[0] != L'.')
+            return FALSE;
+
+        suffix.Length -= sizeof(WCHAR);
+        suffix.Buffer++;
+
+        return PhEqualStringRef(&suffix, &parentDomain, TRUE);
+    }
+}
+
 _Function_class_(USER_THREAD_START_ROUTINE)
 NTSTATUS UploadFileThreadStart(
     _In_ PVOID Parameter
@@ -385,6 +445,16 @@ NTSTATUS UploadFileThreadStart(
 
     if (!NT_SUCCESS(status = PhHttpCrackUrl(context->FileUpload, &httpHostName, &httpHostPath, &httpHostPort)))
         goto CleanupExit;
+
+    // The destination can come from a service response; never send the file and
+    // the API key anywhere but the service's own HTTPS origin. (dmex)
+    if (!UploadValidateDestination(httpHostName, httpHostPort, serviceInfo->HostName))
+    {
+        status = STATUS_ACCESS_DENIED;
+        RaiseUploadError(context, L"The service returned an untrusted upload location.", status);
+        goto CleanupExit;
+    }
+
     if (!NT_SUCCESS(status = PhHttpInitialize(&httpContext)))
         goto CleanupExit;
     if (!NT_SUCCESS(status = PhHttpConnect(httpContext, PhGetString(httpHostName), httpHostPort)))
@@ -422,31 +492,47 @@ NTSTATUS UploadFileThreadStart(
             goto CleanupExit;
         }
 
-        switch (mappedImage.Signature)
+        __try
         {
-        case IMAGE_DOS_SIGNATURE:
-            machineType = mappedImage.NtHeaders->FileHeader.Machine;
-            break;
-        case IMAGE_ELF_SIGNATURE:
-            machineType = USHRT_MAX; // Windows only supports 64bit ELF. (mappedImage.Header->e_machine)
-            break;
-        default:
-            machineType = 0;
-            break;
+            switch (mappedImage.Signature)
+            {
+            case IMAGE_DOS_SIGNATURE:
+                machineType = mappedImage.NtHeaders->FileHeader.Machine;
+                break;
+            case IMAGE_ELF_SIGNATURE:
+                machineType = USHRT_MAX; // Windows only supports 64bit ELF. (mappedImage.Header->e_machine)
+                break;
+            default:
+                machineType = 0;
+                break;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = GetExceptionCode();
         }
 
         PhUnloadMappedImage(&mappedImage);
 
+        if (!NT_SUCCESS(status))
+        {
+            RaiseUploadError(context, L"Unable to read the image.", status);
+            goto CleanupExit;
+        }
+
         switch (machineType)
         {
         case IMAGE_FILE_MACHINE_I386:
-            environmentId = 110;
+            environmentId = 110; // Windows 7 32 bit (HWP Support)
             break;
         case IMAGE_FILE_MACHINE_AMD64:
-            environmentId = 120;
+            environmentId = 120; // Windows 7 64 bit
+            break;
+        case IMAGE_FILE_MACHINE_ARM64:
+            environmentId = 140; // Windows 11 64 bit HACK(jxy-s)
             break;
         case USHRT_MAX: // 64bit Linux
-            environmentId = 300;
+            environmentId = 310; // Linux (Ubuntu 20.04, 64 bit)
             break;
         default:
             {
@@ -638,7 +724,7 @@ NTSTATUS UploadFileThreadStart(
     asciiFooterData = PhConvertStringToUtf8(httpPostFooter.String);
 
     // Start the clock.
-    PhQuerySystemTime(&timeStart);
+    PhQueryUnbiasedInterruptTime(&timeStart);
 
     // Write the header
     if (!NT_SUCCESS(status = PhHttpWriteData(
@@ -702,14 +788,14 @@ NTSTATUS UploadFileThreadStart(
             goto CleanupExit;
         }
 
-        PhQuerySystemTime(&timeNow);
+        PhQueryUnbiasedInterruptTime(&timeNow);
 
         totalUploadedLength += totalWriteLength;
-        timeTicks = (timeNow.QuadPart - timeStart.QuadPart) / PH_TICKS_PER_SEC;
-        timeBitsPerSecond = totalUploadedLength / __max(timeTicks, 1);
+        timeTicks = (ULONG64)(timeNow.QuadPart - timeStart.QuadPart);
+        timeBitsPerSecond = timeTicks ? (ULONG64)totalUploadedLength * PH_TICKS_PER_SEC / timeTicks : 0;
 
 #ifdef FORCE_NO_STATUS_TIMER
-        ULONG percent = totalUploadedLength * 100 / context->TotalFileLength;
+        ULONG percent = PhMultiplyDivide(totalUploadedLength, 100, context->TotalFileLength);
         PH_FORMAT format[9];
         WCHAR string[MAX_PATH];
 
@@ -918,12 +1004,12 @@ NTSTATUS UploadFileThreadStart(
 
                     PhFreeJsonObject(jsonRootObject);
                 }
-                else                
+                else
                 {
                     RaiseUploadError(context, L"Unable to complete the request.", status);
                     goto CleanupExit;
                 }
-                
+
                 if (PhIsNullOrEmptyString(context->LaunchCommand))
                 {
                     RaiseUploadError(context, L"Unable to complete the request.", STATUS_FAIL_CHECK);
@@ -1112,15 +1198,15 @@ LONGLONG UploadFileScanStringToTime(
 
     if (!NT_SUCCESS(RtlULong64ToUShort(year, &systemtime.wYear)))
         return LONG64_MAX;
-    if (!NT_SUCCESS(RtlULong64ToUShort(month, &systemtime.wYear)))
+    if (!NT_SUCCESS(RtlULong64ToUShort(month, &systemtime.wMonth)))
         return LONG64_MAX;
-    if (!NT_SUCCESS(RtlULong64ToUShort(day, &systemtime.wYear)))
+    if (!NT_SUCCESS(RtlULong64ToUShort(day, &systemtime.wDay)))
         return LONG64_MAX;
-    if (!NT_SUCCESS(RtlULong64ToUShort(hour, &systemtime.wYear)))
+    if (!NT_SUCCESS(RtlULong64ToUShort(hour, &systemtime.wHour)))
         return LONG64_MAX;
-    if (!NT_SUCCESS(RtlULong64ToUShort(minute, &systemtime.wYear)))
+    if (!NT_SUCCESS(RtlULong64ToUShort(minute, &systemtime.wMinute)))
         return LONG64_MAX;
-    if (!NT_SUCCESS(RtlULong64ToUShort(second, &systemtime.wYear)))
+    if (!NT_SUCCESS(RtlULong64ToUShort(second, &systemtime.wSecond)))
         return LONG64_MAX;
     if (!PhSystemTimeToLargeInteger(&time, &systemtime))
         return LONG64_MAX;
@@ -1181,48 +1267,18 @@ NTSTATUS UploadCheckThreadStart(
 
     if (NT_SUCCESS(status = PhGetFileSize(fileHandle, &fileSize64)))
     {
+        if (fileSize64.QuadPart > ScanMaxFileSize)
+        {
+            RaiseUploadError(context, L"The file is too large", ERROR_FILE_TOO_LARGE);
+            goto CleanupExit;
+        }
+
         if (context->Service == MENUITEM_VIRUSTOTAL_UPLOAD ||
             context->Service == MENUITEM_VIRUSTOTAL_UPLOAD_SERVICE)
         {
             if (fileSize64.QuadPart < 32 * 1024 * 1024)
             {
                 context->VtApiUpload = TRUE;
-            }
-
-            if (fileSize64.QuadPart > 128 * 1024 * 1024) // 128 MB
-            {
-                RaiseUploadError(context, L"The file is too large (over 128 MB)", ERROR_FILE_TOO_LARGE);
-                goto CleanupExit;
-            }
-        }
-        else if (
-            context->Service == MENUITEM_HYBRIDANALYSIS_UPLOAD ||
-            context->Service == MENUITEM_HYBRIDANALYSIS_UPLOAD_SERVICE
-            )
-        {
-            if (fileSize64.QuadPart > 128 * 1024 * 1024) // 128 MB
-            {
-                RaiseUploadError(context, L"The file is too large (over 128 MB)", ERROR_FILE_TOO_LARGE);
-                goto CleanupExit;
-            }
-        }
-        else if (
-            context->Service == MENUITEM_FILESCANIO_UPLOAD ||
-            context->Service == MENUITEM_FILESCANIO_UPLOAD_SERVICE
-            )
-        {
-            if (fileSize64.QuadPart > 100 * 1024 * 1024) // 128 MB
-            {
-                RaiseUploadError(context, L"The file is too large (over 100 MB)", ERROR_FILE_TOO_LARGE);
-                goto CleanupExit;
-            }
-        }
-        else
-        {
-            if (fileSize64.QuadPart > 20 * 1024 * 1024) // 20 MB
-            {
-                RaiseUploadError(context, L"The file is too large (over 20 MB)", ERROR_FILE_TOO_LARGE);
-                goto CleanupExit;
             }
         }
 
@@ -1267,7 +1323,7 @@ NTSTATUS UploadCheckThreadStart(
                 )))
             {
                 goto CleanupExit;
-            }   
+            }
 
             if (NT_SUCCESS(status = PhCreateJsonParserEx(&rootJsonObject, subRequestBuffer, FALSE)))
             {
@@ -1397,7 +1453,7 @@ NTSTATUS UploadCheckThreadStart(
                     {
                         RaiseUploadError(context, L"Unable to parse the response.", status);
                     }
-                    
+
                     PhClearReference(&vt3UploadRequestBuffer);
                 }
 
@@ -1465,20 +1521,20 @@ NTSTATUS UploadCheckThreadStart(
                 #if defined(FILESCANIO_PROMPT)
                 PVOID jsonDataObject;
                 LONG reportsCount;
-                
+
                 if (jsonDataObject = PhGetJsonObject(rootJsonObject, "filescan_reports"))
                 {
                     if (reportsCount = PhGetJsonArrayLength(jsonDataObject))
                     {
                         PPH_LIST reportList = PhCreateList(reportsCount);
-                
+
                         for (LONG i = 0; i < reportsCount; i++)
                         {
                             PVOID report;
                             PFILESCANIO_REPORT scan_report;
-                
+
                             report = PhGetJsonArrayIndexObject(jsonDataObject, i);
-                
+
                             scan_report = PhAllocate(sizeof(FILESCANIO_REPORT));
                             scan_report->report_date = PhGetJsonValueAsString(report, "report_date");
                             scan_report->report_id = PhGetJsonValueAsString(report, "report_id");
@@ -1486,13 +1542,13 @@ NTSTATUS UploadCheckThreadStart(
                             scan_report->report_time = UploadFileScanStringToTime(scan_report->report_date);
                             PhAddItemList(reportList, scan_report);
                         }
-                
+
                         qsort(reportList->Items, reportList->Count, sizeof(PVOID), OnlineChecksFileScanIoCompareFunction);
-                
+
                         PFILESCANIO_REPORT latest_report = reportList->Items[reportList->Count - 1];
-                
+
                         context->LastAnalysisDate = latest_report->report_date;
-                
+
                         if (jsonDataObject = PhGetJsonObject(rootJsonObject, "mdcloud"))
                         {
                             PhMoveReference(&context->Detected, PhFormatString(
@@ -1501,7 +1557,7 @@ NTSTATUS UploadCheckThreadStart(
                                 PhGetJsonValueAsUlong(jsonDataObject, "total_av_engines")
                                 ));
                         }
-                
+
                         PhMoveReference(&context->LaunchCommand, PhFormatString(
                             L"https://www.filescan.io/uploads/%s/reports/%s/overview",
                             PhGetString(latest_report->flow_id),
@@ -1511,7 +1567,7 @@ NTSTATUS UploadCheckThreadStart(
                         //    L"https://www.filescan.io/uploads/%s",
                         //    PhGetString(latest_report->flow_id)
                         //    ));
-                
+
                         //PostMessage(context->DialogHandle, UM_LAUNCH, 0, 0);
                         PostMessage(context->DialogHandle, UM_EXISTS, 0, 0);
                     }
@@ -1591,7 +1647,7 @@ NTSTATUS ViewReportThreadStart(
     PUPLOAD_CONTEXT context = (PUPLOAD_CONTEXT)Parameter;
     PVIRUSTOTAL_FILE_REPORT fileReport;
 
-    if (fileReport = VirusTotalRequestFileReport(context->FileHash, context->TotalPat))
+    if (NT_SUCCESS(VirusTotalRequestFileReport(context->FileHash, context->TotalPat, &fileReport)))
     {
         PhSwapReference(&context->LaunchCommand, PhConcatStrings2(L"https://www.virustotal.com/gui/file/", PhGetString(context->FileHash)));
 
@@ -1611,9 +1667,17 @@ NTSTATUS ViewReportThreadStart(
     return STATUS_SUCCESS;
 }
 
+VOID OnlineChecksUpdateWindowDpi(
+    _In_ PUPLOAD_CONTEXT Context
+    )
+{
+    Context->WindowDpi = PhGetWindowDpi(Context->DialogHandle);
+    PhSetApplicationWindowIconEx(Context->DialogHandle, Context->WindowDpi);
+}
+
 LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam
     )
@@ -1621,24 +1685,24 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
     PUPLOAD_CONTEXT context;
     WNDPROC oldWndProc;
 
-    if (!(context = PhGetWindowContext(hwndDlg, 0xF)))
+    if (!(context = PhGetWindowContext(WindowHandle, 0xF)))
         return 0;
 
     oldWndProc = context->DialogWindowProc;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case WM_DESTROY:
         {
 #ifndef FORCE_NO_STATUS_TIMER
             if (context->ProgressTimer)
             {
-                PhKillTimer(hwndDlg, 9000);
+                PhKillTimer(WindowHandle, 9000);
                 context->ProgressTimer = FALSE;
             }
 #endif
-            PhSetWindowProcedure(hwndDlg, oldWndProc);
-            PhRemoveWindowContext(hwndDlg, 0xF);
+            PhSetWindowProcedure(WindowHandle, oldWndProc);
+            PhRemoveWindowContext(WindowHandle, 0xF);
 
             TaskDialogFreeContext(context);
         }
@@ -1653,7 +1717,7 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
 #ifndef FORCE_NO_STATUS_TIMER
             if (context->ProgressTimer)
             {
-                PhKillTimer(hwndDlg, 9000);
+                PhKillTimer(WindowHandle, 9000);
                 context->ProgressTimer = FALSE;
             }
 #endif
@@ -1699,16 +1763,16 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
 #ifndef FORCE_NO_STATUS_TIMER
             if (context->ProgressTimer)
             {
-                PhKillTimer(hwndDlg, 9000);
+                PhKillTimer(WindowHandle, 9000);
                 context->ProgressTimer = FALSE;
             }
 #endif
             if (!PhIsNullOrEmptyString(context->LaunchCommand))
             {
-                PhShellExecute(hwndDlg, context->LaunchCommand->Buffer, NULL);
+                PhShellExecute(WindowHandle, context->LaunchCommand->Buffer, NULL);
             }
 
-            SendMessage(hwndDlg, TDM_CLICK_BUTTON, IDOK, 0);
+            SendMessage(WindowHandle, TDM_CLICK_BUTTON, IDOK, 0);
         }
         break;
     case UM_ERROR:
@@ -1716,11 +1780,16 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
 #ifndef FORCE_NO_STATUS_TIMER
             if (context->ProgressTimer)
             {
-                PhKillTimer(hwndDlg, 9000);
+                PhKillTimer(WindowHandle, 9000);
                 context->ProgressTimer = FALSE;
             }
 #endif
             VirusTotalShowErrorDialog(context);
+        }
+        break;
+    case WM_DPICHANGED:
+        {
+            OnlineChecksUpdateWindowDpi(context);
         }
         break;
     case WM_TIMER:
@@ -1729,7 +1798,7 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
             {
                 if (context->ProgressUploaded && context->ProgressTotal)
                 {
-                    LONG64 percent = context->ProgressUploaded * 100 / context->ProgressTotal;
+                    LONG64 percent = PhMultiplyDivide((ULONG)context->ProgressUploaded, 100, (ULONG)context->ProgressTotal);
                     PH_FORMAT format[9];
                     WCHAR string[MAX_PATH];
 
@@ -1774,12 +1843,12 @@ LRESULT CALLBACK OnlineChecksTaskDialogSubclass(
         break;
     }
 
-    return CallWindowProc(oldWndProc, hwndDlg, uMsg, wParam, lParam);
+    return CallWindowProc(oldWndProc, WindowHandle, WindowMessage, wParam, lParam);
 }
 
 HRESULT CALLBACK OnlineChecksTaskDialogBootstrap(
-    _In_ HWND hwndDlg,
-    _In_ UINT uMsg,
+    _In_ HWND WindowHandle,
+    _In_ UINT WindowMessage,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ LONG_PTR dwRefData
@@ -1787,14 +1856,15 @@ HRESULT CALLBACK OnlineChecksTaskDialogBootstrap(
 {
     PUPLOAD_CONTEXT context = (PUPLOAD_CONTEXT)dwRefData;
 
-    switch (uMsg)
+    switch (WindowMessage)
     {
     case TDN_CREATED:
         {
             HWND windowHandle = SystemInformer_GetWindowHandle();
 
-            context->DialogHandle = hwndDlg;
-            context->HybridPat = PhGetStringSetting(SETTING_NAME_HYBRIDANAL_DEFAULT_PAT);
+            context->DialogHandle = WindowHandle;
+            OnlineChecksUpdateWindowDpi(context);
+            context->HybridPat = PhGetStringSetting(SETTING_NAME_HYBRIDANALYSIS_DEFAULT_PAT);
             context->TotalPat = PhGetStringSetting(SETTING_NAME_VIRUSTOTAL_DEFAULT_PAT);
             context->FileScanPat = PhGetStringSetting(SETTING_NAME_FILESCAN_DEFAULT_PAT);
 
@@ -1808,16 +1878,13 @@ HRESULT CALLBACK OnlineChecksTaskDialogBootstrap(
             }
 
             // Center the update window on PH if it's visible else we center on the desktop.
-            PhCenterWindow(hwndDlg, (IsWindowVisible(windowHandle) && !IsMinimized(windowHandle)) ? windowHandle : NULL);
-
-            // Create the Taskdialog icons
-            PhSetApplicationWindowIcon(hwndDlg);
+            PhCenterWindow(WindowHandle, (IsWindowVisible(windowHandle) && !IsMinimized(windowHandle)) ? windowHandle : NULL);
 
             //PhTaskbarListCreate(&context->TaskbarListClass);
 
-            context->DialogWindowProc = PhGetWindowProcedure(hwndDlg);
-            PhSetWindowContext(hwndDlg, 0xF, context);
-            PhSetWindowProcedure(hwndDlg, OnlineChecksTaskDialogSubclass);
+            context->DialogWindowProc = PhGetWindowProcedure(WindowHandle);
+            PhSetWindowContext(WindowHandle, 0xF, context);
+            PhSetWindowProcedure(WindowHandle, OnlineChecksTaskDialogSubclass);
 
             ShowFileUploadDialog(context);
         }
@@ -1922,14 +1989,19 @@ VOID UploadServiceToOnlineService(
         }
         else
         {
-            PUPLOAD_CONTEXT context;
+            PPH_STRING fileNtPathName;
 
-            context = PhCreateObjectZero(sizeof(UPLOAD_CONTEXT), UploadContextType);
-            context->Service = Service;
-            context->FileName = ServiceItem->FileName;
-            context->BaseFileName = PhGetBaseName(context->FileName);
+            if (fileNtPathName = PhDosPathNameToNtPathName(&ServiceItem->FileName->sr))
+            {
+                PUPLOAD_CONTEXT context;
 
-            PhCreateThread2(OnlineChecksUploadDialogThread, context);
+                context = PhCreateObjectZero(sizeof(UPLOAD_CONTEXT), UploadContextType);
+                context->Service = Service;
+                context->FileName = fileNtPathName;
+                context->BaseFileName = PhGetBaseName(context->FileName);
+
+                PhCreateThread2(OnlineChecksUploadDialogThread, context);
+            }
         }
     }
     else

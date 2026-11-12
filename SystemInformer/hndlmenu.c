@@ -154,16 +154,12 @@ VOID PhShowHandleObjectProperties1(
 
         if (KsiLevel() >= KphLevelMed)
         {
-            if (NT_SUCCESS(PhOpenProcess(
-                &processHandle,
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                Info->ProcessId
-                )))
+            if (targetProcessItem = PhReferenceProcessItem(Info->ProcessId))
             {
                 PROCESS_BASIC_INFORMATION basicInfo;
 
-                if (NT_SUCCESS(KphQueryInformationObject(
-                    processHandle,
+                if (targetProcessItem->QueryHandle && NT_SUCCESS(KphQueryInformationObject(
+                    targetProcessItem->QueryHandle,
                     Info->Handle,
                     KphObjectProcessBasicInformation,
                     &basicInfo,
@@ -174,7 +170,7 @@ VOID PhShowHandleObjectProperties1(
                     processId = basicInfo.UniqueProcessId;
                 }
 
-                NtClose(processHandle);
+                PhDereferenceObject(targetProcessItem);
             }
         }
         else
@@ -253,7 +249,7 @@ VOID PhShowHandleObjectProperties1(
             readOnly = TRUE;
         }
 
-        if (handle)
+        if (NT_SUCCESS(status))
         {
             PPH_STRING sectionName = NULL;
             SECTION_BASIC_INFORMATION basicInfo;
@@ -330,6 +326,10 @@ VOID PhShowHandleObjectProperties1(
 
             NtClose(handle);
         }
+        else
+        {
+            PhShowStatus(hWnd, L"Unable to query the section.", status, 0);
+        }
     }
     else if (PhEqualString2(Info->TypeName, L"Thread", TRUE))
     {
@@ -343,16 +343,12 @@ VOID PhShowHandleObjectProperties1(
 
         if (KsiLevel() >= KphLevelMed)
         {
-            if (NT_SUCCESS(PhOpenProcess(
-                &processHandle,
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                Info->ProcessId
-                )))
+            if (targetProcessItem = PhReferenceProcessItem(Info->ProcessId))
             {
                 THREAD_BASIC_INFORMATION basicInfo;
 
-                if (NT_SUCCESS(KphQueryInformationObject(
-                    processHandle,
+                if (targetProcessItem->QueryHandle && NT_SUCCESS(KphQueryInformationObject(
+                    targetProcessItem->QueryHandle,
                     Info->Handle,
                     KphObjectThreadBasicInformation,
                     &basicInfo,
@@ -363,7 +359,7 @@ VOID PhShowHandleObjectProperties1(
                     clientId = basicInfo.ClientId;
                 }
 
-                NtClose(processHandle);
+                PhDereferenceObject(targetProcessItem);
             }
         }
         else
